@@ -1,0 +1,15 @@
+# Alternativa a la BD embebida para quien tenga Docker. Mismo puerto y credenciales que npm run db:dev
+# (no corras ambas a la vez).
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: hayai
+      POSTGRES_PASSWORD: hayai
+      POSTGRES_DB: hayai
+    ports:
+      - "54329:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:

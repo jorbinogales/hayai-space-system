@@ -1,0 +1,179 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Icon, ZoomControls } from './ui'
+import { Blobvatar } from './blob'
+import { useCosmos } from './Cosmos'
+import { useDragScroll } from './drag'
+import { money, useClients } from './store'
+import { useProjects } from './projectData'
+import { useExpenses } from './expenseData'
+import { dashboard, series, type Period } from './finance'
+import { reduced } from './warp'
+
+const PERIODS: { key: Period; label: string }[] = [
+  { key: 'mes', label: 'Este mes' },
+  { key: 'anio', label: 'Este año' },
+  { key: 'todo', label: 'Todo' },
+]
+
+/** Pantalla Finanzas: el planeta a un costado y un dashboard con lo recaudado por cada cliente frente a los gastos. */
+export default function Finances({ onBack }: { onBack: () => void }) {
+  const { world } = useCosmos()
+  const clients = useClients()
+  const projects = useProjects()
+  const expenses = useExpenses()
+  const [period, setPeriod] = useState<Period>('mes')
+  const [exiting, setExiting] = useState(false)
+  const scroll = useRef<HTMLDivElement>(null)
+  useDragScroll(scroll, 'y')
+  useEffect(() => {
+    world.screenRate = null // gira a la velocidad propia del planeta
+  }, [world])
+
+  const back = () => {
+    setExiting(true)
+    window.setTimeout(onBack, reduced() ? 50 : 300)
+  }
+
+  const d = useMemo(() => dashboard(clients, expenses, projects, period), [clients, expenses, projects, period])
+  const s = useMemo(() => series(clients, expenses, 6), [clients, expenses])
+  const max = Math.max(1, ...s.flatMap((m) => [m.ingresos, m.gastos]))
+  const maxRow = Math.max(1, ...d.rows.map((r) => Math.max(r.recaudado, r.gastos)))
+
+  // grafica: barras agrupadas por mes (SVG propio, sin librerias)
+  const W = 640
+  const H = 190
+  const pad = { l: 8, r: 8, t: 14, b: 26 }
+  const bw = (W - pad.l - pad.r) / s.length
+  const y = (v: number) => pad.t + (H - pad.t - pad.b) * (1 - v / max)
+
+  return (
+    <main className={`screen layer finances arriving${exiting ? ' exiting' : ''}`}>
+      <div className="overlay">
+        <div className="clients-left">
+          <button className="back" onClick={back}>
+            <Icon name="back" size={16} />
+            Volver al core
+          </button>
+        </div>
+
+        <section className="plist fin" aria-label="Finanzas">
+          <header className="plist-head">
+            <h1>Finanzas</h1>
+            <div className="plist-side">
+              <div className="seg seg-light" role="tablist" aria-label="Periodo">
+                {PERIODS.map((p) => (
+                  <button key={p.key} role="tab" aria-selected={period === p.key} className={period === p.key ? 'is-on' : ''} onClick={() => setPeriod(p.key)}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </header>
+
+          <div className="plist-scroll" ref={scroll}>
+            <div className="kpis">
+              <article className="kpi">
+                <small>Recaudado</small>
+                <strong className="ok">{money(d.recaudado)}</strong>
+              </article>
+              <article className="kpi">
+                <small>Gastos</small>
+                <strong>{money(d.gastos)}</strong>
+              </article>
+              <article className="kpi">
+                <small>Balance</small>
+                <strong className={d.balance >= 0 ? 'ok' : 'bad'}>{money(d.balance)}</strong>
+              </article>
+              <article className="kpi">
+                <small>Por cobrar</small>
+                <strong className="due">{money(d.pendiente)}</strong>
+              </article>
+            </div>
+
+            <div className="gcard fcard">
+              <h2>Ingresos y gastos · últimos 6 meses</h2>
+              <div className="legend" aria-hidden="true">
+                <span className="lg-in">Recaudado</span>
+                <span className="lg-out">Gastos</span>
+              </div>
+              <svg className="fchart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Ingresos y gastos por mes: ${s.map((m) => `${m.label} ${money(m.ingresos)} recaudado, ${money(m.gastos)} gastos`).join('; ')}`}>
+                {[0.25, 0.5, 0.75, 1].map((t) => (
+                  <line key={t} x1={pad.l} x2={W - pad.r} y1={y(max * t)} y2={y(max * t)} className="grid" />
+                ))}
+                {s.map((m, i) => {
+                  const x = pad.l + i * bw
+                  const w = bw * 0.3
+                  return (
+                    <g key={m.key}>
+                      <rect x={x + bw * 0.16} y={y(m.ingresos)} width={w} height={Math.max(0, H - pad.b - y(m.ingresos))} rx="3" className="bar-in">
+                        <title>{`${m.label}: ${money(m.ingresos)} recaudado`}</title>
+                      </rect>
+                      <rect x={x + bw * 0.16 + w + 4} y={y(m.gastos)} width={w} height={Math.max(0, H - pad.b - y(m.gastos))} rx="3" className="bar-out">
+                        <title>{`${m.label}: ${money(m.gastos)} gastos`}</title>
+                      </rect>
+                      <text x={x + bw / 2} y={H - 8} textAnchor="middle" className="axis">
+                        {m.label}
+                      </text>
+                    </g>
+                  )
+                })}
+              </svg>
+
+              <h2 className="ft-title">Por cliente</h2>
+              <div className="ftable" role="table" aria-label="Recaudado y gastos por cliente">
+                <div className="fr fh" role="row">
+                  <span role="columnheader">Cliente</span>
+                  <span role="columnheader">Recaudado</span>
+                  <span role="columnheader">Gastos</span>
+                  <span role="columnheader">Utilidad</span>
+                  <span role="columnheader">Por cobrar</span>
+                </div>
+                {d.rows.length === 0 && <p className="empty-note dark">Cuando registres clientes y cobros, aquí verás lo recaudado por cada uno.</p>}
+                {d.rows.map((r) => (
+                  <div className="fr" role="row" key={r.id}>
+                    <span className="fc-name" role="cell">
+                      <Blobvatar seed={r.avatar} size={30} />
+                      <span>
+                        {r.name}
+                        <i className="fbar" aria-hidden="true">
+                          <b style={{ width: `${(r.recaudado / maxRow) * 100}%` }} />
+                          <u style={{ width: `${(r.gastos / maxRow) * 100}%` }} />
+                        </i>
+                      </span>
+                    </span>
+                    <span role="cell" className="ok">
+                      {money(r.recaudado)}
+                    </span>
+                    <span role="cell">{money(r.gastos)}</span>
+                    <span role="cell" className={r.utilidad >= 0 ? 'ok' : 'bad'}>
+                      {money(r.utilidad)}
+                    </span>
+                    <span role="cell" className="due">
+                      {money(r.pendiente)}
+                    </span>
+                  </div>
+                ))}
+                <div className="fr fgen" role="row">
+                  <span className="fc-name" role="cell">
+                    <span className="fgen-ico" aria-hidden="true">
+                      H
+                    </span>
+                    <span>Gastos generales de HAYAI</span>
+                  </span>
+                  <span role="cell">—</span>
+                  <span role="cell">{money(d.generales)}</span>
+                  <span role="cell" className="bad">
+                    {money(-d.generales)}
+                  </span>
+                  <span role="cell">—</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <ZoomControls onZoom={(f) => world.zoomBy(f)} />
+      </div>
+    </main>
+  )
+}

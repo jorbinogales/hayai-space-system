@@ -1,0 +1,5 @@
+# Caddy obtiene y renueva solo el certificado HTTPS del dominio (DOMAIN en .env). El DNS del dominio debe apuntar ya al VPS.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy app:3001
+}

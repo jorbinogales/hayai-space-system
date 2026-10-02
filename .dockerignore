@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.env
+server/.pgdata
+server/test
+*.png
+!public/planets/*.png
+core.md
+README.md
+docker-compose*.yml
+Caddyfile

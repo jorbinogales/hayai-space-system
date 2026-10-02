@@ -1,0 +1,51 @@
+# Produccion en un VPS: Postgres + API/web + Caddy (HTTPS automatico con Let's Encrypt).
+# Uso:  cp .env.production.example .env  (editalo)  &&  docker compose -f docker-compose.prod.yml up -d --build
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hayai
+      POSTGRES_DB: hayai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hayai -d hayai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # sin "ports": Postgres solo es visible para los otros contenedores, nunca desde internet
+
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://hayai:${POSTGRES_PASSWORD}@db:5432/hayai
+      NODE_ENV: production
+      TRUST_PROXY: "1" # Caddy va delante: asi el limite por IP ve la IP real
+      PORT: "3001"
+    depends_on:
+      db:
+        condition: service_healthy
+    # sin "ports": solo Caddy habla con la API
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?define DOMAIN en .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

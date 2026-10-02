@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './ui'
-import { addClient, money, todayISO, type Client } from './store'
+import { addClient, money, todayISO, type Client, type Draft } from './store'
 import { AVATAR_SEEDS, AvatarPicker } from './blob'
 
 interface Row {
+  /** cobros: repetir cada mes */
+  rep?: boolean
+  /** cobros: cuantos meses (texto del input) */
+  n?: string
   key: number
   a: string // concepto
   b: string // monto
@@ -44,11 +48,13 @@ export default function NewClient({ onClose, onCreate }: { onClose: () => void; 
       if (!r.a.trim() || !(Number(r.b) > 0)) return setError('Cada ítem de la inicial necesita concepto y un monto mayor a 0.')
       its.push({ concept: r.a.trim(), amount: Number(r.b) })
     }
-    const chs: { date: string; amount: number; concept: string }[] = []
+    const chs: Draft['charges'] = []
     for (const r of charges) {
       if (!r.d && !r.b) continue
       if (!r.d || !(Number(r.b) > 0)) return setError('Cada fecha de cobro necesita fecha y un monto mayor a 0.')
-      chs.push({ date: r.d, amount: Number(r.b), concept: r.a.trim() || 'Pago' })
+      const n = Number(r.n ?? 12)
+      if (r.rep && !(Number.isInteger(n) && n >= 2 && n <= 36)) return setError('Los meses de repetición deben ser un número entre 2 y 36.')
+      chs.push({ date: r.d, amount: Number(r.b), concept: r.a.trim() || 'Pago', ...(r.rep ? { repeatMonths: n } : {}) })
     }
     setBusy(true)
     try {
@@ -113,6 +119,17 @@ export default function NewClient({ onClose, onCreate }: { onClose: () => void; 
                 <button type="button" className="rm" aria-label="Quitar fecha" onClick={() => setCharges(charges.length > 1 ? charges.filter((x) => x.key !== r.key) : [row('Pago mensual')])}>
                   <Icon name="close" size={15} />
                 </button>
+                <label className="repeat">
+                  <input type="checkbox" checked={!!r.rep} onChange={(e) => set(charges, setCharges, r.key, { rep: e.target.checked, n: r.n ?? '12' })} />
+                  <span>Repetir cada mes</span>
+                  {r.rep && (
+                    <>
+                      <span>durante</span>
+                      <input aria-label="Meses de repetición" className="rep-n" type="number" min="2" max="36" inputMode="numeric" value={r.n ?? '12'} onChange={(e) => set(charges, setCharges, r.key, { n: e.target.value })} />
+                      <span>meses{r.d ? `, el día ${Number(r.d.slice(8))} de cada mes` : ''}</span>
+                    </>
+                  )}
+                </label>
               </div>
             ))}
             <div className="row-foot">

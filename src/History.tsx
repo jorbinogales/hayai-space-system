@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import { useDragScroll } from './drag'
 import { Icon } from './ui'
 import { Blobvatar } from './blob'
-import { avatarOf, fmtDate, money, stats, todayISO, type Client } from './store'
+import { avatarOf, fmtDate, money, moveLabel, stats, todayISO, type Client } from './store'
 
 /** Cajon lateral con el historico de movimientos del cliente (inicial desglosada + cobros y pagos por fecha). */
 export default function History({ client, onClose }: { client: Client | null; onClose: () => void }) {
@@ -76,7 +76,7 @@ export default function History({ client, onClose }: { client: Client | null; on
                       <li key={m.id} className={m.status === 'cobrado' ? 'done' : late ? 'late' : 'due'}>
                         <i aria-hidden="true" />
                         <div>
-                          <p className="m-concept">{m.concept}</p>
+                          <p className="m-concept">{moveLabel(m)}</p>
                           <p className="m-date">{fmtDate(m.date, true)}</p>
                         </div>
                         <div className="m-right">

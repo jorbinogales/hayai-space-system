@@ -297,9 +297,9 @@ describe('datos', () => {
         { id: '<uuid>', concept: 'Hosting', amount: 250.5 },
       ],
       movements: [
-        { id: '<uuid>', date: '2026-02-10', concept: 'Inicial', amount: 1750.5, kind: 'inicial', status: 'cobrado' },
-        { id: '<uuid>', date: '2026-03-01', concept: 'Cuota 1', amount: 300.25, kind: 'pago', status: 'pendiente' },
-        { id: '<uuid>', date: '2026-04-01', concept: 'Cuota 2', amount: 300, kind: 'pago', status: 'pendiente' },
+        { id: '<uuid>', date: '2026-02-10', concept: 'Inicial', amount: 1750.5, kind: 'inicial', status: 'cobrado', series: null },
+        { id: '<uuid>', date: '2026-03-01', concept: 'Cuota 1', amount: 300.25, kind: 'pago', status: 'pendiente', series: null },
+        { id: '<uuid>', date: '2026-04-01', concept: 'Cuota 2', amount: 300, kind: 'pago', status: 'pendiente', series: null },
       ],
     })
     const list = await call('/clients', { cookie })
@@ -328,6 +328,65 @@ describe('datos', () => {
       assert.equal(typeof b.body.error, 'string')
     }
     assert.equal((await call('/clients', { cookie })).body.length, 2) // los inválidos no dejaron nada
+  })
+
+  it('pago mensual recurrente: serie de 12 desde el 31 sin arrastrar el recorte, series_id común, GET igual', async () => {
+    const base = { name: 'Serie', avatar: 'x', initialDate: '2026-01-01', items: [] }
+    const r = await call('/clients', { cookie, body: { ...base, charges: [{ date: '2026-01-31', amount: 100, concept: 'Mensual', repeatMonths: 12 }] } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    const m = r.body.movements
+    assert.deepEqual(
+      m.map((x: any) => x.date),
+      ['2026-01-31', '2026-02-28', '2026-03-31', '2026-04-30', '2026-05-31', '2026-06-30', '2026-07-31', '2026-08-31', '2026-09-30', '2026-10-31', '2026-11-30', '2026-12-31'],
+    )
+    assert.deepEqual(m.map((x: any) => x.series.index), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+    assert.ok(m.every((x: any) => x.series.total === 12 && x.series.id === m[0].series.id && x.kind === 'pago' && x.status === 'pendiente' && x.amount === 100))
+    assert.match(m[0].series.id, UUID)
+    assert.deepEqual(Object.keys(m[0]).sort(), ['amount', 'concept', 'date', 'id', 'kind', 'series', 'status'])
+    const list = await call('/clients', { cookie })
+    assert.deepEqual(list.body.find((c: any) => c.id === r.body.id), r.body)
+  })
+
+  it('pago mensual recurrente: bisiesto, cobros mixtos y series distintas', async () => {
+    const base = { name: 'Mixto', avatar: 'x', initialDate: '2028-01-01', items: [] }
+    const leap = await call('/clients', { cookie, body: { ...base, charges: [{ date: '2028-01-31', amount: 10, concept: 'L', repeatMonths: 3 }] } })
+    assert.deepEqual(leap.body.movements.map((x: any) => x.date), ['2028-01-31', '2028-02-29', '2028-03-31'])
+
+    const r = await call('/clients', {
+      cookie,
+      body: {
+        ...base,
+        charges: [
+          { date: '2026-05-10', amount: 5, concept: 'Suelto' },
+          { date: '2026-05-15', amount: 20, concept: 'A', repeatMonths: 2 },
+          { date: '2026-05-20', amount: 30, concept: 'B', repeatMonths: 3 },
+        ],
+      },
+    })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    const by = (c: string) => r.body.movements.filter((x: any) => x.concept === c)
+    assert.equal(by('Suelto')[0].series, null)
+    const [a, b] = [by('A'), by('B')]
+    assert.equal(a.length, 2)
+    assert.equal(b.length, 3)
+    assert.notEqual(a[0].series.id, b[0].series.id)
+    assert.deepEqual(b.map((x: any) => x.date), ['2026-05-20', '2026-06-20', '2026-07-20'])
+    assert.deepEqual(r.body.movements.map((x: any) => x.date), [...r.body.movements.map((x: any) => x.date)].sort())
+    const { rows } = await admin.query('SELECT count(DISTINCT series_id)::int AS n FROM payments WHERE client_id = $1', [r.body.id])
+    assert.equal(rows[0].n, 2)
+  })
+
+  it('repeatMonths inválido (1, 37, 2.5, "x") => 400 legible y no deja nada', async () => {
+    const before = (await call('/clients', { cookie })).body.length
+    for (const repeatMonths of [1, 37, 2.5, 'x']) {
+      const b = await call('/clients', {
+        cookie,
+        body: { name: 'Mal', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [{ date: '2026-01-31', amount: 1, concept: 'c', repeatMonths }] },
+      })
+      assert.equal(b.status, 400, String(repeatMonths))
+      assert.match(b.body.error, /repeatMonths/)
+    }
+    assert.equal((await call('/clients', { cookie })).body.length, before)
   })
 
   it('POST /projects: owner por NOMBRE, forma exacta; owner/cliente inexistente => 404; icono inválido => 400', async () => {

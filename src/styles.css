@@ -1552,3 +1552,8 @@ legend { padding: 0 6px; }
 .boot-curtain i:nth-child(odd) { --dir: -101%; }
 @keyframes curtain { to { transform: translateY(var(--dir, -101%)); opacity: 0.6; } }
 @media (prefers-reduced-motion: reduce) { .boot-curtain { display: none; } .boot-core .sl { animation-duration: 0.01ms; animation-delay: 0s; } }
+
+/* cobros recurrentes (formulario de cliente) */
+.line.three .repeat { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -2px 0 4px; font-size: 0.84rem; color: rgba(244, 235, 221, 0.8); cursor: pointer; }
+.sheet .repeat input[type='checkbox'] { width: 16px; height: 16px; padding: 0; accent-color: var(--amber); }
+.sheet .repeat .rep-n { width: 64px; padding: 5px 8px; text-align: center; }

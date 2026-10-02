@@ -14,7 +14,12 @@ export interface Movement {
   amount: number
   kind: 'inicial' | 'pago'
   status: 'cobrado' | 'pendiente'
+  /** si el cobro es parte de un pago mensual recurrente: posicion en la serie */
+  series?: { id: string; index: number; total: number } | null
 }
+
+/** Texto del movimiento: el concepto y, si es recurrente, su posicion ("Pago mensual 3/12"). */
+export const moveLabel = (m: { concept: string; series?: { index: number; total: number } | null }) => (m.series ? `${m.concept} ${m.series.index}/${m.series.total}` : m.concept)
 export interface Client {
   id: string
   name: string
@@ -50,7 +55,7 @@ export interface Draft {
   initialDate: string
   items: { concept: string; amount: number }[]
   /** cobros programados */
-  charges: { date: string; amount: number; concept: string }[]
+  charges: { date: string; amount: number; concept: string; /** repetir cada mes, el mismo dia, durante N meses (2-36) */ repeatMonths?: number }[]
 }
 
 /** Crea el cliente (con su inicial y cobros) en el servidor y lo agrega a la lista. */
@@ -92,6 +97,6 @@ export interface Upcoming {
 /** Cobros pendientes de todos los clientes, por fecha. */
 export function upcoming(list: Client[]): Upcoming[] {
   return list
-    .flatMap((c) => c.movements.filter((m) => m.status === 'pendiente').map((m) => ({ id: m.id, clientId: c.id, date: m.date, amount: m.amount, concept: m.concept })))
+    .flatMap((c) => c.movements.filter((m) => m.status === 'pendiente').map((m) => ({ id: m.id, clientId: c.id, date: m.date, amount: m.amount, concept: moveLabel(m) })))
     .sort((a, b) => a.date.localeCompare(b.date))
 }

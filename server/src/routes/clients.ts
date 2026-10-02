@@ -1,10 +1,12 @@
+import { randomUUID } from 'node:crypto'
 import { Router } from 'express'
 import { z } from 'zod'
 import { pool, tx, type Db } from '../db.ts'
 import { isoDate, money, parse, text } from '../util.ts'
 
+type ChargeRow = { d: string; c: string; a: number; sid: string | null; si: number | null; st: number | null }
 type Item = { id: string; concept: string; amount: number }
-type Movement = { id: string; date: string; concept: string; amount: number; kind: string; status: string }
+type Movement = { id: string; date: string; concept: string; amount: number; kind: string; status: string; series: { id: string; index: number; total: number } | null }
 
 /** 3 consultas y se agrupa en memoria (sin N+1). Con ids, solo esos clientes. */
 async function loadClients(db: Db, ids?: string[]) {
@@ -15,7 +17,7 @@ async function loadClients(db: Db, ids?: string[]) {
       ids ? [ids] : [],
     ),
     db.query(
-      `SELECT id, client_id, date, concept, amount, kind, status FROM payments ${ids ? 'WHERE client_id = ANY($1::uuid[])' : ''} ORDER BY date, created_at, id`,
+      `SELECT id, client_id, date, concept, amount, kind, status, series_id, series_index, series_total FROM payments ${ids ? 'WHERE client_id = ANY($1::uuid[])' : ''} ORDER BY date, created_at, id`,
       ids ? [ids] : [],
     ),
   ])
@@ -28,7 +30,8 @@ async function loadClients(db: Db, ids?: string[]) {
   const movesBy = new Map<string, Movement[]>()
   for (const r of moves.rows) {
     const list = movesBy.get(r.client_id) ?? []
-    list.push({ id: r.id, date: r.date, concept: r.concept, amount: r.amount, kind: r.kind, status: r.status })
+    const series = r.series_id ? { id: r.series_id, index: r.series_index, total: r.series_total } : null
+    list.push({ id: r.id, date: r.date, concept: r.concept, amount: r.amount, kind: r.kind, status: r.status, series })
     movesBy.set(r.client_id, list)
   }
   return clients.rows.map((c) => ({
@@ -40,12 +43,28 @@ async function loadClients(db: Db, ids?: string[]) {
   }))
 }
 
+/** 'AAAA-MM-DD' + k meses, mismo día del mes recortado al último día si no existe (siempre desde el día original). */
+function addMonths(iso: string, k: number): string {
+  const [y, m, d] = iso.split('-').map(Number)
+  const t = m - 1 + k
+  const ny = y + Math.floor(t / 12)
+  const nm = (t % 12) + 1
+  const last = new Date(Date.UTC(ny, nm, 0)).getUTCDate() // día 0 del mes siguiente = último de nm (calendario puro, UTC)
+  return `${String(ny).padStart(4, '0')}-${String(nm).padStart(2, '0')}-${String(Math.min(d, last)).padStart(2, '0')}`
+}
+
+const repeatMonths = z
+  .number('Repetición inválida (entero de 2 a 36)')
+  .int('Repetición inválida (entero de 2 a 36)')
+  .min(2, 'Mínimo 2 meses de repetición')
+  .max(36, 'Máximo 36 meses de repetición')
+
 const newClient = z.object({
   name: text(80),
   avatar: text(40),
   initialDate: isoDate,
   items: z.array(z.object({ concept: text(120), amount: money })).max(50, 'Máximo 50 conceptos'),
-  charges: z.array(z.object({ date: isoDate, amount: money, concept: text(120) })).max(100, 'Máximo 100 cobros'),
+  charges: z.array(z.object({ date: isoDate, amount: money, concept: text(120), repeatMonths: repeatMonths.optional() })).max(100, 'Máximo 100 cobros'),
 })
 
 export const clientsRouter = Router()
@@ -82,12 +101,36 @@ clientsRouter.post('/', async (req, res) => {
         [id, b.initialDate, totalCents / 100, userId],
       )
     }
-    if (b.charges.length) {
+    // Cada cobro con repeatMonths = N se materializa en N filas con su propio series_id.
+    const charges = b.charges.flatMap((x): ChargeRow[] => {
+      if (!x.repeatMonths) return [{ d: x.date, c: x.concept, a: x.amount, sid: null, si: null, st: null }]
+      const sid = randomUUID()
+      return Array.from({ length: x.repeatMonths }, (_, i) => ({
+        d: addMonths(x.date, i),
+        c: x.concept,
+        a: x.amount,
+        sid,
+        si: i + 1,
+        st: x.repeatMonths!,
+      }))
+    })
+    if (charges.length) {
       await c.query(
-        `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, created_at)
-         SELECT $1, t.d, t.c, t.a, 'pago', 'pendiente', $5, now() + t.n * interval '1 microsecond'
-         FROM unnest($2::date[], $3::text[], $4::numeric[]) WITH ORDINALITY AS t(d, c, a, n)`,
-        [id, b.charges.map((x) => x.date), b.charges.map((x) => x.concept), b.charges.map((x) => x.amount), userId],
+        `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, series_id, series_index, series_total, created_at)
+         SELECT $1, t.d, t.c, t.a, 'pago', 'pendiente', $9, t.sid, t.si, t.st, now() + t.n * interval '1 microsecond'
+         FROM unnest($2::date[], $3::text[], $4::numeric[], $5::uuid[], $6::smallint[], $7::smallint[], $8::bigint[])
+              AS t(d, c, a, sid, si, st, n)`,
+        [
+          id,
+          charges.map((x) => x.d),
+          charges.map((x) => x.c),
+          charges.map((x) => x.a),
+          charges.map((x) => x.sid),
+          charges.map((x) => x.si),
+          charges.map((x) => x.st),
+          charges.map((_, i) => i + 1),
+          userId,
+        ],
       )
     }
     return id

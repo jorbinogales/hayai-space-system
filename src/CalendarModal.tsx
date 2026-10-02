@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './ui'
 import CalendarView, { type CalEvent } from './Calendar'
-import { avatarOf, todayISO, useClients } from './store'
+import { avatarOf, moveLabel, todayISO, useClients } from './store'
 
 /** Calendario completo de cobros de todos los clientes, en el mismo estilo oscuro de los formularios. */
 export default function CalendarModal({ onClose }: { onClose: () => void }) {
@@ -23,7 +23,7 @@ export default function CalendarModal({ onClose }: { onClose: () => void }) {
         id: m.id,
         date: m.date,
         title: c.name,
-        sub: m.concept,
+        sub: moveLabel(m),
         amount: m.amount,
         tone: m.status === 'cobrado' ? ('ok' as const) : m.date < today ? ('late' as const) : ('due' as const),
         avatar: avatarOf(c),

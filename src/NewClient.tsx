@@ -23,6 +23,7 @@ export default function NewClient({ onClose, onCreate }: { onClose: () => void; 
   const [avatar, setAvatar] = useState(() => AVATAR_SEEDS[Math.floor(Math.random() * AVATAR_SEEDS.length)])
   const [items, setItems] = useState<Row[]>(() => [row()])
   const [charges, setCharges] = useState<Row[]>(() => [row('Pago mensual')])
+  const [iDate, setIDate] = useState(todayISO) // la inicial puede ser de una fecha anterior
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const first = useRef<HTMLInputElement>(null)
@@ -56,9 +57,10 @@ export default function NewClient({ onClose, onCreate }: { onClose: () => void; 
       if (r.rep && !(Number.isInteger(n) && n >= 2 && n <= 36)) return setError('Los meses de repetición deben ser un número entre 2 y 36.')
       chs.push({ date: r.d, amount: Number(r.b), concept: r.a.trim() || 'Pago', ...(r.rep ? { repeatMonths: n } : {}) })
     }
+    if (its.length > 0 && !iDate) return setError('Indica la fecha en que se cobró la inicial.')
     setBusy(true)
     try {
-      onCreate(await addClient({ name, avatar, initialDate: todayISO(), items: its, charges: chs }))
+      onCreate(await addClient({ name, avatar, initialDate: iDate, items: its, charges: chs }))
     } catch (err) {
       setBusy(false)
       setError(err instanceof Error ? err.message : 'No se pudo guardar el cliente.')
@@ -89,6 +91,10 @@ export default function NewClient({ onClose, onCreate }: { onClose: () => void; 
 
           <fieldset>
             <legend>Inicial cobrada (ítems)</legend>
+            <label className="field inline">
+              <span>Fecha</span>
+              <input type="date" value={iDate} onChange={(e) => setIDate(e.target.value)} />
+            </label>
             {items.map((r) => (
               <div className="line" key={r.key}>
                 <input aria-label="Concepto del ítem" value={r.a} onChange={(e) => set(items, setItems, r.key, { a: e.target.value })} placeholder="Ítem (ej. Diseño web)" />

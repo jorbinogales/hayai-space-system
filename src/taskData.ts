@@ -6,6 +6,8 @@ export interface Task {
   projectId: string
   title: string
   done: boolean
+  /** fecha agendada (YYYY-MM-DD), p.ej. la visita al cliente */
+  due?: string | null
   /** astronauta que la creo (nombre) */
   owner: string
 }
@@ -15,8 +17,8 @@ export const useTasks = tasks.use
 export const loadTasks = async () => tasks.set(await api.get<Task[]>('/tasks'))
 export const resetTasks = () => tasks.set([])
 
-export async function addTask(projectId: string, title: string): Promise<Task> {
-  const t = await api.post<Task>('/tasks', { projectId, title })
+export async function addTask(projectId: string, title: string, due?: string): Promise<Task> {
+  const t = await api.post<Task>('/tasks', { projectId, title, ...(due ? { due } : {}) })
   tasks.update((cur) => [...cur, t])
   return t
 }

@@ -4,7 +4,7 @@ import { pool } from '../db.ts'
 import { HttpError, id, isoDate, money, parse, text } from '../util.ts'
 
 const SELECT = `SELECT e.id, e.date, e.concept, e.amount, e.category, e.scope,
-    COALESCE(c.name, p.name) AS ref, COALESCE(e.client_id, e.project_id) AS "refId", e.status, u.name AS owner
+    COALESCE(c.name, p.name) AS ref, COALESCE(e.client_id, e.project_id) AS "refId", u.name AS owner
   FROM expenses e
   LEFT JOIN clients c ON c.id = e.client_id
   LEFT JOIN projects p ON p.id = e.project_id
@@ -18,7 +18,6 @@ const newExpense = z
     category: z.enum(['Herramientas', 'Infraestructura', 'Operación', 'Marketing', 'Equipos', 'Otros'], 'Categoría inválida'),
     scope: z.enum(['general', 'cliente', 'proyecto'], 'Ámbito inválido'),
     refId: id.nullish(),
-    status: z.enum(['pagado', 'pendiente'], 'Estado inválido'),
   })
   .refine((b) => b.scope === 'general' || b.refId, { path: ['refId'], message: 'Selecciona el cliente o proyecto del gasto' })
 
@@ -40,9 +39,9 @@ expensesRouter.post('/', async (req, res) => {
     throw new HttpError(404, 'Proyecto no encontrado')
 
   const { rows } = await pool.query(
-    `INSERT INTO expenses (date, concept, amount, category, scope, client_id, project_id, status, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-    [b.date, b.concept, b.amount, b.category, b.scope, clientId, projectId, b.status, req.user!.id],
+    `INSERT INTO expenses (date, concept, amount, category, scope, client_id, project_id, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [b.date, b.concept, b.amount, b.category, b.scope, clientId, projectId, req.user!.id],
   )
   res.status(201).json((await pool.query(`${SELECT} WHERE e.id = $1`, [rows[0].id])).rows[0])
 })

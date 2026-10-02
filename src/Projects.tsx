@@ -15,15 +15,16 @@ export default function Projects({ onBack }: { onBack: () => void }) {
   const clients = useClients()
   const pc = projectCounts(projects)
   const [form, setForm] = useState(false)
+  const [editing, setEditing] = useState<string | null>(null)
   const [exiting, setExiting] = useState(false)
   const today = todayISO()
   const scroller = useRef<HTMLDivElement>(null)
   useDragScroll(scroller, 'y') // la lista se desplaza con la rueda o manteniendo pulsado y arrastrando
-  useDive(form) // al abrir "Nuevo proyecto": ráfaga de velocidad luz y entorno oculto
+  useDive(form || editing !== null) // al abrir "Nuevo proyecto": ráfaga de velocidad luz y entorno oculto
   useEffect(() => {
-    setDeep(form)
+    setDeep(form || editing !== null)
     return () => setDeep(false)
-  }, [form, setDeep])
+  }, [form, editing, setDeep])
   useEffect(() => {
     world.screenRate = null // gira a la velocidad propia del planeta
   }, [world])
@@ -34,7 +35,7 @@ export default function Projects({ onBack }: { onBack: () => void }) {
   }
 
   return (
-    <main className={`screen layer projects arriving${form ? ' deep' : ''}${exiting ? ' exiting' : ''}`}>
+    <main className={`screen layer projects arriving${form || editing ? ' deep' : ''}${exiting ? ' exiting' : ''}`}>
       <div className="overlay">
         <div className="clients-left">
           <button className="back" onClick={back}>
@@ -78,7 +79,12 @@ export default function Projects({ onBack }: { onBack: () => void }) {
                       <span className="p-ico" aria-hidden="true">
                         <Icon name={p.icon} size={22} />
                       </span>
-                      <span className="p-state">{STATUS_LABEL[p.status]}</span>
+                      <span className="p-right">
+                        <span className="p-state">{STATUS_LABEL[p.status]}</span>
+                        <button className="p-edit" aria-label={`Editar ${p.name}`} title="Editar" onClick={() => setEditing(p.id)}>
+                          <Icon name="edit" size={15} />
+                        </button>
+                      </span>
                     </header>
                     <h2>{p.name}</h2>
                     <p className="p-client">{p.client}</p>
@@ -105,6 +111,9 @@ export default function Projects({ onBack }: { onBack: () => void }) {
         <ZoomControls onZoom={(f) => world.zoomBy(f)} />
       </div>
 
+      {editing && projects.find((p) => p.id === editing) && (
+        <NewProject project={projects.find((p) => p.id === editing)} onClose={() => setEditing(null)} onCreate={() => setEditing(null)} />
+      )}
       {form && (
         <NewProject
           onClose={() => setForm(false)}

@@ -29,6 +29,7 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
 export const api = {
   get: <T>(url: string) => call<T>('GET', url),
   post: <T>(url: string, body?: unknown) => call<T>('POST', url, body ?? {}),
+  put: <T>(url: string, body: unknown) => call<T>('PUT', url, body),
   patch: <T>(url: string, body: unknown) => call<T>('PATCH', url, body),
-  del: (url: string) => call<null>('DELETE', url),
+  del: <T = null>(url: string) => call<T>('DELETE', url),
 }

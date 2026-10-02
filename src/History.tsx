@@ -3,9 +3,27 @@ import { useDragScroll } from './drag'
 import { Icon } from './ui'
 import { Blobvatar } from './blob'
 import { avatarOf, fmtDate, money, moveLabel, stats, todayISO, type Client } from './store'
+import { STATUS_LABEL, avatarFor, type Project } from './projectData'
+import type { Task } from './taskData'
 
 /** Cajon lateral con el historico de movimientos del cliente (inicial desglosada + cobros y pagos por fecha). */
-export default function History({ client, onClose }: { client: Client | null; onClose: () => void }) {
+export default function History({
+  client,
+  onClose,
+  onEdit,
+  onConvert,
+  project,
+  visit,
+}: {
+  client: Client | null
+  onClose: () => void
+  onEdit?: (id: string) => void
+  /** posible cliente: pasa a ser cliente */
+  onConvert?: (id: string) => void
+  /** posible proyecto del prospecto y su tarea de visita */
+  project?: Project | null
+  visit?: Task | null
+}) {
   // se conserva el ultimo cliente para que el cajon se cierre con animacion sin vaciarse
   const last = useRef<Client | null>(null)
   const scroll = useRef<HTMLDivElement>(null)
@@ -26,14 +44,54 @@ export default function History({ client, onClose }: { client: Client | null; on
               <Blobvatar seed={avatarOf(c)} size={44} />
             </span>
             <div>
-              <p className="eyebrow">Historial de movimientos</p>
+              <p className="eyebrow">{c.prospect ? 'Posible cliente' : 'Historial de movimientos'}</p>
               <h2>{c.name}</h2>
             </div>
+            {onEdit && (
+              <button className="x" onClick={() => onEdit(c.id)} aria-label={`Editar ${c.name}`} title="Editar">
+                <Icon name="edit" size={17} />
+              </button>
+            )}
             <button className="x" onClick={onClose} aria-label="Cerrar historial">
               <Icon name="close" size={18} />
             </button>
           </header>
 
+          {c.prospect && (
+            <div className="prospect-box">
+              <section>
+                <h3>Posible proyecto</h3>
+                {project ? (
+                  <p className="pb-line">
+                    <b>{project.name}</b>
+                    <small>
+                      {STATUS_LABEL[project.status]} · responsable <Blobvatar seed={avatarFor(project.owner)} size={20} /> {project.owner}
+                    </small>
+                  </p>
+                ) : (
+                  <p className="none">Sin proyecto asociado.</p>
+                )}
+              </section>
+              <section>
+                <h3>Visita</h3>
+                {visit ? (
+                  <p className="pb-line">
+                    <b>{visit.title}</b>
+                    <small>{visit.due ? `Agendada para el ${fmtDate(visit.due, true)}` : 'Sin fecha agendada'}</small>
+                  </p>
+                ) : (
+                  <p className="none">Sin visita agendada.</p>
+                )}
+              </section>
+              {onConvert && (
+                <button className="primary" onClick={() => onConvert(c.id)}>
+                  Convertir en cliente
+                </button>
+              )}
+            </div>
+          )}
+
+          {(!c.prospect || c.movements.length > 0) && (
           <dl className="totals">
             <div>
               <dt>Cobrado</dt>
@@ -44,6 +102,7 @@ export default function History({ client, onClose }: { client: Client | null; on
               <dd>{money(st.pendiente)}</dd>
             </div>
           </dl>
+          )}
 
           <div className="h-scroll" ref={scroll}>
             {c.items.length > 0 && (
@@ -64,6 +123,7 @@ export default function History({ client, onClose }: { client: Client | null; on
               </section>
             )}
 
+            {(!c.prospect || c.movements.length > 0) && (
             <section>
               <h3>Movimientos</h3>
               {list.length === 0 ? (
@@ -89,6 +149,7 @@ export default function History({ client, onClose }: { client: Client | null; on
                 </ol>
               )}
             </section>
+            )}
           </div>
         </>
       )}

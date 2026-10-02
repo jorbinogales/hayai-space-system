@@ -10,7 +10,8 @@ export interface CalEvent {
   date: string
   title: string
   sub?: string
-  amount: number
+  /** sin monto (p.ej. una visita agendada) */
+  amount?: number
   /** ok = cobrado/pagado, due = pendiente, late = vencido */
   tone: 'ok' | 'due' | 'late'
   avatar?: string
@@ -42,9 +43,9 @@ export default function CalendarView({ events, noun = 'pagos' }: { events: CalEv
 
   const monthTotal = useMemo(() => {
     const pre = `${cur.y}-${pad(cur.m + 1)}`
-    return events.filter((e) => e.date.startsWith(pre)).reduce((s, e) => s + e.amount, 0)
+    return events.filter((e) => e.date.startsWith(pre)).reduce((s, e) => s + (e.amount ?? 0), 0)
   }, [events, cur])
-  const yearTotal = useMemo(() => events.filter((e) => e.date.startsWith(String(cur.y))).reduce((s, e) => s + e.amount, 0), [events, cur.y])
+  const yearTotal = useMemo(() => events.filter((e) => e.date.startsWith(String(cur.y))).reduce((s, e) => s + (e.amount ?? 0), 0), [events, cur.y])
 
   const step = (n: number) => {
     setDir(n)
@@ -129,7 +130,7 @@ export default function CalendarView({ events, noun = 'pagos' }: { events: CalEv
                     {list.slice(0, 2).map((e) => (
                       <span key={e.id} className={`chip t-${e.tone}`}>
                         <span className="ct">{e.title}</span>
-                        <em>{money(e.amount)}</em>
+                        {e.amount != null && <em>{money(e.amount)}</em>}
                       </span>
                     ))}
                     {list.length > 2 && <span className="more">+{list.length - 2} más</span>}
@@ -142,7 +143,7 @@ export default function CalendarView({ events, noun = 'pagos' }: { events: CalEv
           <div key={`y${cur.y}`} className={`cal-year ${dir > 0 ? 'from-r' : 'from-l'}`}>
             {MONTHS.map((name, m) => {
               const pre = `${cur.y}-${pad(m + 1)}`
-              const total = events.filter((e) => e.date.startsWith(pre)).reduce((s, e) => s + e.amount, 0)
+              const total = events.filter((e) => e.date.startsWith(pre)).reduce((s, e) => s + (e.amount ?? 0), 0)
               return (
                 <section key={name} className={`mini${m === cur.m ? ' is-cur' : ''}`}>
                   <button
@@ -205,7 +206,7 @@ export default function CalendarView({ events, noun = 'pagos' }: { events: CalEv
                     <b>{e.title}</b>
                     {e.sub && <small>{e.sub}</small>}
                   </span>
-                  <strong>{money(e.amount)}</strong>
+                  {e.amount != null && <strong>{money(e.amount)}</strong>}
                 </li>
               ))}
             </ul>

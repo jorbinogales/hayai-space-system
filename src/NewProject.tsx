@@ -2,27 +2,28 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './ui'
 import { Blobvatar } from './blob'
-import { todayISO, useClients } from './store'
+import { useClients } from './store'
 import { useSession } from './session'
-import { addProject, astronautNames, avatarFor, PROJECT_ICONS, STATUS_LABEL, type Project, type ProjectStatus } from './projectData'
+import { addProject, updateProject, astronautNames, avatarFor, PROJECT_ICONS, STATUS_LABEL, type Project, type ProjectStatus } from './projectData'
 
 const STATUSES: ProjectStatus[] = ['planeacion', 'activo', 'entrega']
 const ICON_LABEL: Record<string, string> = { globe: 'Web', phone: 'App móvil', chart: 'Panel / datos', cart: 'Tienda', palette: 'Diseño', box: 'Sistema', code: 'Desarrollo' }
 
 /** Alta de proyecto: nombre, icono representativo, cliente, astronauta responsable y estado. Mismo estilo que "Nuevo cliente". */
-export default function NewProject({ onClose, onCreate }: { onClose: () => void; onCreate: (p: Project) => void }) {
+export default function NewProject({ onClose, onCreate, project }: { onClose: () => void; onCreate: (p: Project) => void; /** si viene, el formulario edita ese proyecto */ project?: Project }) {
   const clients = useClients()
   const session = useSession()
   const owners = astronautNames()
-  const [name, setName] = useState('')
-  const [icon, setIcon] = useState(PROJECT_ICONS[0])
-  const [client, setClient] = useState('')
+  const [name, setName] = useState(project?.name ?? '')
+  const [icon, setIcon] = useState(project?.icon ?? PROJECT_ICONS[0])
+  const [client, setClient] = useState(project?.clientId ?? '')
   const [owner, setOwner] = useState(() => {
+    if (project) return project.owner
     const me = session?.name // por defecto, el astronauta que tiene la sesión
     return owners.find((o) => o.toLowerCase() === me?.toLowerCase()) ?? owners[0]
   })
-  const [status, setStatus] = useState<ProjectStatus>('planeacion')
-  const [due, setDue] = useState('')
+  const [status, setStatus] = useState<ProjectStatus>(project?.status ?? 'planeacion')
+  const [due, setDue] = useState(project?.due ?? '')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const first = useRef<HTMLInputElement>(null)
@@ -40,10 +41,10 @@ export default function NewProject({ onClose, onCreate }: { onClose: () => void;
     e.preventDefault()
     if (!name.trim()) return setError('Escribe el nombre del proyecto.')
     if (!client) return setError('Elige el cliente del proyecto.')
-    if (!due) return setError('Indica la fecha de entrega.')
+    if (!due && !project) return setError('Indica la fecha de entrega.') // al editar (p.ej. un posible proyecto) puede quedar sin fecha
     setBusy(true)
     try {
-      onCreate(await addProject({ name, icon, clientId: client, owner, status, due }))
+      onCreate(project ? await updateProject(project.id, { name: name.trim(), icon, clientId: client, owner, status, due: due || null }) : await addProject({ name, icon, clientId: client, owner, status, due }))
     } catch (err) {
       setBusy(false)
       setError(err instanceof Error ? err.message : 'No se pudo guardar el proyecto.')
@@ -55,7 +56,7 @@ export default function NewProject({ onClose, onCreate }: { onClose: () => void;
     <div className="modal" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <form className="sheet" role="dialog" aria-modal="true" aria-labelledby="np-title" onSubmit={submit} noValidate>
         <header>
-          <h2 id="np-title">Nuevo proyecto</h2>
+          <h2 id="np-title">{project ? 'Editar proyecto' : 'Nuevo proyecto'}</h2>
           <button type="button" className="x" onClick={onClose} aria-label="Cerrar">
             <Icon name="close" size={18} />
           </button>
@@ -104,7 +105,7 @@ export default function NewProject({ onClose, onCreate }: { onClose: () => void;
 
           <label className="field inline">
             <span>Fecha de entrega</span>
-            <input type="date" value={due} min={todayISO()} onChange={(e) => setDue(e.target.value)} />
+            <input type="date" value={due} onChange={(e) => setDue(e.target.value)} />
           </label>
 
           <div className="field">
@@ -127,7 +128,7 @@ export default function NewProject({ onClose, onCreate }: { onClose: () => void;
             Cancelar
           </button>
           <button type="submit" className="primary" disabled={busy}>
-            Guardar proyecto
+            {project ? 'Guardar cambios' : 'Guardar proyecto'}
           </button>
         </footer>
       </form>

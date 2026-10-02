@@ -5,8 +5,12 @@ import type { World } from './world'
 import { useCosmos } from './Cosmos'
 import CalendarModal from './CalendarModal'
 import { useDragScroll } from './drag'
-import { avatarOf, stats, summary, upcoming, useClients, money, fmtDate, todayISO, type Client } from './store'
+import { avatarOf, convertClient, stats, summary, upcoming, useClients, money, fmtDate, todayISO, type Client } from './store'
 import NewClient from './NewClient'
+import NewProspect from './NewProspect'
+import EditClient from './EditClient'
+import { useProjects } from './projectData'
+import { useTasks } from './taskData'
 import History from './History'
 import { Blobvatar } from './blob'
 import { Icon, ZoomControls } from './ui'
@@ -172,8 +176,12 @@ export default function Clients({ onBack }: { onBack: () => void }) {
   const [open, setOpen] = useState<string | null>(null) // cliente cuyo historial esta desplegado
   const [form, setForm] = useState(false)
   const [cal, setCal] = useState(false)
+  const [prosp, setProsp] = useState(false) // alta de posible cliente
+  const [edit, setEdit] = useState<string | null>(null) // cliente que se esta editando
+  const projects = useProjects()
+  const tasks = useTasks()
   const [exiting, setExiting] = useState(false)
-  const deep = form || cal
+  const deep = form || cal || prosp || edit !== null
   const back = () => {
     setExiting(true) // la interfaz se desvanece y queda solo el planeta
     window.setTimeout(onBack, reduced() ? 50 : 300)
@@ -290,7 +298,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
           <button
             key={cl.id}
             ref={(el) => void (br.current.nodes[i] = el)}
-            className={`node${shown === cl.id ? ' is-on' : ''}`}
+            className={`node${shown === cl.id ? ' is-on' : ''}${cl.prospect ? ' prospect' : ''}`}
             aria-label={`${cl.name}, ${money(stats(cl).cobrado)} recaudado. Ver historial`}
             aria-pressed={open === cl.id}
             onClick={() => pick(cl.id)}
@@ -300,7 +308,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
             onBlur={hoverOff}
           >
             <span className="node-dot" />
-            <span className="node-label">{cl.name}</span>
+            <span className="node-label">{cl.name}{cl.prospect ? ' · posible' : ''}</span>
           </button>
         ))}
 
@@ -313,15 +321,27 @@ export default function Clients({ onBack }: { onBack: () => void }) {
           <div ref={(el) => void (br.current.sum = el)}>
             <p className="summary">
               {sm.activos} activos
+              {sm.posibles > 0 && (
+                <>
+                  <br />
+                  {sm.posibles} {sm.posibles === 1 ? 'posible' : 'posibles'}
+                </>
+              )}
               <br />
               {money(sm.recaudado)} recaudado
               <br />
               {sm.porCobrar} por cobrar
             </p>
-            <button className="new" onClick={() => setForm(true)}>
-              <Icon name="plus" size={16} />
-              Nuevo cliente
-            </button>
+            <div className="new-row-btns">
+              <button className="new" onClick={() => setForm(true)}>
+                <Icon name="plus" size={16} />
+                Nuevo cliente
+              </button>
+              <button className="new alt" onClick={() => setProsp(true)}>
+                <Icon name="plus" size={16} />
+                Posible cliente
+              </button>
+            </div>
           </div>
         </div>
 
@@ -333,18 +353,45 @@ export default function Clients({ onBack }: { onBack: () => void }) {
               <Blobvatar seed={avatarOf(c)} size={34} />
               <h2>{c.name}</h2>
             </div>
-            <p className="lbl">Total recaudado</p>
-            <p className="amt">{money(st.cobrado)}</p>
+            {c.prospect ? (
+              <>
+                <p className="lbl">Posible cliente</p>
+                <p className="amt small">{projects.find((p) => p.clientId === c.id)?.name ?? 'Sin proyecto'}</p>
+              </>
+            ) : (
+              <>
+                <p className="lbl">Total recaudado</p>
+                <p className="amt">{money(st.cobrado)}</p>
+              </>
+            )}
             <div className="cpanel-foot">
               <ul>
-                <li>
-                  {c.items.length} {c.items.length === 1 ? 'ítem' : 'ítems'}
-                </li>
-                <li>
-                  {st.pagos} {st.pagos === 1 ? 'pago completado' : 'pagos completados'}
-                </li>
-                <li>{st.porCobrar} por cobrar</li>
+                {c.prospect ? (
+                  (() => {
+                    const pr = projects.find((p) => p.clientId === c.id)
+                    const v = tasks.find((t) => t.projectId === pr?.id && !t.done && t.due)
+                    return (
+                      <>
+                        <li>Por visitar</li>
+                        <li>{v?.due ? `Visita el ${fmtDate(v.due)}` : 'Visita sin fecha'}</li>
+                      </>
+                    )
+                  })()
+                ) : (
+                  <>
+                    <li>
+                      {c.items.length} {c.items.length === 1 ? 'ítem' : 'ítems'}
+                    </li>
+                    <li>
+                      {st.pagos} {st.pagos === 1 ? 'pago completado' : 'pagos completados'}
+                    </li>
+                    <li>{st.porCobrar} por cobrar</li>
+                  </>
+                )}
               </ul>
+              <button className="go edit" aria-label={`Editar ${c.name}`} title="Editar" onClick={() => setEdit(c.id)}>
+                <Icon name="edit" size={16} />
+              </button>
               <button
                 className="go"
                 aria-label={`Ver historial de ${c.name}`}
@@ -416,6 +463,13 @@ export default function Clients({ onBack }: { onBack: () => void }) {
 
         <History
           client={clients.find((x) => x.id === open) ?? null}
+          onEdit={setEdit}
+          onConvert={(id) => void convertClient(id)}
+          project={projects.find((p) => p.clientId === open) ?? null}
+          visit={(() => {
+            const pr = projects.find((p) => p.clientId === open)
+            return tasks.find((t) => t.projectId === pr?.id && !t.done && t.due) ?? tasks.find((t) => t.projectId === pr?.id) ?? null
+          })()}
           onClose={() => {
             setOpen(null)
             setSelected(null)
@@ -434,6 +488,18 @@ export default function Clients({ onBack }: { onBack: () => void }) {
           }}
         />
       )}
+      {prosp && (
+        <NewProspect
+          onClose={() => setProsp(false)}
+          onCreate={(n) => {
+            setProsp(false)
+            setHover(null)
+            setSelected(n.id)
+            setOpen(n.id)
+          }}
+        />
+      )}
+      {edit && <EditClient clientId={edit} onClose={() => setEdit(null)} />}
       {cal && <CalendarModal onClose={() => setCal(false)} />}
     </main>
   )

@@ -1,15 +1,17 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { pool } from '../db.ts'
-import { HttpError, id, isoDate, parse, text } from '../util.ts'
+import { HttpError, id, idParam, isoDate, parse, text } from '../util.ts'
 
-const SELECT = `SELECT p.id, p.name, p.icon, u.name AS owner, c.name AS client, p.client_id AS "clientId",
+export const PROJECT_SELECT = `SELECT p.id, p.name, p.icon, u.name AS owner, c.name AS client, p.client_id AS "clientId",
     p.status, p.due_date AS due
   FROM projects p JOIN users u ON u.id = p.owner_id JOIN clients c ON c.id = p.client_id`
 
+export const projectIcon = z.enum(['globe', 'phone', 'chart', 'cart', 'palette', 'box', 'code'], 'Icono inválido')
+
 const newProject = z.object({
   name: text(80),
-  icon: z.enum(['globe', 'phone', 'chart', 'cart', 'palette', 'box', 'code'], 'Icono inválido'),
+  icon: projectIcon,
   clientId: id,
   owner: text(80),
   status: z.enum(['activo', 'entrega', 'planeacion'], 'Estado inválido').default('planeacion'),
@@ -19,7 +21,7 @@ const newProject = z.object({
 export const projectsRouter = Router()
 
 projectsRouter.get('/', async (_req, res) => {
-  const { rows } = await pool.query(`${SELECT} ORDER BY p.created_at, p.id`)
+  const { rows } = await pool.query(`${PROJECT_SELECT} ORDER BY p.created_at, p.id`)
   res.json(rows)
 })
 
@@ -35,5 +37,39 @@ projectsRouter.post('/', async (req, res) => {
      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
     [b.name, b.icon, b.clientId, owner.id, b.status, b.due ?? null, req.user!.id],
   )
-  res.status(201).json((await pool.query(`${SELECT} WHERE p.id = $1`, [rows[0].id])).rows[0])
+  res.status(201).json((await pool.query(`${PROJECT_SELECT} WHERE p.id = $1`, [rows[0].id])).rows[0])
+})
+
+const editProject = z
+  .object({
+    name: text(80).optional(),
+    icon: projectIcon.optional(),
+    clientId: id.optional(),
+    owner: text(80).optional(),
+    status: z.enum(['activo', 'entrega', 'planeacion'], 'Estado inválido').optional(),
+    due: isoDate.nullable().optional(),
+  })
+  .refine((v) => Object.values(v).some((x) => x !== undefined), 'Envía al menos un campo a modificar')
+
+// Solo cambia lo enviado; due: null borra la fecha.
+projectsRouter.patch('/:id', async (req, res) => {
+  const projectId = idParam(req.params.id)
+  const b = parse(editProject, req.body)
+  let ownerId: string | null = null
+  if (b.owner !== undefined) {
+    ownerId = (await pool.query('SELECT id FROM users WHERE lower(name) = lower($1) AND active', [b.owner])).rows[0]?.id
+    if (!ownerId) throw new HttpError(404, 'Responsable no encontrado')
+  }
+  if (b.clientId && !(await pool.query('SELECT 1 FROM clients WHERE id = $1', [b.clientId])).rowCount)
+    throw new HttpError(404, 'Cliente no encontrado')
+
+  const { rowCount } = await pool.query(
+    `UPDATE projects SET name = COALESCE($2, name), icon = COALESCE($3, icon), client_id = COALESCE($4::uuid, client_id),
+       owner_id = COALESCE($5::uuid, owner_id), status = COALESCE($6, status),
+       due_date = CASE WHEN $7::boolean THEN $8::date ELSE due_date END
+     WHERE id = $1`,
+    [projectId, b.name ?? null, b.icon ?? null, b.clientId ?? null, ownerId, b.status ?? null, b.due !== undefined, b.due ?? null],
+  )
+  if (!rowCount) throw new HttpError(404, 'Proyecto no encontrado')
+  res.json((await pool.query(`${PROJECT_SELECT} WHERE p.id = $1`, [projectId])).rows[0])
 })

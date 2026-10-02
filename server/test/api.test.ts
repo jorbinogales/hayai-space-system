@@ -292,6 +292,7 @@ describe('datos', () => {
       id: '<uuid>',
       name: 'Acme SA',
       avatar: 'orion',
+      prospect: false,
       items: [
         { id: '<uuid>', concept: 'Landing', amount: 1500 },
         { id: '<uuid>', concept: 'Hosting', amount: 250.5 },
@@ -311,7 +312,7 @@ describe('datos', () => {
   it('POST /clients sin items => sin movimiento inicial; validaciones => 400 legible', async () => {
     const r = await call('/clients', { cookie, body: { name: 'Sin items', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] } })
     assert.equal(r.status, 201)
-    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Sin items', avatar: 'x', items: [], movements: [] })
+    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Sin items', avatar: 'x', prospect: false, items: [], movements: [] })
     const bad = [
       { name: '', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] },
       { name: 'x'.repeat(81), avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] },
@@ -421,21 +422,21 @@ describe('datos', () => {
   })
 
   it('POST /expenses: general/cliente/proyecto con ref y refId; cliente sin refId => 400', async () => {
-    const base = { date: '2026-03-15', concept: 'Licencia', amount: 49.99, category: 'Herramientas', status: 'pagado' }
+    const base = { date: '2026-03-15', concept: 'Licencia', amount: 49.99, category: 'Herramientas' }
     const g = await call('/expenses', { cookie, body: { ...base, scope: 'general' } })
     assert.equal(g.status, 201, JSON.stringify(g.body))
     assert.deepEqual(shape(g.body), {
       id: '<uuid>', date: '2026-03-15', concept: 'Licencia', amount: 49.99, category: 'Herramientas',
-      scope: 'general', ref: null, refId: null, status: 'pagado', owner: 'Elis',
+      scope: 'general', ref: null, refId: null, owner: 'Elis',
     })
-    const c = await call('/expenses', { cookie, body: { ...base, scope: 'cliente', refId: clientId, status: 'pendiente' } })
+    const c = await call('/expenses', { cookie, body: { ...base, scope: 'cliente', refId: clientId } })
     assert.equal(c.status, 201, JSON.stringify(c.body))
-    assert.deepEqual(c.body, { ...c.body, scope: 'cliente', ref: 'Acme SA', refId: clientId, status: 'pendiente', owner: 'Elis' })
+    assert.deepEqual(c.body, { ...c.body, scope: 'cliente', ref: 'Acme SA', refId: clientId, owner: 'Elis' })
     const p = await call('/expenses', { cookie, body: { ...base, scope: 'proyecto', refId: projectId } })
     assert.equal(p.status, 201, JSON.stringify(p.body))
     assert.deepEqual(shape(p.body), {
       id: '<uuid>', date: '2026-03-15', concept: 'Licencia', amount: 49.99, category: 'Herramientas',
-      scope: 'proyecto', ref: 'Sitio Acme', refId: '<uuid>', status: 'pagado', owner: 'Elis',
+      scope: 'proyecto', ref: 'Sitio Acme', refId: '<uuid>', owner: 'Elis',
     })
     assert.equal(p.body.refId, projectId)
 
@@ -446,18 +447,22 @@ describe('datos', () => {
     assert.equal((await call('/expenses', { cookie, body: { ...base, scope: 'cliente', refId: '11111111-1111-4111-8111-111111111111' } })).status, 404)
     assert.equal((await call('/expenses', { cookie, body: { ...base, scope: 'general', category: 'Café' } })).status, 400)
     assert.equal((await call('/expenses', { cookie, body: { ...base, scope: 'general', amount: 0 } })).status, 400)
-    assert.equal((await call('/expenses', { cookie, body: { ...base, scope: 'general', status: 'cobrado' } })).status, 400)
+    // status ya no existe: se ignora, no es error ni aparece en la respuesta ni en la lista
+    const legacy = await call('/expenses', { cookie, body: { ...base, scope: 'general', status: 'pagado' } })
+    assert.equal(legacy.status, 201)
+    assert.ok(!('status' in legacy.body))
+    await admin.query('DELETE FROM expenses WHERE id = $1', [legacy.body.id])
 
     const list = await call('/expenses', { cookie })
     assert.equal(list.body.length, 3)
-    for (const e of list.body) assert.deepEqual(Object.keys(e), ['id', 'date', 'concept', 'amount', 'category', 'scope', 'ref', 'refId', 'status', 'owner'])
+    for (const e of list.body) assert.deepEqual(Object.keys(e), ['id', 'date', 'concept', 'amount', 'category', 'scope', 'ref', 'refId', 'owner'])
     assert.equal(typeof list.body[0].amount, 'number')
   })
 
   it('tareas: crear, listar, marcar/desmarcar (done_at coherente), borrar, 404', async () => {
     const t = await call('/tasks', { cookie, body: { projectId, title: 'Diseñar home' } })
     assert.equal(t.status, 201, JSON.stringify(t.body))
-    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Diseñar home', done: false, owner: 'Elis' })
+    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Diseñar home', done: false, due: null, owner: 'Elis' })
     assert.equal(t.body.projectId, projectId)
     assert.deepEqual((await call('/tasks', { cookie })).body, [t.body])
 
@@ -479,6 +484,304 @@ describe('datos', () => {
     assert.equal(del.status, 204)
     assert.equal((await call(`/tasks/${t.body.id}`, { cookie, method: 'DELETE' })).status, 404)
     assert.deepEqual((await call('/tasks', { cookie })).body, [])
+  })
+
+  const NOPE = '11111111-1111-4111-8111-111111111111'
+
+  it('editar cliente y cuotas: flujo completo (fechas pasadas, inicial, cuota suelta, serie, cobrar, editar, borrar)', async () => {
+    const keys = ['avatar', 'id', 'items', 'movements', 'name', 'prospect']
+    const created = await call('/clients', {
+      cookie,
+      body: {
+        name: 'Flujo', avatar: 'x', initialDate: '2020-01-15',
+        items: [{ concept: 'A', amount: 100 }],
+        charges: [{ date: '2020-02-01', amount: 50, concept: 'Pasada' }],
+      },
+    })
+    assert.equal(created.status, 201)
+    const id = created.body.id as string
+
+    // PATCH /clients/:id
+    const ren = await call(`/clients/${id}`, { cookie, method: 'PATCH', body: { name: ' Flujo 2 ' } })
+    assert.equal(ren.status, 200, JSON.stringify(ren.body))
+    assert.deepEqual(Object.keys(ren.body).sort(), keys)
+    assert.equal(ren.body.name, 'Flujo 2')
+    assert.equal(ren.body.avatar, 'x')
+    assert.equal((await call(`/clients/${id}`, { cookie, method: 'PATCH', body: { avatar: 'y' } })).body.avatar, 'y')
+
+    // PUT /clients/:id/initial: reemplaza items, monto y fecha de la inicial (pasada)
+    const init = await call(`/clients/${id}/initial`, {
+      cookie, method: 'PUT',
+      body: { date: '2019-12-01', items: [{ concept: 'Uno', amount: 10.5 }, { concept: 'Dos', amount: 4.25 }, { concept: 'Tres', amount: 1 }] },
+    })
+    assert.equal(init.status, 200, JSON.stringify(init.body))
+    assert.deepEqual(init.body.items.map((i: any) => [i.concept, i.amount]), [['Uno', 10.5], ['Dos', 4.25], ['Tres', 1]]) // orden enviado
+    const ini = init.body.movements.find((m: any) => m.kind === 'inicial')
+    assert.deepEqual(shape(ini), { id: '<uuid>', date: '2019-12-01', concept: 'Inicial', amount: 15.75, kind: 'inicial', status: 'cobrado', series: null })
+    assert.equal(init.body.movements.length, 2) // inicial + la cuota pasada
+    // se actualiza la misma fila (no se recrea)
+    const again = await call(`/clients/${id}/initial`, { cookie, method: 'PUT', body: { date: '2019-12-02', items: [{ concept: 'Solo', amount: 2 }] } })
+    const ini2 = again.body.movements.find((m: any) => m.kind === 'inicial')
+    assert.deepEqual([ini2.id, ini2.date, ini2.amount], [ini.id, '2019-12-02', 2])
+    assert.equal(again.body.items.length, 1)
+
+    // POST /clients/:id/payments: suelta cobrada con fecha pasada; por defecto pendiente
+    const one = await call(`/clients/${id}/payments`, { cookie, body: { date: '2018-06-30', amount: 75, concept: 'Extra', status: 'cobrado' } })
+    assert.equal(one.status, 201, JSON.stringify(one.body))
+    assert.deepEqual(shape(one.body.movements.find((m: any) => m.concept === 'Extra')), {
+      id: '<uuid>', date: '2018-06-30', concept: 'Extra', amount: 75, kind: 'pago', status: 'cobrado', series: null,
+    })
+    const def = await call(`/clients/${id}/payments`, { cookie, body: { date: '2031-01-01', amount: 5, concept: 'Futura' } })
+    assert.equal(def.status, 201)
+    assert.equal(def.body.movements.find((m: any) => m.concept === 'Futura').status, 'pendiente')
+
+    // serie: 3 cuotas pendientes, mismo día recortado a fin de mes; con status cobrado => 400
+    const ser = await call(`/clients/${id}/payments`, { cookie, body: { date: '2026-01-31', amount: 20, concept: 'Mensual', repeatMonths: 3 } })
+    assert.equal(ser.status, 201, JSON.stringify(ser.body))
+    const cuotas = ser.body.movements.filter((m: any) => m.concept === 'Mensual')
+    assert.deepEqual(cuotas.map((m: any) => m.date), ['2026-01-31', '2026-02-28', '2026-03-31'])
+    assert.ok(cuotas.every((m: any) => m.status === 'pendiente' && m.series.total === 3 && m.series.id === cuotas[0].series.id))
+    assert.deepEqual(cuotas.map((m: any) => m.series.index), [1, 2, 3])
+    const bad = await call(`/clients/${id}/payments`, { cookie, body: { date: '2026-01-31', amount: 20, concept: 'M', repeatMonths: 3, status: 'cobrado' } })
+    assert.equal(bad.status, 400)
+    assert.match(bad.body.error, /recurrente/)
+    assert.equal(ser.body.movements.length, 7) // inicial, Pasada, Extra, Futura y las 3 cuotas; la 400 no dejó nada
+
+    // PATCH /payments/:id: marcar cobrada una cuota de la serie (conserva la serie), luego editar monto/fecha
+    const cuota2 = cuotas[1]
+    const paid = await call(`/payments/${cuota2.id}`, { cookie, method: 'PATCH', body: { status: 'cobrado' } })
+    assert.equal(paid.status, 200, JSON.stringify(paid.body))
+    assert.deepEqual(Object.keys(paid.body).sort(), keys)
+    assert.deepEqual(paid.body.movements.find((m: any) => m.id === cuota2.id), { ...cuota2, status: 'cobrado' })
+    const edited = await call(`/payments/${cuota2.id}`, { cookie, method: 'PATCH', body: { amount: 33.33, date: '2010-05-05', concept: 'Mensual (ajustada)' } })
+    assert.deepEqual(edited.body.movements.find((m: any) => m.id === cuota2.id), {
+      ...cuota2, status: 'cobrado', amount: 33.33, date: '2010-05-05', concept: 'Mensual (ajustada)',
+    })
+    assert.equal(edited.body.movements.length, 7)
+    // vuelve a pendiente
+    const back = await call(`/payments/${cuota2.id}`, { cookie, method: 'PATCH', body: { status: 'pendiente' } })
+    assert.equal(back.body.movements.find((m: any) => m.id === cuota2.id).status, 'pendiente')
+
+    // la inicial no se edita ni se borra por /payments
+    for (const method of ['PATCH', 'DELETE']) {
+      const r = await call(`/payments/${ini.id}`, { cookie, method, body: method === 'PATCH' ? { amount: 1 } : undefined })
+      assert.equal(r.status, 400, method)
+      assert.match(r.body.error, /inicial/)
+    }
+
+    // DELETE de una cuota de la serie: 200 con el cliente completo, la serie queda con hueco
+    const del = await call(`/payments/${cuota2.id}`, { cookie, method: 'DELETE' })
+    assert.equal(del.status, 200, JSON.stringify(del.body))
+    assert.deepEqual(Object.keys(del.body).sort(), keys)
+    assert.equal(del.body.movements.length, 6)
+    assert.deepEqual(del.body.movements.filter((m: any) => m.series).map((m: any) => m.series.index), [1, 3])
+    assert.equal((await call(`/payments/${cuota2.id}`, { cookie, method: 'DELETE' })).status, 404)
+    assert.deepEqual((await call('/clients', { cookie })).body.find((c: any) => c.id === id), del.body) // GET igual
+
+    // items vacíos (o suma 0) borran la inicial y los items
+    const empty = await call(`/clients/${id}/initial`, { cookie, method: 'PUT', body: { date: '2020-01-01', items: [] } })
+    assert.equal(empty.status, 200)
+    assert.deepEqual(empty.body.items, [])
+    assert.ok(empty.body.movements.every((m: any) => m.kind === 'pago'))
+    assert.equal(empty.body.movements.length, 5)
+    // y se puede volver a crear
+    const re = await call(`/clients/${id}/initial`, { cookie, method: 'PUT', body: { date: '2040-01-01', items: [{ concept: 'N', amount: 9 }] } })
+    assert.deepEqual(shape(re.body.movements.find((m: any) => m.kind === 'inicial')), {
+      id: '<uuid>', date: '2040-01-01', concept: 'Inicial', amount: 9, kind: 'inicial', status: 'cobrado', series: null,
+    })
+  })
+
+  it('editar cliente/cuotas: validaciones 400 y 404 sin dejar rastro', async () => {
+    const c = await call('/clients', { cookie, body: { name: 'Val', avatar: 'x', initialDate: '2026-01-01', items: [{ concept: 'a', amount: 10 }], charges: [{ date: '2026-02-01', amount: 5, concept: 'p' }] } })
+    const id = c.body.id as string
+    const payId = c.body.movements.find((m: any) => m.kind === 'pago').id as string
+    const snapshot = async () => (await call('/clients', { cookie })).body.find((x: any) => x.id === id)
+    const before = await snapshot()
+    const put = (body: unknown) => call(`/clients/${id}/initial`, { cookie, method: 'PUT', body })
+    const post = (body: unknown) => call(`/clients/${id}/payments`, { cookie, body })
+    const patch = (body: unknown) => call(`/payments/${payId}`, { cookie, method: 'PATCH', body })
+    const cases: [string, Promise<Res>][] = [
+      ['patch cliente vacío', call(`/clients/${id}`, { cookie, method: 'PATCH', body: {} })],
+      ['patch nombre vacío', call(`/clients/${id}`, { cookie, method: 'PATCH', body: { name: '  ' } })],
+      ['patch nombre largo', call(`/clients/${id}`, { cookie, method: 'PATCH', body: { name: 'x'.repeat(81) } })],
+      ['initial sin fecha', put({ items: [] })],
+      ['initial fecha inválida', put({ date: '2026-02-30', items: [] })],
+      ['initial sin items', put({ date: '2026-01-01' })],
+      ['initial monto 0', put({ date: '2026-01-01', items: [{ concept: 'a', amount: 0 }] })],
+      ['initial 3 decimales', put({ date: '2026-01-01', items: [{ concept: 'a', amount: 1.001 }] })],
+      ['initial > 1e9', put({ date: '2026-01-01', items: [{ concept: 'a', amount: 2_000_000_000 }] })],
+      ['initial concepto largo', put({ date: '2026-01-01', items: [{ concept: 'a'.repeat(121), amount: 1 }] })],
+      ['pago sin concepto', post({ date: '2026-01-01', amount: 1 })],
+      ['pago monto negativo', post({ date: '2026-01-01', amount: -1, concept: 'x' })],
+      ['pago estado inválido', post({ date: '2026-01-01', amount: 1, concept: 'x', status: 'pagado' })],
+      ['pago repeatMonths 1', post({ date: '2026-01-01', amount: 1, concept: 'x', repeatMonths: 1 })],
+      ['pago repeatMonths 37', post({ date: '2026-01-01', amount: 1, concept: 'x', repeatMonths: 37 })],
+      ['pago repeat + cobrado', post({ date: '2026-01-01', amount: 1, concept: 'x', repeatMonths: 2, status: 'cobrado' })],
+      ['patch pago vacío', patch({})],
+      ['patch pago monto 0', patch({ amount: 0 })],
+      ['patch pago fecha inválida', patch({ date: 'ayer' })],
+      ['patch pago estado inválido', patch({ status: 'x' })],
+      ['patch pago concepto largo', patch({ concept: 'c'.repeat(121) })],
+      ['id no uuid', call('/payments/no-uuid', { cookie, method: 'PATCH', body: { amount: 1 } })],
+    ]
+    for (const [name, p] of cases) {
+      const r = await p
+      assert.equal(r.status, 400, `${name}: ${JSON.stringify(r.body)}`)
+      assert.equal(typeof r.body.error, 'string', name)
+    }
+    assert.deepEqual(await snapshot(), before) // nada cambió
+
+    const notFound: [string, Promise<Res>][] = [
+      ['patch cliente', call(`/clients/${NOPE}`, { cookie, method: 'PATCH', body: { name: 'Z' } })],
+      ['initial', call(`/clients/${NOPE}/initial`, { cookie, method: 'PUT', body: { date: '2026-01-01', items: [] } })],
+      ['payments', call(`/clients/${NOPE}/payments`, { cookie, body: { date: '2026-01-01', amount: 1, concept: 'x' } })],
+      ['patch pago', call(`/payments/${NOPE}`, { cookie, method: 'PATCH', body: { amount: 1 } })],
+      ['delete pago', call(`/payments/${NOPE}`, { cookie, method: 'DELETE' })],
+      ['convert', call(`/clients/${NOPE}/convert`, { cookie, method: 'POST' })],
+    ]
+    for (const [name, p] of notFound) {
+      const r = await p
+      assert.equal(r.status, 404, `${name}: ${JSON.stringify(r.body)}`)
+      assert.equal(typeof r.body.error, 'string', name)
+    }
+    // sin sesión => 401 en las rutas nuevas
+    for (const [method, path] of [['PATCH', `/clients/${id}`], ['PUT', `/clients/${id}/initial`], ['POST', `/clients/${id}/payments`], ['PATCH', `/payments/${payId}`], ['DELETE', `/payments/${payId}`], ['POST', '/prospects'], ['POST', `/clients/${id}/convert`], ['PATCH', `/projects/${NOPE}`]] as const) {
+      assert.equal((await call(path, { method, body: {} })).status, 401, `${method} ${path}`)
+    }
+  })
+
+  it('posible cliente: POST /prospects crea cliente+proyecto+visita; convert => cliente; dos veces => 409', async () => {
+    const body = { name: ' Futuro SA ', avatar: 'vega', project: { name: 'Web Futuro', icon: 'globe', owner: 'leandro', due: '2020-03-01' }, visit: { date: '2020-02-10' } }
+    const r = await call('/prospects', { cookie, body })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.deepEqual(Object.keys(r.body).sort(), ['client', 'project', 'task'])
+    const { client, project, task } = r.body
+    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, items: [], movements: [] })
+    assert.deepEqual(shape(project), {
+      id: '<uuid>', name: 'Web Futuro', icon: 'globe', owner: 'Leandro', client: 'Futuro SA', clientId: '<uuid>', status: 'planeacion', due: '2020-03-01',
+    })
+    assert.equal(project.clientId, client.id)
+    assert.deepEqual(shape(task), { id: '<uuid>', projectId: '<uuid>', title: 'Visita a Futuro SA', done: false, due: '2020-02-10', owner: 'Elis' })
+    assert.equal(task.projectId, project.id)
+    const { rows } = await admin.query('SELECT created_by FROM clients WHERE id = $1', [client.id])
+    assert.equal(rows[0].created_by, (await call('/auth/me', { cookie })).body.id)
+    // aparece en los listados con la misma forma
+    assert.deepEqual((await call('/clients', { cookie })).body.find((c: any) => c.id === client.id), client)
+    assert.deepEqual((await call('/projects', { cookie })).body.find((p: any) => p.id === project.id), project)
+    assert.deepEqual((await call('/tasks', { cookie })).body.find((t: any) => t.id === task.id), task)
+
+    // título propio, due y fecha opcionales (null)
+    const r2 = await call('/prospects', { cookie, body: { name: 'Otro', avatar: 'x', project: { name: 'P', icon: 'box', owner: 'Elis', due: null }, visit: { title: 'Llamada', date: null } } })
+    assert.equal(r2.status, 201, JSON.stringify(r2.body))
+    assert.equal(r2.body.task.title, 'Llamada')
+    assert.equal(r2.body.task.due, null)
+    assert.equal(r2.body.project.due, null)
+    const r3 = await call('/prospects', { cookie, body: { name: 'Mínimo', avatar: 'x', project: { name: 'P', icon: 'box', owner: 'Elis' } } })
+    assert.equal(r3.status, 201, JSON.stringify(r3.body))
+    assert.equal(r3.body.task.title, 'Visita a Mínimo')
+
+    // convert: prospect=false, conserva su proyecto; la segunda vez => 409
+    const conv = await call(`/clients/${client.id}/convert`, { cookie, method: 'POST' })
+    assert.equal(conv.status, 200, JSON.stringify(conv.body))
+    assert.deepEqual(conv.body, { ...client, prospect: false })
+    assert.deepEqual((await call('/projects', { cookie })).body.find((p: any) => p.id === project.id), project)
+    const twice = await call(`/clients/${client.id}/convert`, { cookie, method: 'POST' })
+    assert.equal(twice.status, 409)
+    assert.equal(typeof twice.body.error, 'string')
+    // un cliente normal (no prospecto) tampoco se convierte
+    const normal = await call('/clients', { cookie, body: { name: 'Normal', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] } })
+    assert.equal(normal.body.prospect, false)
+    assert.equal((await call(`/clients/${normal.body.id}/convert`, { cookie, method: 'POST' })).status, 409)
+  })
+
+  it('POST /prospects: owner inexistente => 404 y no queda nada; validaciones => 400', async () => {
+    const count = async () => [(await call('/clients', { cookie })).body.length, (await call('/projects', { cookie })).body.length, (await call('/tasks', { cookie })).body.length]
+    const before = await count()
+    const ok = { name: 'Fantasma SA', avatar: 'x', project: { name: 'P', icon: 'box', owner: 'Elis' }, visit: { date: '2026-01-01' } }
+    const ghost = await call('/prospects', { cookie, body: { ...ok, project: { ...ok.project, owner: 'Nadie' } } })
+    assert.equal(ghost.status, 404)
+    assert.equal(typeof ghost.body.error, 'string')
+    const bad = [
+      { ...ok, name: '' },
+      { ...ok, avatar: undefined },
+      { ...ok, project: undefined },
+      { ...ok, project: { ...ok.project, icon: 'rocket' } },
+      { ...ok, project: { ...ok.project, name: 'x'.repeat(81) } },
+      { ...ok, project: { ...ok.project, due: '2026-13-01' } },
+      { ...ok, visit: { date: 'mañana' } },
+    ]
+    for (const b of bad) {
+      const r = await call('/prospects', { cookie, body: b })
+      assert.equal(r.status, 400, JSON.stringify(b))
+      assert.equal(typeof r.body.error, 'string')
+    }
+    assert.deepEqual(await count(), before)
+    const { rows } = await admin.query("SELECT count(*)::int AS n FROM clients WHERE name = 'Fantasma SA'")
+    assert.equal(rows[0].n, 0)
+  })
+
+  it('tareas con fecha: due en POST/PATCH/GET, null la borra, PATCH vacío => 400', async () => {
+    const t = await call('/tasks', { cookie, body: { projectId, title: 'Con fecha', due: '2019-05-05' } })
+    assert.equal(t.status, 201, JSON.stringify(t.body))
+    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Con fecha', done: false, due: '2019-05-05', owner: 'Elis' })
+    assert.deepEqual((await call('/tasks', { cookie })).body.find((x: any) => x.id === t.body.id), t.body)
+    const nul = await call('/tasks', { cookie, body: { projectId, title: 'Sin fecha', due: null } })
+    assert.equal(nul.body.due, null)
+    assert.equal((await call('/tasks', { cookie, body: { projectId, title: 'Omitida' } })).body.due, null)
+
+    const url = `/tasks/${t.body.id}`
+    // done no toca due; due no toca done
+    const done = await call(url, { cookie, method: 'PATCH', body: { done: true } })
+    assert.deepEqual(done.body, { ...t.body, done: true })
+    const moved = await call(url, { cookie, method: 'PATCH', body: { due: '2035-01-31' } })
+    assert.deepEqual(moved.body, { ...t.body, done: true, due: '2035-01-31' })
+    assert.equal((await admin.query('SELECT done_at IS NOT NULL AS ok FROM tasks WHERE id = $1', [t.body.id])).rows[0].ok, true)
+    // ambos a la vez; null borra la fecha
+    const both = await call(url, { cookie, method: 'PATCH', body: { done: false, due: null } })
+    assert.deepEqual(both.body, { ...t.body, done: false, due: null })
+    assert.equal((await admin.query('SELECT done_at IS NULL AS ok FROM tasks WHERE id = $1', [t.body.id])).rows[0].ok, true)
+
+    assert.equal((await call(url, { cookie, method: 'PATCH', body: {} })).status, 400)
+    assert.equal((await call(url, { cookie, method: 'PATCH', body: { due: 'x' } })).status, 400)
+    assert.equal((await call(url, { cookie, method: 'PATCH', body: { due: '2026-02-30' } })).status, 400)
+    assert.equal((await call('/tasks', { cookie, body: { projectId, title: 'x', due: 'x' } })).status, 400)
+    assert.equal((await call(`/tasks/${NOPE}`, { cookie, method: 'PATCH', body: { due: null } })).status, 404)
+    for (const x of [t.body.id, nul.body.id]) await call(`/tasks/${x}`, { cookie, method: 'DELETE' })
+  })
+
+  it('PATCH /projects/:id: edición parcial, cambio de cliente/responsable/estado/fecha, due null, 400/404', async () => {
+    const other = await call('/clients', { cookie, body: { name: 'Otro cliente', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] } })
+    const p = await call('/projects', { cookie, body: { name: 'Editable', icon: 'code', clientId, owner: 'Elis', status: 'activo', due: '2026-05-01' } })
+    assert.equal(p.status, 201)
+    const url = `/projects/${p.body.id}`
+    const patch = (body: unknown) => call(url, { cookie, method: 'PATCH', body })
+
+    const name = await patch({ name: ' Renombrado ' })
+    assert.equal(name.status, 200, JSON.stringify(name.body))
+    assert.deepEqual(name.body, { ...p.body, name: 'Renombrado' }) // solo cambia lo enviado
+    const multi = await patch({ icon: 'chart', status: 'entrega', owner: 'jorbi', clientId: other.body.id, due: '2019-01-01' })
+    assert.deepEqual(multi.body, {
+      ...p.body, name: 'Renombrado', icon: 'chart', status: 'entrega', owner: 'Jorbi', client: 'Otro cliente', clientId: other.body.id, due: '2019-01-01',
+    })
+    assert.deepEqual(Object.keys(multi.body), ['id', 'name', 'icon', 'owner', 'client', 'clientId', 'status', 'due'])
+    assert.deepEqual((await call('/projects', { cookie })).body.find((x: any) => x.id === p.body.id), multi.body) // GET igual
+    const nul = await patch({ due: null })
+    assert.equal(nul.body.due, null)
+    assert.equal(nul.body.name, 'Renombrado')
+    assert.equal((await patch({ status: 'planeacion' })).body.status, 'planeacion')
+    assert.equal((await patch({ due: null })).body.due, null) // idempotente
+
+    assert.equal((await patch({})).status, 400)
+    assert.match((await patch({})).body.error, /al menos/i)
+    for (const b of [{ name: '' }, { name: 'x'.repeat(81) }, { icon: 'rocket' }, { status: 'otro' }, { clientId: 'no-uuid' }, { due: '2026-02-30' }, { due: 'x' }, { owner: '' }]) {
+      assert.equal((await patch(b)).status, 400, JSON.stringify(b))
+    }
+    assert.equal((await patch({ owner: 'Fantasma' })).status, 404)
+    assert.equal((await patch({ clientId: NOPE })).status, 404)
+    assert.equal((await call(`/projects/${NOPE}`, { cookie, method: 'PATCH', body: { name: 'Z' } })).status, 404)
+    assert.equal((await call('/projects/no-uuid', { cookie, method: 'PATCH', body: { name: 'Z' } })).status, 400)
+    // los intentos fallidos no cambiaron nada
+    assert.deepEqual((await call('/projects', { cookie })).body.find((x: any) => x.id === p.body.id), { ...nul.body, status: 'planeacion' })
   })
 
   it('ruta desconocida => 404 JSON', async () => {

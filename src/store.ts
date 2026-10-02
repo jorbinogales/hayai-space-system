@@ -1,5 +1,7 @@
 import { api } from './api'
 import { createList } from './cache'
+import { loadProjects } from './projectData'
+import { loadTasks } from './taskData'
 
 export interface Item {
   id: string
@@ -23,6 +25,8 @@ export const moveLabel = (m: { concept: string; series?: { index: number; total:
 export interface Client {
   id: string
   name: string
+  /** posible cliente: aun no firmo (puede no tener inicial ni cobros) */
+  prospect?: boolean
   /** semilla del avatar blob */
   avatar: string
   /** desglose de la inicial */
@@ -65,6 +69,64 @@ export async function addClient(d: Draft): Promise<Client> {
   return c
 }
 
+/** Reemplaza en la lista el cliente que devuelve el servidor tras una edicion. */
+const put = (c: Client) => clients.update((cur) => cur.map((x) => (x.id === c.id ? c : x)))
+
+export async function updateClient(id: string, d: { name: string; avatar: string }): Promise<Client> {
+  const c = await api.patch<Client>(`/clients/${id}`, d)
+  put(c)
+  return c
+}
+/** Reemplaza el desglose de la inicial (y su fecha); sin items la inicial desaparece. */
+export async function saveInitial(id: string, d: { date: string; items: { concept: string; amount: number }[] }): Promise<Client> {
+  const c = await api.put<Client>(`/clients/${id}/initial`, d)
+  put(c)
+  return c
+}
+export interface ProspectDraft {
+  name: string
+  avatar: string
+  project: { name: string; icon: string; owner: string; due?: string | null }
+  visit: { date?: string | null; title?: string }
+}
+/** Registra un posible cliente con su posible proyecto ("Por visitar") y una tarea de visita ligada a ese proyecto. */
+export async function addProspect(d: ProspectDraft): Promise<Client> {
+  const r = await api.post<{ client: Client }>('/prospects', d)
+  clients.update((cur) => [...cur, r.client])
+  await Promise.all([loadProjects(), loadTasks()]) // el proyecto y la tarea nuevos tambien aparecen en sus pantallas
+  return r.client
+}
+/** El posible cliente firmo: pasa a ser cliente (conserva su proyecto). */
+export async function convertClient(id: string): Promise<Client> {
+  const c = await api.post<Client>(`/clients/${id}/convert`)
+  put(c)
+  return c
+}
+
+export interface PaymentDraft {
+  date: string
+  amount: number
+  concept: string
+  status?: 'pendiente' | 'cobrado'
+  /** repetir cada mes (solo pendientes) */
+  repeatMonths?: number
+}
+export async function addPayment(clientId: string, d: PaymentDraft): Promise<Client> {
+  const c = await api.post<Client>(`/clients/${clientId}/payments`, d)
+  put(c)
+  return c
+}
+export async function updatePayment(id: string, d: Partial<Pick<PaymentDraft, 'date' | 'amount' | 'concept' | 'status'>>): Promise<Client> {
+  const c = await api.patch<Client>(`/payments/${id}`, d)
+  put(c)
+  return c
+}
+export async function deletePayment(id: string): Promise<Client> {
+  const c = await api.del<Client>(`/payments/${id}`)
+  put(c)
+  return c
+}
+
 export function stats(c: Client) {
   let cobrado = 0
   let pendiente = 0
@@ -80,10 +142,11 @@ export function stats(c: Client) {
 export function summary(list: Client[]) {
   return list.reduce(
     (a, c) => {
+      if (c.prospect) return { ...a, posibles: a.posibles + 1 }
       const s = stats(c)
-      return { activos: a.activos + 1, recaudado: a.recaudado + s.cobrado, porCobrar: a.porCobrar + s.porCobrar }
+      return { ...a, activos: a.activos + 1, recaudado: a.recaudado + s.cobrado, porCobrar: a.porCobrar + s.porCobrar }
     },
-    { activos: 0, recaudado: 0, porCobrar: 0 },
+    { activos: 0, posibles: 0, recaudado: 0, porCobrar: 0 },
   )
 }
 

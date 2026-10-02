@@ -43,9 +43,9 @@ export default function Expenses({ onBack }: { onBack: () => void }) {
         id: x.id,
         date: x.date,
         title: x.concept,
-        sub: `${x.category}${x.ref ? ` · ${x.ref}` : ''}${x.status === 'pendiente' ? ' · pendiente' : ''}`,
+        sub: `${x.category}${x.ref ? ` · ${x.ref}` : ''}`,
         amount: x.amount,
-        tone: x.status === 'pagado' ? ('ok' as const) : x.date < today ? ('late' as const) : ('due' as const),
+        tone: 'due' as const, // un gasto es un gasto: un solo color (ambar), sin estados
         avatar: avatarFor(x.owner),
       })),
     [expenses, today],
@@ -77,7 +77,7 @@ export default function Expenses({ onBack }: { onBack: () => void }) {
                   <b>{money(sm.total)}</b> este mes
                 </span>
                 <span>
-                  <b>{sm.pendientes}</b> pendientes
+                  <b>{sm.cantidad}</b> {sm.cantidad === 1 ? 'gasto' : 'gastos'}
                 </span>
               </p>
               <button className="new" onClick={() => setForm(true)}>
@@ -113,7 +113,7 @@ export default function Expenses({ onBack }: { onBack: () => void }) {
                     </h3>
                     <ol className="moves g-moves">
                       {list.map((x) => (
-                        <li key={x.id} className={x.status === 'pagado' ? 'done' : x.date < today ? 'late' : 'due'}>
+                        <li key={x.id} className="due">
                           <i aria-hidden="true" />
                           <div>
                             <p className="m-concept">{x.concept}</p>
@@ -125,7 +125,6 @@ export default function Expenses({ onBack }: { onBack: () => void }) {
                           <Blobvatar seed={avatarFor(x.owner)} size={26} />
                           <div className="m-right">
                             <p className="m-amt">{money(x.amount)}</p>
-                            <p className="m-state">{x.status === 'pagado' ? 'Pagado' : x.date < today ? 'Vencido' : 'Pendiente'}</p>
                           </div>
                         </li>
                       ))}

@@ -6,6 +6,7 @@ import { useDragScroll } from './drag'
 import { avatarFor, useProjects, STATUS_LABEL } from './projectData'
 import { addTask, removeTask, taskCounts, toggleTask, useTasks, type Task } from './taskData'
 import { reduced } from './warp'
+import { fmtDate, todayISO } from './store'
 
 /** Pantalla Tareas: el planeta a un costado y, a la derecha, un tablero "Por hacer / Completadas" para el proyecto elegido. */
 export default function Tasks({ onBack }: { onBack: () => void }) {
@@ -14,6 +15,7 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
   const tasks = useTasks()
   const [sel, setSel] = useState(projects[0]?.id ?? '')
   const [title, setTitle] = useState('')
+  const [due, setDue] = useState('') // fecha agendada opcional (p.ej. una visita)
   const [exiting, setExiting] = useState(false)
   const rail = useRef<HTMLDivElement>(null)
   const todoCol = useRef<HTMLDivElement>(null)
@@ -39,8 +41,9 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!title.trim() || !project) return
-    void addTask(project.id, title)
+    void addTask(project.id, title, due || undefined)
     setTitle('')
+    setDue('')
   }
 
   const card = (x: Task) => (
@@ -48,7 +51,10 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
       <button className="task-check" role="checkbox" aria-checked={x.done} aria-label={x.done ? `Marcar "${x.title}" como pendiente` : `Completar "${x.title}"`} onClick={() => toggleTask(x.id)}>
         <Icon name="check" size={15} />
       </button>
-      <span className="task-title">{x.title}</span>
+      <span className="task-title">
+        {x.title}
+        {x.due && <small className={`task-due${!x.done && x.due < todayISO() ? ' late' : ''}`}>{fmtDate(x.due, true)}</small>}
+      </span>
       <Blobvatar seed={avatarFor(x.owner)} size={26} />
       <button className="task-x" aria-label={`Eliminar "${x.title}"`} onClick={() => removeTask(x.id)}>
         <Icon name="close" size={14} />
@@ -123,6 +129,7 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
 
                 <form className="tk-add" onSubmit={submit}>
                   <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Nueva tarea para este proyecto…" aria-label="Nueva tarea" autoComplete="off" />
+                  <input type="date" className="tk-date" value={due} onChange={(e) => setDue(e.target.value)} aria-label="Fecha de la tarea (opcional)" title="Fecha (opcional)" />
                   <button type="submit" className="new" disabled={!title.trim()}>
                     <Icon name="plus" size={16} />
                     Agregar

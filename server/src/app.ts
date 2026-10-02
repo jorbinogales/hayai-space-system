@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { requirePinChanged, requireSession } from './auth.ts'
 import { authRouter } from './routes/auth.ts'
-import { clientsRouter } from './routes/clients.ts'
+import { clientsRouter, paymentsRouter, prospectsRouter } from './routes/clients.ts'
 import { expensesRouter } from './routes/expenses.ts'
 import { projectsRouter } from './routes/projects.ts'
 import { tasksRouter } from './routes/tasks.ts'
@@ -54,6 +54,8 @@ export function createApp() {
   api.use(requireSession, requirePinChanged)
   api.use('/users', usersRouter)
   api.use('/clients', clientsRouter)
+  api.use('/payments', paymentsRouter)
+  api.use('/prospects', prospectsRouter)
   api.use('/projects', projectsRouter)
   api.use('/expenses', expensesRouter)
   api.use('/tasks', tasksRouter)

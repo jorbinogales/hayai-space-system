@@ -40,6 +40,14 @@ export async function addProject(d: ProjectDraft): Promise<Project> {
   return p
 }
 
+export type ProjectPatch = Partial<Omit<ProjectDraft, 'due'>> & { due?: string | null }
+/** Edita un proyecto (nombre, icono, cliente, responsable, estado, fecha de entrega). */
+export async function updateProject(id: string, d: ProjectPatch): Promise<Project> {
+  const p = await api.patch<Project>(`/projects/${id}`, d)
+  projects.update((cur) => cur.map((x) => (x.id === id ? p : x)))
+  return p
+}
+
 export const projectCounts = (list: Project[]) => ({
   activo: list.filter((p) => p.status === 'activo').length,
   entrega: list.filter((p) => p.status === 'entrega').length,

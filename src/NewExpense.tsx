@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Icon } from './ui'
 import { todayISO, useClients } from './store'
 import { useProjects } from './projectData'
-import { addExpense, EXPENSE_CATEGORIES, SCOPE_LABEL, type Expense, type ExpenseScope, type ExpenseStatus } from './expenseData'
+import { addExpense, EXPENSE_CATEGORIES, SCOPE_LABEL, type Expense, type ExpenseScope } from './expenseData'
 
 const SCOPES: ExpenseScope[] = ['general', 'cliente', 'proyecto']
 
@@ -17,7 +17,6 @@ export default function NewExpense({ onClose, onCreate }: { onClose: () => void;
   const [category, setCategory] = useState(EXPENSE_CATEGORIES[0])
   const [scope, setScope] = useState<ExpenseScope>('general')
   const [ref, setRef] = useState('')
-  const [status, setStatus] = useState<ExpenseStatus>('pagado')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const first = useRef<HTMLInputElement>(null)
@@ -39,7 +38,7 @@ export default function NewExpense({ onClose, onCreate }: { onClose: () => void;
     if (scope !== 'general' && !ref) return setError(scope === 'cliente' ? 'Elige el cliente al que se imputa.' : 'Elige el proyecto al que se imputa.')
     setBusy(true)
     try {
-      onCreate(await addExpense({ concept, amount: Number(amount), date, category, scope, refId: scope === 'general' ? undefined : ref, status }))
+      onCreate(await addExpense({ concept, amount: Number(amount), date, category, scope, refId: scope === 'general' ? undefined : ref }))
     } catch (err) {
       setBusy(false)
       setError(err instanceof Error ? err.message : 'No se pudo guardar el gasto.')
@@ -115,17 +114,6 @@ export default function NewExpense({ onClose, onCreate }: { onClose: () => void;
                 ))}
               </select>
             )}
-          </div>
-
-          <div className="field">
-            <span>Estado</span>
-            <div className="chips" role="radiogroup" aria-label="Estado">
-              {(['pagado', 'pendiente'] as const).map((s) => (
-                <button key={s} type="button" role="radio" aria-checked={status === s} className={status === s ? 'is-on' : ''} onClick={() => setStatus(s)}>
-                  {s === 'pagado' ? 'Pagado' : 'Pendiente'}
-                </button>
-              ))}
-            </div>
           </div>
         </div>
 

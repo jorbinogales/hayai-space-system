@@ -91,7 +91,7 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
               : p.key === 'proyectos'
                 ? { title: 'Proyectos', lines: [`${pc.activo} activos`, `${pc.entrega} en entrega`, `${pc.planeacion} por visitar`] }
                 : p.key === 'gastos'
-                  ? { title: 'Gastos', lines: [`${money(gx.total)} este mes`, `${gx.pendientes} pendientes`] }
+                  ? { title: 'Gastos', lines: [`${money(gx.total)} este mes`, `${gx.cantidad} ${gx.cantidad === 1 ? 'gasto' : 'gastos'}`] }
                   : p.key === 'finanzas'
                     ? { title: 'Finanzas', lines: [`${money(fin.ingresos)} ingresos`, `${money(fin.gastos)} gastos`, `${money(fin.ingresos - fin.gastos)} balance`] }
                     : { title: 'Tareas', lines: [`${tk.pendientes} por hacer`, `${tk.completadas} completadas`] }

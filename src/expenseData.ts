@@ -2,7 +2,6 @@ import { api } from './api'
 import { createList } from './cache'
 import { todayISO } from './store'
 
-export type ExpenseStatus = 'pagado' | 'pendiente'
 export type ExpenseScope = 'general' | 'cliente' | 'proyecto'
 export const EXPENSE_CATEGORIES = ['Herramientas', 'Infraestructura', 'Operación', 'Marketing', 'Equipos', 'Otros']
 export const SCOPE_LABEL: Record<ExpenseScope, string> = { general: 'HAYAI general', cliente: 'Cliente', proyecto: 'Proyecto' }
@@ -18,7 +17,6 @@ export interface Expense {
   /** nombre del cliente o proyecto al que se imputa (si scope no es general) */
   ref?: string | null
   refId?: string | null
-  status: ExpenseStatus
   /** astronauta que lo registro (nombre) */
   owner: string
 }
@@ -36,7 +34,6 @@ export interface ExpenseDraft {
   scope: ExpenseScope
   /** id del cliente o proyecto */
   refId?: string
-  status: ExpenseStatus
 }
 export async function addExpense(d: ExpenseDraft): Promise<Expense> {
   const x = await api.post<Expense>('/expenses', d)
@@ -44,9 +41,9 @@ export async function addExpense(d: ExpenseDraft): Promise<Expense> {
   return x
 }
 
-/** Gastos del mes actual: total y cuantos siguen pendientes de pago. */
+/** Gastos del mes actual: total y cuantos fueron. */
 export function monthSummary(list: Expense[]) {
   const pre = todayISO().slice(0, 7)
   const m = list.filter((x) => x.date.startsWith(pre))
-  return { total: m.reduce((s, x) => s + x.amount, 0), pendientes: m.filter((x) => x.status === 'pendiente').length }
+  return { total: m.reduce((s, x) => s + x.amount, 0), cantidad: m.length }
 }

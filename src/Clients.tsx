@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { clientsBar, toScreen } from './scene'
 import type { World } from './world'
 import { useCosmos } from './Cosmos'
 import CalendarModal from './CalendarModal'
 import { useDragScroll } from './drag'
-import { avatarOf, convertClient, stats, summary, upcoming, useClients, money, fmtDate, todayISO, type Client } from './store'
+import { addDays, avatarOf, convertClient, moveLabel, stats, summary, useClients, money, fmtDate, todayISO, type Client } from './store'
 import NewClient from './NewClient'
+import DayTrack, { dayItems } from './DayTrack'
 import NewProspect from './NewProspect'
 import EditClient from './EditClient'
 import { useProjects } from './projectData'
@@ -181,6 +182,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
   const projects = useProjects()
   const tasks = useTasks()
   const [exiting, setExiting] = useState(false)
+  const [off, setOff] = useState(0) // desplazamiento (dias) de la ventana de 30 dias de la linea de tiempo
   const deep = form || cal || prosp || edit !== null
   const back = () => {
     setExiting(true) // la interfaz se desvanece y queda solo el planeta
@@ -283,8 +285,8 @@ export default function Clients({ onBack }: { onBack: () => void }) {
   const c = clients.find((x) => x.id === shown) ?? clients[0] // sin clientes: undefined, la card y el planeta quedan vacios
   const st = c ? stats(c) : null
   const sm = summary(clients)
-  const ups = upcoming(clients)
-  const live = ups.find((p) => p.clientId === shown)?.id
+  const dayRows = dayItems(clients, tasks, projects, moveLabel)
+  const live = dayRows.find((p) => p.clientId === shown)?.id
   const today = todayISO()
 
   return (
@@ -424,40 +426,24 @@ export default function Clients({ onBack }: { onBack: () => void }) {
             <h2 id="tl-title">
               Próximos pagos <Icon name="arrow" size={18} />
             </h2>
-            <button className="pill" onClick={() => setCal(true)}>
-              <Icon name="calendar" size={15} />
-              Ver calendario
-            </button>
+            <div className="tl-tools">
+              <button className="tl-nav" aria-label="Retroceder 7 días" onClick={() => setOff((o) => o - 7)}>
+                <Icon name="back" size={16} />
+              </button>
+              <button className="tl-today" onClick={() => setOff(0)} disabled={off === 0}>
+                Hoy
+              </button>
+              <button className="tl-nav next" aria-label="Avanzar 7 días" onClick={() => setOff((o) => o + 7)}>
+                <Icon name="back" size={16} />
+              </button>
+              <button className="pill" onClick={() => setCal(true)}>
+                <Icon name="calendar" size={15} />
+                Ver calendario
+              </button>
+            </div>
           </header>
           <div className="track-scroll" ref={track}>
-            <ol className="track" style={{ '--n': Math.max(5, ups.length) } as CSSProperties}>
-              {ups.length === 0 && <li className="empty">Sin cobros programados</li>}
-              {ups.map((p) => {
-                const cl = clients.find((x) => x.id === p.clientId)!
-                const d = fmtDate(p.date)
-                return (
-                  <li key={p.id} className={`${live === p.id ? 'is-on' : ''}${selected === p.clientId ? ' is-sel' : ''}${p.date < today ? ' is-late' : ''}`}>
-                    <span className="date">{d}</span>
-                    <i className="dot" />
-                    <button
-                      className="pay"
-                      aria-pressed={selected === p.clientId}
-                      aria-label={`${d}: ${cl.name}, ${money(p.amount)}, ${p.concept}${p.date < today ? ', vencido' : ''}`}
-                      onClick={() => toggle(p.clientId)}
-                    >
-                      <span className="av">
-                        <Blobvatar seed={avatarOf(cl)} size={36} />
-                      </span>
-                      <span className="pay-txt">
-                        <span className="pay-name">{cl.name}</span>
-                        <span className="pay-amt">{money(p.amount)}</span>
-                        <span className="pay-concept">{p.concept}</span>
-                      </span>
-                    </button>
-                  </li>
-                )
-              })}
-            </ol>
+            <DayTrack items={dayRows} clients={clients} start={addDays(today, off)} selected={selected} live={live} onPick={toggle} />
           </div>
         </section>
 

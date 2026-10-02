@@ -32,7 +32,9 @@ export default function History({
   const c = last.current
   const today = todayISO()
   const st = c && stats(c)
-  const list = c ? [...c.movements].sort((a, b) => b.date.localeCompare(a.date)) : []
+  // Movimientos = lo que el cliente ya pago. Lo pendiente son cuentas por cobrar (otra lista), no movimientos.
+  const list = c ? c.movements.filter((m) => m.status === 'cobrado').sort((a, b) => b.date.localeCompare(a.date)) : []
+  const owed = c ? c.movements.filter((m) => m.status === 'pendiente').sort((a, b) => a.date.localeCompare(b.date)) : []
   const initial = c ? c.items.reduce((s, i) => s + i.amount, 0) : 0
 
   return (
@@ -98,7 +100,7 @@ export default function History({
               <dd className="ok">{money(st.cobrado)}</dd>
             </div>
             <div>
-              <dt>Pendiente</dt>
+              <dt>Por cobrar</dt>
               <dd>{money(st.pendiente)}</dd>
             </div>
           </dl>
@@ -124,16 +126,14 @@ export default function History({
             )}
 
             {(!c.prospect || c.movements.length > 0) && (
-            <section>
-              <h3>Movimientos</h3>
-              {list.length === 0 ? (
-                <p className="none">Aún no hay movimientos.</p>
-              ) : (
-                <ol className="moves">
-                  {list.map((m) => {
-                    const late = m.status === 'pendiente' && m.date < today
-                    return (
-                      <li key={m.id} className={m.status === 'cobrado' ? 'done' : late ? 'late' : 'due'}>
+              <section>
+                <h3>Movimientos</h3>
+                {list.length === 0 ? (
+                  <p className="none">Aún no hay pagos registrados.</p>
+                ) : (
+                  <ol className="moves">
+                    {list.map((m) => (
+                      <li key={m.id} className="done">
                         <i aria-hidden="true" />
                         <div>
                           <p className="m-concept">{moveLabel(m)}</p>
@@ -141,14 +141,39 @@ export default function History({
                         </div>
                         <div className="m-right">
                           <p className="m-amt">{money(m.amount)}</p>
-                          <p className="m-state">{m.status === 'cobrado' ? 'Cobrado' : late ? 'Vencido' : 'Por cobrar'}</p>
+                          <p className="m-state">Cobrado</p>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </section>
+            )}
+
+            {owed.length > 0 && (
+              <section>
+                <h3>
+                  Cuentas por cobrar <em className="owed-total">{money(st.pendiente)}</em>
+                </h3>
+                <ol className="moves">
+                  {owed.map((m) => {
+                    const late = m.date < today
+                    return (
+                      <li key={m.id} className={late ? 'late' : 'due'}>
+                        <i aria-hidden="true" />
+                        <div>
+                          <p className="m-concept">{moveLabel(m)}</p>
+                          <p className="m-date">{fmtDate(m.date, true)}</p>
+                        </div>
+                        <div className="m-right">
+                          <p className="m-amt">{money(m.amount)}</p>
+                          <p className="m-state">{late ? 'Vencido' : 'Por cobrar'}</p>
                         </div>
                       </li>
                     )
                   })}
                 </ol>
-              )}
-            </section>
+              </section>
             )}
           </div>
         </>

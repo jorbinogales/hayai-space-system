@@ -47,6 +47,14 @@ export const fmtDate = (s: string, year = false) => {
   return `${d} ${MONTHS[m - 1]}${year ? ` ${y}` : ''}`
 }
 export const money = (n: number) => `${n < 0 ? '-' : ''}$${Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 2 })}`
+/** Suma n dias a una fecha 'YYYY-MM-DD' (aritmetica de calendario en UTC: sin corrimientos por zona horaria). */
+export const addDays = (iso: string, n: number) => {
+  const [y, m, d] = iso.split('-').map(Number)
+  const t = new Date(Date.UTC(y, m - 1, d + n))
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`
+}
+const WEEKDAYS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb']
+export const weekdayShort = (iso: string) => WEEKDAYS[new Date(iso + 'T00:00:00Z').getUTCDay()]
 export const todayISO = () => {
   const t = new Date()
   return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`

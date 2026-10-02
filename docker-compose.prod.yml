@@ -1,5 +1,8 @@
-# Produccion en un VPS: Postgres + API/web + Caddy (HTTPS automatico con Let's Encrypt).
-# Uso:  cp .env.production.example .env  (editalo)  &&  docker compose -f docker-compose.prod.yml up -d --build
+# Produccion en un VPS: Postgres + API/web, y opcionalmente Caddy (HTTPS automatico).
+# - VPS con OTROS sitios (nginx/Apache ya usan 80/443):  docker compose -f docker-compose.prod.yml up -d --build
+#   La API queda en 127.0.0.1:3001 y tu nginx/Apache hace de proxy (ver deploy/nginx-hayai.conf).
+# - VPS libre (nada en 80/443):  docker compose -f docker-compose.prod.yml --profile caddy up -d --build
+# Antes:  cp .env.production.example .env  (editalo)
 services:
   db:
     image: postgres:16
@@ -28,16 +31,18 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # sin "ports": solo Caddy habla con la API
+    ports:
+      - "127.0.0.1:3001:3001" # solo accesible desde el propio VPS (nginx/Apache); nunca desde internet
 
   caddy:
     image: caddy:2
+    profiles: ["caddy"] # solo si el VPS tiene libres los puertos 80 y 443
     restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
     environment:
-      DOMAIN: ${DOMAIN:?define DOMAIN en .env}
+      DOMAIN: ${DOMAIN:-localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

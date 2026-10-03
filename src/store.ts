@@ -1,5 +1,6 @@
 import { api } from './api'
 import { createList } from './cache'
+import { loadExpenses } from './expenseData'
 import { loadProjects } from './projectData'
 import { loadTasks } from './taskData'
 
@@ -84,6 +85,12 @@ export async function updateClient(id: string, d: { name: string; avatar: string
   const c = await api.patch<Client>(`/clients/${id}`, d)
   put(c)
   return c
+}
+/** Borra el cliente y todo lo suyo en el servidor; refresca proyectos, tareas y gastos, que se van con él. */
+export async function removeClient(id: string): Promise<void> {
+  await api.del(`/clients/${id}`)
+  clients.update((cur) => cur.filter((x) => x.id !== id))
+  await Promise.all([loadProjects(), loadTasks(), loadExpenses()])
 }
 /** Reemplaza el desglose de la inicial (y su fecha); sin items la inicial desaparece. */
 export async function saveInitial(id: string, d: { date: string; items: { concept: string; amount: number }[] }): Promise<Client> {

@@ -7,7 +7,7 @@ import NewExpense from './NewExpense'
 import { useDragScroll } from './drag'
 import { fmtDate, money, todayISO } from './store'
 import { avatarFor } from './projectData'
-import { monthSummary, useExpenses, type Expense } from './expenseData'
+import { monthSummary, removeExpense, useExpenses, type Expense } from './expenseData'
 import { reduced, useDive } from './warp'
 
 const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
@@ -126,6 +126,9 @@ export default function Expenses({ onBack }: { onBack: () => void }) {
                           <div className="m-right">
                             <p className="m-amt">{money(x.amount)}</p>
                           </div>
+                          <button className="rm" aria-label={`Eliminar ${x.concept}`} title="Eliminar" onClick={() => window.confirm(`¿Eliminar el gasto "${x.concept}"?`) && void removeExpense(x.id).catch((e) => window.alert(e instanceof Error ? e.message : 'No se pudo eliminar.'))}>
+                            <Icon name="close" size={15} />
+                          </button>
                         </li>
                       ))}
                     </ol>

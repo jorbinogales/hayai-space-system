@@ -807,3 +807,35 @@ describe('datos', () => {
     assert.equal((await call('/auth/me', { cookie: c })).status, 401)
   })
 })
+
+describe('borrar', () => {
+  it('cliente borra en cascada proyectos, tareas, cobros y gastos; proyecto y gasto sueltos también; 404 si no existe', async () => {
+    const cookie = await sessionFor('Elis', '482913')
+    const count = async (t: string) => Number((await admin.query(`SELECT count(*) FROM ${t}`)).rows[0].count)
+    const before = { clients: await count('clients'), payments: await count('payments'), projects: await count('projects'), tasks: await count('tasks'), expenses: await count('expenses') }
+
+    const c = (await call('/clients', { cookie, body: { name: 'Borrable', avatar: 'x', initialDate: '2026-01-01', items: [{ concept: 'A', amount: 10 }], charges: [{ date: '2026-02-01', amount: 5, concept: 'B' }] } })).body
+    const p = (await call('/projects', { cookie, body: { name: 'P', icon: 'box', clientId: c.id, owner: 'Elis', due: '2026-03-01' } })).body
+    await call('/tasks', { cookie, body: { projectId: p.id, title: 'T' } })
+    const mk = (scope: string, refId?: string) => call('/expenses', { cookie, body: { date: '2026-01-05', concept: 'G', amount: 1, category: 'Otros', scope, refId } })
+    const eCli = (await mk('cliente', c.id)).body
+    await mk('proyecto', p.id)
+
+    assert.equal((await call(`/expenses/${eCli.id}`, { cookie, method: 'DELETE' })).status, 204)
+    assert.equal((await call(`/expenses/${eCli.id}`, { cookie, method: 'DELETE' })).status, 404)
+    assert.equal((await call(`/projects/${p.id}`, { cookie, method: 'DELETE' })).status, 204) // arrastra su gasto y tarea
+    assert.equal(await count('tasks'), before.tasks)
+    assert.equal(await count('expenses'), before.expenses)
+
+    const p2 = (await call('/projects', { cookie, body: { name: 'P2', icon: 'box', clientId: c.id, owner: 'Elis', due: '2026-03-01' } })).body
+    await call('/tasks', { cookie, body: { projectId: p2.id, title: 'T2' } })
+    await mk('proyecto', p2.id)
+    assert.equal((await call(`/clients/${c.id}`, { cookie, method: 'DELETE' })).status, 204)
+    assert.deepEqual(
+      { clients: await count('clients'), payments: await count('payments'), projects: await count('projects'), tasks: await count('tasks'), expenses: await count('expenses') },
+      before,
+    )
+    assert.equal((await call(`/clients/${c.id}`, { cookie, method: 'DELETE' })).status, 404)
+    assert.equal((await call(`/projects/${p.id}`, { cookie, method: 'DELETE' })).status, 404)
+  })
+})

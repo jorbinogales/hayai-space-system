@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { pool } from '../db.ts'
+import { pool, tx, type Db } from '../db.ts'
 import { HttpError, id, idParam, isoDate, parse, text } from '../util.ts'
 
 export const PROJECT_SELECT = `SELECT p.id, p.name, p.icon, u.name AS owner, c.name AS client, p.client_id AS "clientId",
@@ -50,6 +50,23 @@ const editProject = z
     due: isoDate.nullable().optional(),
   })
   .refine((v) => Object.values(v).some((x) => x !== undefined), 'Envía al menos un campo a modificar')
+
+/** Borra el proyecto con sus gastos (RESTRICT en el esquema); las tareas se van por CASCADE. */
+export async function deleteProjects(c: Db, where: string, params: unknown[]) {
+  await c.query(`DELETE FROM expenses WHERE project_id IN (SELECT id FROM projects WHERE ${where})`, params)
+  await c.query(`DELETE FROM projects WHERE ${where}`, params)
+}
+
+projectsRouter.delete('/:id', async (req, res) => {
+  const projectId = idParam(req.params.id)
+  const found = await tx(async (c) => {
+    const exists = (await c.query('SELECT 1 FROM projects WHERE id = $1 FOR UPDATE', [projectId])).rowCount
+    if (exists) await deleteProjects(c, 'id = $1', [projectId])
+    return exists
+  })
+  if (!found) throw new HttpError(404, 'Proyecto no encontrado')
+  res.status(204).end()
+})
 
 // Solo cambia lo enviado; due: null borra la fecha.
 projectsRouter.patch('/:id', async (req, res) => {

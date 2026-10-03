@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { pool } from '../db.ts'
-import { HttpError, id, isoDate, money, parse, text } from '../util.ts'
+import { HttpError, id, idParam, isoDate, money, parse, text } from '../util.ts'
 
 const SELECT = `SELECT e.id, e.date, e.concept, e.amount, e.category, e.scope,
     COALESCE(c.name, p.name) AS ref, COALESCE(e.client_id, e.project_id) AS "refId", u.name AS owner
@@ -44,4 +44,10 @@ expensesRouter.post('/', async (req, res) => {
     [b.date, b.concept, b.amount, b.category, b.scope, clientId, projectId, req.user!.id],
   )
   res.status(201).json((await pool.query(`${SELECT} WHERE e.id = $1`, [rows[0].id])).rows[0])
+})
+
+expensesRouter.delete('/:id', async (req, res) => {
+  const { rowCount } = await pool.query('DELETE FROM expenses WHERE id = $1', [idParam(req.params.id)])
+  if (!rowCount) throw new HttpError(404, 'Gasto no encontrado')
+  res.status(204).end()
 })

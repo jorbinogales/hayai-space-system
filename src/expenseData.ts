@@ -41,6 +41,11 @@ export async function addExpense(d: ExpenseDraft): Promise<Expense> {
   return x
 }
 
+export async function removeExpense(id: string): Promise<void> {
+  await api.del(`/expenses/${id}`)
+  expenses.update((cur) => cur.filter((x) => x.id !== id))
+}
+
 /** Gastos del mes actual: total y cuantos fueron. */
 export function monthSummary(list: Expense[]) {
   const pre = todayISO().slice(0, 7)

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './ui'
 import { AvatarPicker } from './blob'
-import { addPayment, deletePayment, money, moveLabel, saveInitial, todayISO, updateClient, updatePayment, useClients, type Movement } from './store'
+import { addPayment, deletePayment, money, moveLabel, removeClient, saveInitial, todayISO, updateClient, updatePayment, useClients, type Movement } from './store'
 
 /** Cuota o cobro editable: fecha, concepto, monto y estado se guardan al salir del campo o al pulsar; borrar es inmediato. */
 function PayRow({ m, onError }: { m: Movement; onError: (s: string) => void }) {
@@ -117,6 +117,14 @@ export default function EditClient({ clientId, onClose }: { clientId: string; on
     )
   }
 
+  const removeThis = () => {
+    if (!window.confirm(`¿Eliminar a "${client.name}" con sus proyectos, tareas, cobros y gastos? No se puede deshacer.`)) return
+    void wrap(async () => {
+      await removeClient(client.id)
+      onClose()
+    }, 'Cliente eliminado')
+  }
+
   const cuotas = client.movements.filter((m) => m.kind !== 'inicial')
   const total = items.reduce((s, r) => s + (Number(r.amount) > 0 ? Number(r.amount) : 0), 0)
 
@@ -220,6 +228,9 @@ export default function EditClient({ clientId, onClose }: { clientId: string; on
           <p className={msg ? 'err' : 'ok-note'} role="alert">
             {msg || saved}
           </p>
+          <button type="button" className="ghost danger" disabled={busy} onClick={removeThis}>
+            Eliminar cliente
+          </button>
           <button type="button" className="primary" onClick={onClose}>
             Listo
           </button>

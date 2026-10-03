@@ -1,6 +1,8 @@
 import type { IconName } from './ui'
 import { api } from './api'
 import { createList } from './cache'
+import { loadExpenses } from './expenseData'
+import { loadTasks } from './taskData'
 
 export type ProjectStatus = 'activo' | 'entrega' | 'planeacion'
 export const STATUS_LABEL: Record<ProjectStatus, string> = { activo: 'Activo', entrega: 'En entrega', planeacion: 'Por visitar' }
@@ -46,6 +48,13 @@ export async function updateProject(id: string, d: ProjectPatch): Promise<Projec
   const p = await api.patch<Project>(`/projects/${id}`, d)
   projects.update((cur) => cur.map((x) => (x.id === id ? p : x)))
   return p
+}
+
+/** Borra el proyecto (y sus tareas y gastos) en el servidor; refresca tareas y gastos. */
+export async function removeProject(id: string): Promise<void> {
+  await api.del(`/projects/${id}`)
+  projects.update((cur) => cur.filter((x) => x.id !== id))
+  await Promise.all([loadTasks(), loadExpenses()])
 }
 
 export const projectCounts = (list: Project[]) => ({

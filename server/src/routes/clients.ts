@@ -3,7 +3,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { pool, tx, type Db } from '../db.ts'
 import { HttpError, idParam, isoDate, money, parse, text } from '../util.ts'
-import { PROJECT_SELECT, projectIcon } from './projects.ts'
+import { PROJECT_SELECT, deleteProjects, projectIcon } from './projects.ts'
 import { TASK_SELECT } from './tasks.ts'
 
 type ChargeRow = { d: string; c: string; a: number; s: string; sid: string | null; si: number | null; st: number | null }
@@ -176,6 +176,22 @@ clientsRouter.patch('/:id', async (req, res) => {
   ])
   if (!rowCount) throw new HttpError(404, 'Cliente no encontrado')
   res.json(await clientOr404(pool, clientId))
+})
+
+// Borra el cliente con todo lo suyo: gastos, proyectos (y sus tareas/gastos), cobros e ítems.
+clientsRouter.delete('/:id', async (req, res) => {
+  const clientId = idParam(req.params.id)
+  const found = await tx(async (c) => {
+    const exists = (await c.query('SELECT 1 FROM clients WHERE id = $1 FOR UPDATE', [clientId])).rowCount
+    if (!exists) return 0
+    await deleteProjects(c, 'client_id = $1', [clientId])
+    await c.query('DELETE FROM expenses WHERE client_id = $1', [clientId])
+    await c.query('DELETE FROM payments WHERE client_id = $1', [clientId])
+    await c.query('DELETE FROM clients WHERE id = $1', [clientId]) // client_items: CASCADE
+    return 1
+  })
+  if (!found) throw new HttpError(404, 'Cliente no encontrado')
+  res.status(204).end()
 })
 
 // Reemplaza el desglose de la inicial y sincroniza su movimiento (crea, actualiza o borra según la suma).

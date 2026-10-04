@@ -77,6 +77,13 @@ export default function DayTrack({
     )
   }
 
+  // Altura fija de UNA tarjeta: si un dia tiene varias, se desplazan dentro de su columna y el timeline no crece.
+  const stack = (list: DayItem[]) => (
+    <div className="stack" data-more={list.length > 1 ? `+${list.length - 1}` : undefined}>
+      {list.map(card)}
+    </div>
+  )
+
   return (
     <ol className="track days">
       {overdue.length > 0 && (
@@ -85,7 +92,7 @@ export default function DayTrack({
             <b>Vencidos</b>
           </span>
           <i className="dot" />
-          {overdue.map(card)}
+          {stack(overdue)}
         </li>
       )}
       {days.map((d, i) => {
@@ -102,7 +109,7 @@ export default function DayTrack({
               </small>
             </span>
             <i className="dot" />
-            {list.map(card)}
+            {list.length > 0 && stack(list)}
           </li>
         )
       })}

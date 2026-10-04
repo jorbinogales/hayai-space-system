@@ -1627,7 +1627,11 @@ legend { padding: 0 6px; }
 .pay.late .pay-concept { color: #ff9b7e; }
 .pay.visit { border-style: dashed; border-color: rgba(255, 210, 122, 0.45); }
 .pay.is-live { background: rgba(255, 255, 255, 0.1); }
-.track-scroll { max-height: 230px; overflow-y: auto; }
+/* una sola tarjeta de alto por dia (~85px + 8px de margen); los demas eventos del dia se desplazan dentro */
+.stack { position: relative; height: 102px; padding-top: 9px; margin-top: -9px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; }
+.stack::-webkit-scrollbar { display: none; }
+.stack .pay { scroll-snap-align: start; scroll-margin-top: 9px; min-height: 85px; box-sizing: border-box; }
+.stack[data-more]::after { content: attr(data-more); position: sticky; display: block; width: fit-content; bottom: 0; margin: -22px 8px 0 auto; padding: 2px 8px; border-radius: 999px; background: var(--amber); color: var(--night); font-size: 0.68rem; font-weight: 700; pointer-events: none; }
 .tl-tools { display: flex; align-items: center; gap: 8px; }
 .tl-nav { display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 50%; background: rgba(255, 255, 255, 0.08); color: #f4ebdd; cursor: pointer; transition: background var(--t-hover) var(--ease); }
 .tl-nav:hover { background: rgba(239, 157, 37, 0.3); }

@@ -1,0 +1,27 @@
+name: Deploy
+
+# Cada push a main redespliega en el VPS. Crea un GitHub Deployment (environment: production).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency: deploy-production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - name: Preparar SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          echo "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      # La llave del VPS esta restringida con command="..." en authorized_keys:
+      # el comando que pasemos aqui se ignora y siempre corre el script de deploy.
+      - name: Desplegar
+        run: ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" deploy

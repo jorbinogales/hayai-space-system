@@ -1649,6 +1649,15 @@ legend { padding: 0 6px; }
 .invoice-paper dt { margin-top: 10px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #8a7c6a; }
 .invoice-paper dd { margin: 0; font-size: 1.05rem; font-weight: 500; }
 .invoice-paper dd.cap { text-transform: capitalize; }
+.inv-edit { display: grid; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(22, 17, 11, 0.12); max-height: 300px; overflow-y: auto; }
+.inv-edit label { display: grid; gap: 4px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #8a7c6a; }
+.inv-edit input { min-width: 0; padding: 7px 9px; border: 1px solid rgba(22, 17, 11, 0.25); border-radius: 8px; background: #fff; color: #16110b; font: inherit; font-size: 0.9rem; letter-spacing: 0; text-transform: none; }
+.inv-edit input:focus { outline: 2px solid var(--amber); border-color: transparent; }
+.inv-eline { display: grid; grid-template-columns: 128px 1fr 84px 28px; gap: 6px; align-items: center; }
+.inv-eline button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: rgba(22, 17, 11, 0.08); color: #16110b; cursor: pointer; }
+.inv-eline button:hover { background: rgba(190, 59, 31, 0.2); }
+.inv-add { justify-self: start; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px dashed rgba(22, 17, 11, 0.35); border-radius: 999px; background: none; color: #16110b; font: inherit; font-size: 0.82rem; font-weight: 600; cursor: pointer; }
+@media (max-width: 520px) { .inv-eline { grid-template-columns: 1fr 1fr 28px; } .inv-eline input[aria-label='Concepto'] { grid-column: 1 / -1; grid-row: 2; } }
 .inv-lines { display: grid; margin: 16px 0 0; padding: 0; list-style: none; max-height: 220px; overflow-y: auto; }
 .inv-lines li { display: grid; grid-template-columns: 56px 1fr auto; gap: 12px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid rgba(22, 17, 11, 0.1); font-size: 0.95rem; }
 .inv-date { font-size: 0.78rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8a7c6a; }

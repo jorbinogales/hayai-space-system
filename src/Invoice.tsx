@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './ui'
 import { fmtDate, money, todayISO } from './store'
@@ -108,7 +108,11 @@ async function toPng(d: InvoiceData): Promise<Blob> {
 }
 
 /** Factura mensual de un cliente (sus pagos pendientes del mes): se imprime (o guarda como PDF) y se comparte por WhatsApp. */
-export default function Invoice({ data, onClose }: { data: InvoiceData; onClose: () => void }) {
+export default function Invoice({ data: initial, onClose }: { data: InvoiceData; onClose: () => void }) {
+  // los datos se pueden corregir antes de imprimir o compartir; los cambios son solo de esta factura, no tocan los cobros
+  const [data, setData] = useState(initial)
+  const [edit, setEdit] = useState(false)
+  const setLine = (i: number, patch: Partial<InvoiceLine>) => setData((d) => ({ ...d, lines: d.lines.map((l, j) => (j === i ? { ...l, ...patch } : l)) }))
   const close = useRef(onClose)
   close.current = onClose
   useEffect(() => {
@@ -150,21 +154,49 @@ export default function Invoice({ data, onClose }: { data: InvoiceData; onClose:
                 <span>Emitida: {fmtDate(todayISO(), true)}</span>
               </div>
             </div>
-            <dl>
-              <dt>Cliente</dt>
-              <dd>{data.client}</dd>
-              <dt>Mes</dt>
-              <dd className="cap">{monthName(data.month)}</dd>
-            </dl>
-            <ul className="inv-lines">
-              {data.lines.map((l, i) => (
-                <li key={i}>
-                  <span className="inv-date">{fmtDate(l.date)}</span>
-                  <span className="inv-concept">{l.concept}</span>
-                  <b>{money(l.amount)}</b>
-                </li>
-              ))}
-            </ul>
+            {edit ? (
+              <div className="inv-edit">
+                <label>
+                  Cliente
+                  <input value={data.client} onChange={(e) => setData({ ...data, client: e.target.value })} />
+                </label>
+                <label>
+                  Mes
+                  <input type="month" value={data.month} onChange={(e) => e.target.value && setData({ ...data, month: e.target.value })} />
+                </label>
+                {data.lines.map((l, i) => (
+                  <div className="inv-eline" key={i}>
+                    <input type="date" aria-label="Fecha" value={l.date} onChange={(e) => e.target.value && setLine(i, { date: e.target.value })} />
+                    <input aria-label="Concepto" value={l.concept} onChange={(e) => setLine(i, { concept: e.target.value })} />
+                    <input type="number" min="0" step="0.01" inputMode="decimal" aria-label="Monto" value={l.amount} onChange={(e) => setLine(i, { amount: Math.max(0, Number(e.target.value) || 0) })} />
+                    <button type="button" aria-label="Quitar línea" onClick={() => setData({ ...data, lines: data.lines.filter((_, j) => j !== i) })}>
+                      <Icon name="close" size={14} />
+                    </button>
+                  </div>
+                ))}
+                <button type="button" className="inv-add" onClick={() => setData({ ...data, lines: [...data.lines, { date: `${data.month}-01`, concept: 'Pago', amount: 0 }] })}>
+                  <Icon name="plus" size={14} /> Agregar línea
+                </button>
+              </div>
+            ) : (
+              <>
+                <dl>
+                  <dt>Cliente</dt>
+                  <dd>{data.client}</dd>
+                  <dt>Mes</dt>
+                  <dd className="cap">{monthName(data.month)}</dd>
+                </dl>
+                <ul className="inv-lines">
+                  {data.lines.map((l, i) => (
+                    <li key={i}>
+                      <span className="inv-date">{fmtDate(l.date)}</span>
+                      <span className="inv-concept">{l.concept}</span>
+                      <b>{money(l.amount)}</b>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
             <p className="inv-total">
               <small>Total del mes</small>
               {money(total(data))}
@@ -173,6 +205,9 @@ export default function Invoice({ data, onClose }: { data: InvoiceData; onClose:
           </article>
         </div>
         <footer>
+          <button type="button" className="ghost" onClick={() => setEdit((v) => !v)} aria-pressed={edit}>
+            <Icon name="edit" size={16} /> {edit ? 'Listo' : 'Editar'}
+          </button>
           <button type="button" className="ghost" onClick={() => window.print()}>
             <Icon name="print" size={16} /> Imprimir
           </button>

@@ -1648,6 +1648,11 @@ legend { padding: 0 6px; }
 .invoice-paper dl { margin: 18px 0 0; padding-top: 14px; border-top: 1px solid rgba(22, 17, 11, 0.12); display: grid; gap: 2px; }
 .invoice-paper dt { margin-top: 10px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #8a7c6a; }
 .invoice-paper dd { margin: 0; font-size: 1.05rem; font-weight: 500; }
+.invoice-paper dd.cap { text-transform: capitalize; }
+.inv-lines { display: grid; margin: 16px 0 0; padding: 0; list-style: none; max-height: 220px; overflow-y: auto; }
+.inv-lines li { display: grid; grid-template-columns: 56px 1fr auto; gap: 12px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid rgba(22, 17, 11, 0.1); font-size: 0.95rem; }
+.inv-date { font-size: 0.78rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8a7c6a; }
+.inv-lines b { font-variant-numeric: tabular-nums; }
 .inv-total { display: grid; margin: 20px 0 0; padding: 14px 16px; border-radius: 10px; background: #fbeed6; font: 700 2rem / 1.1 var(--display); font-variant-numeric: tabular-nums; }
 .inv-total small { font: 600 0.7rem / 1.6 var(--display); letter-spacing: 0.1em; text-transform: uppercase; color: #8a7c6a; }
 .inv-thanks { margin: 16px 0 0; text-align: center; font-size: 0.8rem; color: #8a7c6a; }
@@ -1657,6 +1662,7 @@ legend { padding: 0 6px; }
 @media print {
   body * { visibility: hidden; }
   .invoice-paper, .invoice-paper * { visibility: visible; }
+  .inv-lines { max-height: none; overflow: visible; }
   .invoice-paper { position: fixed; inset: 0 auto auto 0; width: 100%; box-shadow: none; border-radius: 0; }
   @page { margin: 14mm; }
 }

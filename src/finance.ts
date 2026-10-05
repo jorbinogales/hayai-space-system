@@ -9,9 +9,9 @@ const inPeriod = (date: string, p: Period) => {
   return p === 'todo' || (p === 'mes' ? date.startsWith(t.slice(0, 7)) : date.startsWith(t.slice(0, 4)))
 }
 
-/** Ingresos (cobrado) y gastos del mes actual: los que muestra la tarjeta del Home. */
-export function monthFinance(clients: Client[], expenses: Expense[]) {
-  const pre = todayISO().slice(0, 7)
+/** Ingresos (cobrado) y gastos del AÑO en curso (enero a diciembre): los que muestra la tarjeta del Home. */
+export function yearFinance(clients: Client[], expenses: Expense[]) {
+  const pre = todayISO().slice(0, 4)
   const ingresos = clients.reduce((s, c) => s + c.movements.filter((m) => m.status === 'cobrado' && m.date.startsWith(pre)).reduce((a, m) => a + m.amount, 0), 0)
   const gastos = expenses.filter((x) => x.date.startsWith(pre)).reduce((s, x) => s + x.amount, 0)
   return { ingresos, gastos }

@@ -3,21 +3,32 @@ import { createPortal } from 'react-dom'
 import { Icon } from './ui'
 import { fmtDate, money, todayISO } from './store'
 
-export interface InvoiceData {
-  id: string
-  client: string
+export interface InvoiceLine {
+  /** YYYY-MM-DD */
+  date: string
   concept: string
   amount: number
-  /** fecha del pago, YYYY-MM-DD */
-  date: string
 }
 
+/** Factura MENSUAL de un cliente: todos sus pagos pendientes del mes. */
+export interface InvoiceData {
+  clientId: string
+  client: string
+  /** YYYY-MM */
+  month: string
+  lines: InvoiceLine[]
+}
+
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+const monthName = (m: string) => `${MESES[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}`
+const total = (d: InvoiceData) => d.lines.reduce((s, l) => s + l.amount, 0)
+
 const LOGO = `${import.meta.env.BASE_URL}hayai-logo.png`
-const number = (d: InvoiceData) => `HY-${d.id.replace(/\W/g, '').slice(-6).toUpperCase()}`
+const number = (d: InvoiceData) => `HY-${d.clientId.replace(/\W/g, '').slice(-4).toUpperCase()}-${d.month.replace('-', '')}`
 
 /** Texto de la factura (para WhatsApp cuando no se puede compartir la imagen). */
 const asText = (d: InvoiceData) =>
-  [`*HAYAI · Factura ${number(d)}*`, `Cliente: ${d.client}`, `Concepto: ${d.concept}`, `Monto: ${money(d.amount)}`, `Fecha de pago: ${fmtDate(d.date, true)}`, `Estado: pendiente de pago`].join('\n')
+  [`*HAYAI · Factura ${number(d)}*`, `Cliente: ${d.client}`, `Mes: ${monthName(d.month)}`, ...d.lines.map((l) => `• ${fmtDate(l.date)} · ${l.concept}: ${money(l.amount)}`), `*Total del mes: ${money(total(d))}*`].join('\n')
 
 /** Dibuja la factura en un canvas (mismo contenido que la vista) y la devuelve como PNG. */
 async function toPng(d: InvoiceData): Promise<Blob> {
@@ -25,7 +36,9 @@ async function toPng(d: InvoiceData): Promise<Blob> {
   logo.src = LOGO
   await logo.decode()
   const W = 720
-  const H = 900
+  const ROW = 64
+  const top = 440 // donde empieza la lista de pagos
+  const H = top + d.lines.length * ROW + 220
   const cv = document.createElement('canvas')
   cv.width = W
   cv.height = H
@@ -59,12 +72,34 @@ async function toPng(d: InvoiceData): Promise<Blob> {
   }
   g.fillStyle = 'rgba(22,17,11,0.12)'
   g.fillRect(48, 270, W - 96, 2)
-  row(320, 'Cliente', d.client)
-  row(425, 'Concepto', d.concept)
-  row(530, 'Fecha de pago', fmtDate(d.date, true))
+  row(320, 'Cliente', d.client.length > 22 ? `${d.client.slice(0, 21)}…` : d.client)
+  g.fillStyle = '#8a7c6a'
+  font(600, 18)
+  g.textAlign = 'right'
+  g.fillText('MES', W - 48, 320)
+  g.fillStyle = '#16110b'
+  font(500, 28)
+  g.fillText(monthName(d.month), W - 48, 356)
+  g.textAlign = 'left'
+  g.fillStyle = 'rgba(22,17,11,0.12)'
+  g.fillRect(48, top - 34, W - 96, 2)
+  d.lines.forEach((l, i) => {
+    const y = top + i * ROW + 14
+    g.fillStyle = '#8a7c6a'
+    font(600, 18)
+    g.fillText(fmtDate(l.date, true).toUpperCase(), 48, y)
+    g.fillStyle = '#16110b'
+    font(500, 24)
+    g.fillText(l.concept.length > 24 ? `${l.concept.slice(0, 23)}…` : l.concept, 200, y)
+    g.textAlign = 'right'
+    font(700, 24)
+    g.fillText(money(l.amount), W - 48, y)
+    g.textAlign = 'left'
+  })
+  const by = top + d.lines.length * ROW + 10
   g.fillStyle = '#fbeed6'
-  g.fillRect(48, 650, W - 96, 150)
-  row(690, 'Monto a pagar', money(d.amount), true)
+  g.fillRect(48, by, W - 96, 130)
+  row(by + 36, 'Total del mes', money(total(d)), true)
   g.fillStyle = '#8a7c6a'
   font(500, 18)
   g.textAlign = 'center'
@@ -72,7 +107,7 @@ async function toPng(d: InvoiceData): Promise<Blob> {
   return new Promise((ok, fail) => cv.toBlob((b) => (b ? ok(b) : fail(new Error('png'))), 'image/png'))
 }
 
-/** Factura de un pago pendiente: se imprime (o guarda como PDF) y se comparte por WhatsApp. */
+/** Factura mensual de un cliente (sus pagos pendientes del mes): se imprime (o guarda como PDF) y se comparte por WhatsApp. */
 export default function Invoice({ data, onClose }: { data: InvoiceData; onClose: () => void }) {
   const close = useRef(onClose)
   close.current = onClose
@@ -118,14 +153,21 @@ export default function Invoice({ data, onClose }: { data: InvoiceData; onClose:
             <dl>
               <dt>Cliente</dt>
               <dd>{data.client}</dd>
-              <dt>Concepto</dt>
-              <dd>{data.concept}</dd>
-              <dt>Fecha de pago</dt>
-              <dd>{fmtDate(data.date, true)}</dd>
+              <dt>Mes</dt>
+              <dd className="cap">{monthName(data.month)}</dd>
             </dl>
+            <ul className="inv-lines">
+              {data.lines.map((l, i) => (
+                <li key={i}>
+                  <span className="inv-date">{fmtDate(l.date)}</span>
+                  <span className="inv-concept">{l.concept}</span>
+                  <b>{money(l.amount)}</b>
+                </li>
+              ))}
+            </ul>
             <p className="inv-total">
-              <small>Monto a pagar</small>
-              {money(data.amount)}
+              <small>Total del mes</small>
+              {money(total(data))}
             </p>
             <p className="inv-thanks">Gracias por confiar en Hayai</p>
           </article>

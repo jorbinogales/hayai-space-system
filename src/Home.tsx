@@ -4,7 +4,7 @@ import { toScreen } from './scene'
 import { money, summary, useClients } from './store'
 import { projectCounts, useProjects } from './projectData'
 import { monthSummary, useExpenses } from './expenseData'
-import { monthFinance } from './finance'
+import { yearFinance } from './finance'
 import { taskCounts, useTasks } from './taskData'
 import { Icon, ZoomControls } from './ui'
 import type { Screen } from './App'
@@ -21,7 +21,7 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
   const expenses = useExpenses()
   const gx = monthSummary(expenses)
   const tk = taskCounts(useTasks())
-  const fin = monthFinance(useClients(), expenses)
+  const fin = yearFinance(useClients(), expenses)
 
   useEffect(() => {
     const v = new THREE.Vector3()
@@ -93,7 +93,7 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
                 : p.key === 'gastos'
                   ? { title: 'Gastos', lines: [`${money(gx.total)} este mes`, `${gx.cantidad} ${gx.cantidad === 1 ? 'gasto' : 'gastos'}`] }
                   : p.key === 'finanzas'
-                    ? { title: 'Finanzas', lines: [`${money(fin.ingresos)} ingresos`, `${money(fin.gastos)} gastos`, `${money(fin.ingresos - fin.gastos)} balance`] }
+                    ? { title: `Finanzas ${new Date().getFullYear()}`, lines: [`${money(fin.ingresos)} ingresos`, `${money(fin.gastos)} gastos`, `${money(fin.ingresos - fin.gastos)} balance`] }
                     : { title: 'Tareas', lines: [`${tk.pendientes} por hacer`, `${tk.completadas} completadas`] }
           return (
             <div

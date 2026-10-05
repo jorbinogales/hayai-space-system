@@ -62,6 +62,16 @@ export default function DayTrack({
   }, [items])
   const overdue = useMemo(() => items.filter((i) => i.kind === 'pago' && i.date < today).sort((a, b) => a.date.localeCompare(b.date)), [items, today])
 
+  // la factura es del MES del pago: todos los cobros pendientes de ese cliente en ese mes
+  const monthInvoice = (p: DayItem, client: string): InvoiceData => {
+    const month = p.date.slice(0, 7)
+    const lines = items
+      .filter((i) => i.kind === 'pago' && i.clientId === p.clientId && i.date.startsWith(month))
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((i) => ({ date: i.date, concept: i.sub, amount: i.amount ?? 0 }))
+    return { clientId: p.clientId, client, month, lines }
+  }
+
   const card = (p: DayItem) => {
     const cl = clients.find((x) => x.id === p.clientId)
     if (!cl) return null
@@ -80,7 +90,7 @@ export default function DayTrack({
           </span>
         </button>
         {p.kind === 'pago' && (
-          <button type="button" className="inv" title="Factura" aria-label={`Factura de ${cl.name}, ${money(p.amount ?? 0)}`} onClick={() => onInvoice({ id: p.id, client: cl.name, concept: p.sub, amount: p.amount ?? 0, date: p.date })}>
+          <button type="button" className="inv" title="Factura" aria-label={`Factura de ${cl.name}, ${money(p.amount ?? 0)}`} onClick={() => onInvoice(monthInvoice(p, cl.name))}>
             <Icon name="receipt" size={14} />
           </button>
         )}

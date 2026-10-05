@@ -4,6 +4,7 @@ import { clientsBar, toScreen } from './scene'
 import type { World } from './world'
 import { useCosmos } from './Cosmos'
 import CalendarModal from './CalendarModal'
+import Invoice, { type InvoiceData } from './Invoice'
 import { useDragScroll } from './drag'
 import { addDays, avatarOf, convertClient, moveLabel, stats, summary, useClients, money, fmtDate, todayISO, type Client } from './store'
 import NewClient from './NewClient'
@@ -177,6 +178,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
   const [open, setOpen] = useState<string | null>(null) // cliente cuyo historial esta desplegado
   const [form, setForm] = useState(false)
   const [cal, setCal] = useState(false)
+  const [invoice, setInvoice] = useState<InvoiceData | null>(null)
   const [prosp, setProsp] = useState(false) // alta de posible cliente
   const [edit, setEdit] = useState<string | null>(null) // cliente que se esta editando
   const projects = useProjects()
@@ -443,7 +445,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
             </div>
           </header>
           <div className="track-scroll" ref={track}>
-            <DayTrack items={dayRows} clients={clients} start={addDays(today, off)} selected={selected} live={live} onPick={toggle} />
+            <DayTrack items={dayRows} clients={clients} start={addDays(today, off)} selected={selected} live={live} onPick={toggle} onInvoice={setInvoice} />
           </div>
         </section>
 
@@ -487,6 +489,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
       )}
       {edit && <EditClient clientId={edit} onClose={() => setEdit(null)} />}
       {cal && <CalendarModal onClose={() => setCal(false)} />}
+      {invoice && <Invoice data={invoice} onClose={() => setInvoice(null)} />}
     </main>
   )
 }

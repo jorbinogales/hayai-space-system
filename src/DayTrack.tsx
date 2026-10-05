@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
 import { Blobvatar } from './blob'
+import { Icon } from './ui'
+import type { InvoiceData } from './Invoice'
 import { addDays, avatarOf, fmtDate, money, todayISO, weekdayShort, type Client } from './store'
 import type { Project } from './projectData'
 import type { Task } from './taskData'
@@ -41,6 +43,7 @@ export default function DayTrack({
   selected,
   live,
   onPick,
+  onInvoice,
 }: {
   items: DayItem[]
   clients: Client[]
@@ -48,6 +51,7 @@ export default function DayTrack({
   selected: string | null
   live?: string
   onPick: (clientId: string) => void
+  onInvoice: (d: InvoiceData) => void
 }) {
   const today = todayISO()
   const days = useMemo(() => Array.from({ length: DAYS }, (_, i) => addDays(start, i)), [start])
@@ -64,16 +68,23 @@ export default function DayTrack({
     const late = p.date < today
     const label = `${fmtDate(p.date)}: ${cl.name}, ${p.kind === 'pago' ? `${money(p.amount ?? 0)}, ` : 'visita, '}${p.sub}${late ? ', vencido' : ''}`
     return (
-      <button key={p.id} className={`pay${p.kind === 'visita' ? ' visit' : ''}${late ? ' late' : ''}${selected === p.clientId ? ' is-sel' : ''}${live === p.id ? ' is-live' : ''}`} aria-pressed={selected === p.clientId} aria-label={label} onClick={() => onPick(p.clientId)}>
-        <span className="av">
-          <Blobvatar seed={avatarOf(cl)} size={36} />
-        </span>
-        <span className="pay-txt">
-          <span className="pay-name">{cl.name}</span>
-          {p.amount != null && <span className="pay-amt">{money(p.amount)}</span>}
-          <span className="pay-concept">{p.kind === 'visita' && !/^visita/i.test(p.sub) ? `Visita · ${p.sub}` : p.sub}</span>
-        </span>
-      </button>
+      <div key={p.id} className="pay-wrap">
+        <button className={`pay${p.kind === 'visita' ? ' visit' : ''}${late ? ' late' : ''}${selected === p.clientId ? ' is-sel' : ''}${live === p.id ? ' is-live' : ''}${p.kind === 'pago' ? ' has-inv' : ''}`} aria-pressed={selected === p.clientId} aria-label={label} onClick={() => onPick(p.clientId)}>
+          <span className="av">
+            <Blobvatar seed={avatarOf(cl)} size={36} />
+          </span>
+          <span className="pay-txt">
+            <span className="pay-name">{cl.name}</span>
+            {p.amount != null && <span className="pay-amt">{money(p.amount)}</span>}
+            <span className="pay-concept">{p.kind === 'visita' && !/^visita/i.test(p.sub) ? `Visita · ${p.sub}` : p.sub}</span>
+          </span>
+        </button>
+        {p.kind === 'pago' && (
+          <button type="button" className="inv" title="Factura" aria-label={`Factura de ${cl.name}, ${money(p.amount ?? 0)}`} onClick={() => onInvoice({ id: p.id, client: cl.name, concept: p.sub, amount: p.amount ?? 0, date: p.date })}>
+            <Icon name="receipt" size={14} />
+          </button>
+        )}
+      </div>
     )
   }
 

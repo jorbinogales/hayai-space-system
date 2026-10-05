@@ -1630,7 +1630,36 @@ legend { padding: 0 6px; }
 /* una sola tarjeta de alto por dia (~85px + 8px de margen); los demas eventos del dia se desplazan dentro */
 .stack { position: relative; height: 102px; padding-top: 9px; margin-top: -9px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; }
 .stack::-webkit-scrollbar { display: none; }
-.stack .pay { scroll-snap-align: start; scroll-margin-top: 9px; min-height: 85px; box-sizing: border-box; }
+.stack .pay-wrap { scroll-snap-align: start; scroll-margin-top: 9px; }
+.stack .pay { min-height: 85px; box-sizing: border-box; }
+.day.has .pay-wrap { position: relative; }
+.pay.has-inv { padding-right: 38px; }
+.pay-wrap .inv { position: absolute; top: 8px; right: 24px; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; background: rgba(255, 255, 255, 0.1); color: #f4ebdd; cursor: pointer; transition: background var(--t-hover) var(--ease), color var(--t-hover) var(--ease); }
+.pay-wrap .inv:hover, .pay-wrap .inv:focus-visible { background: var(--amber); color: var(--night); outline: none; }
+
+/* ---------- factura ---------- */
+.invoice-sheet { width: min(520px, 100%); }
+.invoice-body { padding: 8px 20px 4px; overflow-y: auto; }
+.invoice-paper { background: #fffdf8; color: #16110b; border-radius: 12px; border-top: 6px solid var(--amber); padding: 22px 26px 20px; box-shadow: 0 14px 30px -18px rgba(0, 0, 0, 0.6); }
+.inv-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.inv-top img { height: 64px; width: auto; }
+.inv-top div { display: grid; text-align: right; gap: 2px; font-size: 0.8rem; color: #4a3f33; }
+.inv-top strong { font: 700 1.3rem / 1 var(--display); color: #16110b; letter-spacing: 0.04em; }
+.invoice-paper dl { margin: 18px 0 0; padding-top: 14px; border-top: 1px solid rgba(22, 17, 11, 0.12); display: grid; gap: 2px; }
+.invoice-paper dt { margin-top: 10px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #8a7c6a; }
+.invoice-paper dd { margin: 0; font-size: 1.05rem; font-weight: 500; }
+.inv-total { display: grid; margin: 20px 0 0; padding: 14px 16px; border-radius: 10px; background: #fbeed6; font: 700 2rem / 1.1 var(--display); font-variant-numeric: tabular-nums; }
+.inv-total small { font: 600 0.7rem / 1.6 var(--display); letter-spacing: 0.1em; text-transform: uppercase; color: #8a7c6a; }
+.inv-thanks { margin: 16px 0 0; text-align: center; font-size: 0.8rem; color: #8a7c6a; }
+.sheet footer .ghost, .sheet footer .primary { display: inline-flex; align-items: center; gap: 8px; }
+
+/* imprimir: solo la factura, sobre papel blanco */
+@media print {
+  body * { visibility: hidden; }
+  .invoice-paper, .invoice-paper * { visibility: visible; }
+  .invoice-paper { position: fixed; inset: 0 auto auto 0; width: 100%; box-shadow: none; border-radius: 0; }
+  @page { margin: 14mm; }
+}
 .stack[data-more]::after { content: attr(data-more); position: sticky; display: block; width: fit-content; bottom: 0; margin: -22px 8px 0 auto; padding: 2px 8px; border-radius: 999px; background: var(--amber); color: var(--night); font-size: 0.68rem; font-weight: 700; pointer-events: none; }
 .tl-tools { display: flex; align-items: center; gap: 8px; }
 .tl-nav { display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 50%; background: rgba(255, 255, 255, 0.08); color: #f4ebdd; cursor: pointer; transition: background var(--t-hover) var(--ease); }

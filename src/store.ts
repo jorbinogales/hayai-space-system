@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { api } from './api'
 import { createList } from './cache'
 import { loadExpenses } from './expenseData'
@@ -28,6 +29,8 @@ export interface Client {
   name: string
   /** posible cliente: aun no firmo (puede no tener inicial ni cobros) */
   prospect?: boolean
+  /** archivado: se oculta de las pantallas de trabajo pero su historial sigue contando en Finanzas */
+  archived?: boolean
   /** semilla del avatar blob */
   avatar: string
   /** desglose de la inicial */
@@ -36,7 +39,13 @@ export interface Client {
 }
 
 const clients = createList<Client>()
-export const useClients = clients.use
+/** Todos los clientes, archivados incluidos: para Finanzas (el historial no desaparece) y para el Archivo. */
+export const useAllClients = clients.use
+/** Los clientes de trabajo: sin los archivados. */
+export const useClients = () => {
+  const all = clients.use()
+  return useMemo(() => all.filter((c) => !c.archived), [all])
+}
 export const loadClients = async () => clients.set(await api.get<Client[]>('/clients'))
 export const resetClients = () => clients.set([])
 
@@ -86,7 +95,14 @@ export async function updateClient(id: string, d: { name: string; avatar: string
   put(c)
   return c
 }
-/** Borra el cliente y todo lo suyo en el servidor; refresca proyectos, tareas y gastos, que se van con él. */
+/** Archiva o desarchiva un cliente. Sus proyectos y tareas se ocultan con él, así que se recargan. */
+export async function archiveClient(id: string, archived: boolean): Promise<Client> {
+  const c = await api.post<Client>(`/clients/${id}/${archived ? 'archive' : 'unarchive'}`)
+  put(c)
+  await Promise.all([loadProjects(), loadTasks()])
+  return c
+}
+/** Manda el cliente y todo lo suyo a la papelera (se restaura 30 días); refresca proyectos, tareas y gastos, que se van con él. */
 export async function removeClient(id: string): Promise<void> {
   await api.del(`/clients/${id}`)
   clients.update((cur) => cur.filter((x) => x.id !== id))

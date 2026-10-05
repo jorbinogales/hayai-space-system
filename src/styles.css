@@ -1684,3 +1684,69 @@ legend { padding: 0 6px; }
 .tl-today:disabled { opacity: 0.4; cursor: default; }
 .tl-today:not(:disabled):hover { border-color: var(--amber); background: rgba(239, 157, 37, 0.16); }
 .tl-nav:focus-visible, .tl-today:focus-visible { outline: 2px solid #ffd27a; outline-offset: 2px; }
+
+/* ---------- integraciones, papelera y archivo ---------- */
+.acct-menu button + button { margin-top: 6px; }
+.sheet .none { margin: 0; color: rgba(244, 235, 221, 0.62); font-size: 0.88rem; }
+.ig-lede { margin: 0; max-width: 62ch; color: rgba(244, 235, 221, 0.78); font-size: 0.92rem; line-height: 1.5; }
+.ig-lede em { font-style: normal; color: #ffd27a; }
+.ig-sheet, .vt-sheet { width: min(720px, 100%); }
+
+/* llave recién creada: lo único que se ve una vez */
+.ig-fresh { padding: 14px; border-radius: 16px; background: rgba(239, 157, 37, 0.14); box-shadow: inset 0 0 0 1px rgba(239, 157, 37, 0.45); display: grid; gap: 10px; }
+.ig-fresh-t { margin: 0; font-weight: 600; color: #ffe0a8; }
+.ig-key, .ig-pre { display: flex; align-items: flex-start; gap: 10px; padding: 8px 8px 8px 12px; border-radius: 12px; background: rgba(0, 0, 0, 0.35); }
+.ig-key code, .ig-pre pre { flex: 1; min-width: 0; margin: 0; font: 500 0.82rem/1.5 ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; color: #f4ebdd; overflow-x: auto; white-space: pre; }
+.ig-key code { align-self: center; user-select: all; }
+.ig-copy { flex: none; padding: 6px 12px; border: 0; border-radius: 999px; background: rgba(255, 255, 255, 0.1); color: #f4ebdd; font: 600 0.78rem var(--sans); cursor: pointer; transition: background var(--t-hover) var(--ease); }
+.ig-copy:hover { background: rgba(239, 157, 37, 0.35); }
+
+/* lista de llaves */
+.ig-list, .vt-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.ig-list li, .vt-list li { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.05); }
+.ig-k { flex: 1 1 200px; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.ig-k strong { font-size: 0.98rem; }
+.ig-k code { font: 500 0.78rem ui-monospace, Menlo, Consolas, monospace; color: rgba(244, 235, 221, 0.6); }
+.ig-k small { flex-basis: 100%; color: rgba(244, 235, 221, 0.6); font-size: 0.78rem; }
+.ig-scopes { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.ig-s { padding: 2px 9px; border-radius: 999px; font-style: normal; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; }
+.ig-read { background: rgba(44, 122, 87, 0.35); color: #b8f0d4; }
+.ig-write { background: rgba(239, 157, 37, 0.3); color: #ffe0a8; }
+.ig-delete { background: rgba(190, 59, 31, 0.4); color: #ffc3b2; }
+.ig-sure { display: inline-flex; gap: 6px; }
+
+/* permisos como tarjetas conmutables (el borrado va en rojo para que se note) */
+.ig-perms { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.ig-perm { display: grid; gap: 4px; align-content: start; padding: 10px 12px; text-align: left; border: 1px solid rgba(244, 235, 221, 0.2); border-radius: 14px; background: rgba(255, 255, 255, 0.04); color: #f4ebdd; font: inherit; cursor: pointer; transition: background var(--t-hover) var(--ease), border-color var(--t-hover) var(--ease); }
+.ig-perm b { font-size: 0.9rem; }
+.ig-perm small { color: rgba(244, 235, 221, 0.62); font-size: 0.74rem; line-height: 1.35; }
+.ig-perm:hover { background: rgba(239, 157, 37, 0.1); }
+.ig-perm.is-on { border-color: var(--amber); background: rgba(239, 157, 37, 0.2); }
+.ig-perm.is-on:last-child { border-color: #e5654a; background: rgba(190, 59, 31, 0.26); }
+.ig-perm:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.ig-pin input { max-width: 180px; letter-spacing: 0.4em; font-variant-numeric: tabular-nums; }
+fieldset > .seg { margin-bottom: 12px; }
+.ig-how { display: grid; gap: 10px; }
+.ig-how p { margin: 0; font-size: 0.88rem; line-height: 1.5; color: rgba(244, 235, 221, 0.82); }
+.ig-how code { font: 500 0.8rem ui-monospace, Menlo, Consolas, monospace; color: #ffd27a; }
+.ig-note { color: rgba(244, 235, 221, 0.6) !important; font-size: 0.8rem !important; }
+
+/* papelera y archivo */
+.vt-tabs { padding: 0 22px 12px; }
+.vt-empty { margin: 8px 0; padding: 28px 16px; text-align: center; border-radius: 14px; border: 1px dashed rgba(244, 235, 221, 0.22); color: rgba(244, 235, 221, 0.7); font-size: 0.92rem; }
+.vt-ico { flex: none; display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: rgba(239, 157, 37, 0.16); color: #ffd27a; }
+.vt-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.vt-main strong { overflow-wrap: anywhere; }
+.vt-main small { color: rgba(244, 235, 221, 0.62); font-size: 0.78rem; }
+.vt-act { flex: none; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 230px; }
+.vt-act .primary, .vt-act .ghost { padding: 7px 14px; font-size: 0.82rem; }
+.seg button svg { flex: none; }
+
+@media (max-width: 640px) {
+  .ig-perms { grid-template-columns: 1fr; }
+  .vt-list li, .ig-list li { flex-wrap: wrap; }
+  .vt-act { max-width: none; justify-content: flex-start; flex-basis: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ig-copy, .ig-perm { transition-duration: 0.01ms; }
+}

@@ -3,8 +3,8 @@ import { Icon, ZoomControls } from './ui'
 import { Blobvatar } from './blob'
 import { useCosmos } from './Cosmos'
 import { useDragScroll } from './drag'
-import { money, useClients } from './store'
-import { useProjects } from './projectData'
+import { money, useAllClients } from './store'
+import { useAllProjects } from './projectData'
 import { useExpenses } from './expenseData'
 import { dashboard, series, type Period } from './finance'
 import { reduced } from './warp'
@@ -18,8 +18,9 @@ const PERIODS: { key: Period; label: string }[] = [
 /** Pantalla Finanzas: el planeta a un costado y un dashboard con lo recaudado por cada cliente frente a los gastos. */
 export default function Finances({ onBack }: { onBack: () => void }) {
   const { world } = useCosmos()
-  const clients = useClients()
-  const projects = useProjects()
+  // Finanzas cuenta TODO, archivado o no: archivar oculta, no borra el historial.
+  const clients = useAllClients()
+  const projects = useAllProjects()
   const expenses = useExpenses()
   const [period, setPeriod] = useState<Period>('mes')
   const [exiting, setExiting] = useState(false)

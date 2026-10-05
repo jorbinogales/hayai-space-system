@@ -4,7 +4,7 @@ import { Icon } from './ui'
 import { Blobvatar } from './blob'
 import { useClients } from './store'
 import { useSession } from './session'
-import { addProject, removeProject, updateProject, astronautNames, avatarFor, PROJECT_ICONS, STATUS_LABEL, type Project, type ProjectStatus } from './projectData'
+import { addProject, archiveProject, removeProject, updateProject, astronautNames, avatarFor, PROJECT_ICONS, STATUS_LABEL, type Project, type ProjectStatus } from './projectData'
 
 const STATUSES: ProjectStatus[] = ['planeacion', 'activo', 'entrega']
 const ICON_LABEL: Record<string, string> = { globe: 'Web', phone: 'App móvil', chart: 'Panel / datos', cart: 'Tienda', palette: 'Diseño', box: 'Sistema', code: 'Desarrollo' }
@@ -52,7 +52,7 @@ export default function NewProject({ onClose, onCreate, project }: { onClose: ()
   }
 
   const remove = async () => {
-    if (!project || !window.confirm(`¿Eliminar el proyecto "${project.name}" con sus tareas y gastos? No se puede deshacer.`)) return
+    if (!project || !window.confirm(`¿Eliminar el proyecto "${project.name}" con sus tareas y gastos?\n\nIrá a la papelera y podrás restaurarlo durante 30 días.`)) return
     setBusy(true)
     try {
       await removeProject(project.id)
@@ -60,6 +60,18 @@ export default function NewProject({ onClose, onCreate, project }: { onClose: ()
     } catch (err) {
       setBusy(false)
       setError(err instanceof Error ? err.message : 'No se pudo eliminar el proyecto.')
+    }
+  }
+
+  const archive = async () => {
+    if (!project) return
+    setBusy(true)
+    try {
+      await archiveProject(project.id, true)
+      onClose()
+    } catch (err) {
+      setBusy(false)
+      setError(err instanceof Error ? err.message : 'No se pudo archivar el proyecto.')
     }
   }
 
@@ -136,6 +148,11 @@ export default function NewProject({ onClose, onCreate, project }: { onClose: ()
           <p className="err" role="alert">
             {error}
           </p>
+          {project && (
+            <button type="button" className="ghost" disabled={busy} onClick={() => void archive()} title="Lo oculta de las pantallas de trabajo; sus gastos siguen contando en Finanzas">
+              Archivar
+            </button>
+          )}
           {project && (
             <button type="button" className="ghost danger" disabled={busy} onClick={() => void remove()}>
               Eliminar

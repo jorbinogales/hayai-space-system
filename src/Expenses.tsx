@@ -126,7 +126,7 @@ export default function Expenses({ onBack }: { onBack: () => void }) {
                           <div className="m-right">
                             <p className="m-amt">{money(x.amount)}</p>
                           </div>
-                          <button className="rm" aria-label={`Eliminar ${x.concept}`} title="Eliminar" onClick={() => window.confirm(`¿Eliminar el gasto "${x.concept}"?`) && void removeExpense(x.id).catch((e) => window.alert(e instanceof Error ? e.message : 'No se pudo eliminar.'))}>
+                          <button className="rm" aria-label={`Eliminar ${x.concept}`} title="Eliminar" onClick={() => window.confirm(`¿Eliminar el gasto "${x.concept}"? Irá a la papelera y podrás restaurarlo durante 30 días.`) && void removeExpense(x.id).catch((e) => window.alert(e instanceof Error ? e.message : 'No se pudo eliminar.'))}>
                             <Icon name="close" size={15} />
                           </button>
                         </li>

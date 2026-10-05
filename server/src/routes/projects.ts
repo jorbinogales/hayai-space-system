@@ -5,7 +5,7 @@ import { sendToTrash } from '../trash.ts'
 import { HttpError, id, idParam, isoDate, parse, text } from '../util.ts'
 
 export const PROJECT_SELECT = `SELECT p.id, p.name, p.icon, u.name AS owner, c.name AS client, p.client_id AS "clientId",
-    p.status, p.due_date AS due, p.archived_at IS NOT NULL AS archived
+    p.status, p.due_date AS due, p.archived_at IS NOT NULL AS archived, c.archived_at IS NOT NULL AS "clientArchived"
   FROM projects p JOIN users u ON u.id = p.owner_id JOIN clients c ON c.id = p.client_id`
 
 export const projectIcon = z.enum(['globe', 'phone', 'chart', 'cart', 'palette', 'box', 'code'], 'Icono inválido')

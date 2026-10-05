@@ -10,6 +10,8 @@ import { Topbar } from './ui'
 import { Warp } from './warp'
 import Boot from './Boot'
 import Profile from './Profile'
+import Integrations from './Integrations'
+import Vault from './Vault'
 import { createWorld } from './world'
 import { logout, me, type Session } from './auth'
 import { loadAll, resetAll } from './data'
@@ -28,6 +30,8 @@ export default function App() {
   // capa mostrada: solo cuando el viaje ya llego (null mientras se viaja)
   const [ui, setUi] = useState<Screen | null>(route)
   const [profile, setProfile] = useState(false)
+  const [integrations, setIntegrations] = useState(false)
+  const [vault, setVault] = useState(false)
   // un unico mundo 3D para todas las pantallas: navegar mueve objetos dentro de la misma escena
   const world = useMemo(() => createWorld(route === 'home' ? null : route), [])
 
@@ -88,10 +92,14 @@ export default function App() {
         <Topbar
           user={session}
           onProfile={() => setProfile(true)}
+          onIntegrations={() => setIntegrations(true)}
+          onVault={() => setVault(true)}
           onLogout={() => {
             void logout()
             resetAll()
             setProfile(false)
+            setIntegrations(false)
+            setVault(false)
             setSession(null)
             if (route !== 'home') navigate('home')
           }}
@@ -99,6 +107,8 @@ export default function App() {
       )}
       <Warp />
       {session && profile && <Profile user={session} onClose={() => setProfile(false)} />}
+      {session && integrations && <Integrations onClose={() => setIntegrations(false)} />}
+      {session && vault && <Vault onClose={() => setVault(false)} />}
       {session === undefined && <div className="boot-wait" aria-hidden="true" />}
       {session === null && (
         <Boot

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './ui'
 import { AvatarPicker } from './blob'
-import { addPayment, deletePayment, money, moveLabel, removeClient, saveInitial, todayISO, updateClient, updatePayment, useClients, type Movement } from './store'
+import { addPayment, archiveClient, deletePayment, money, moveLabel, removeClient, saveInitial, todayISO, updateClient, updatePayment, useAllClients, type Movement } from './store'
 
 /** Cuota o cobro editable: fecha, concepto, monto y estado se guardan al salir del campo o al pulsar; borrar es inmediato. */
 function PayRow({ m, onError }: { m: Movement; onError: (s: string) => void }) {
@@ -52,7 +52,7 @@ function PayRow({ m, onError }: { m: Movement; onError: (s: string) => void }) {
 
 /** Editar un cliente: datos, inicial (con fecha anterior si hace falta), y todas sus cuotas/cobros. Mismo estilo oscuro que los demas formularios. */
 export default function EditClient({ clientId, onClose }: { clientId: string; onClose: () => void }) {
-  const client = useClients().find((c) => c.id === clientId)
+  const client = useAllClients().find((c) => c.id === clientId)
   const [name, setName] = useState(client?.name ?? '')
   const [avatar, setAvatar] = useState(client?.avatar ?? '')
   const initial = client?.movements.find((m) => m.kind === 'inicial')
@@ -118,12 +118,18 @@ export default function EditClient({ clientId, onClose }: { clientId: string; on
   }
 
   const removeThis = () => {
-    if (!window.confirm(`¿Eliminar a "${client.name}" con sus proyectos, tareas, cobros y gastos? No se puede deshacer.`)) return
+    if (!window.confirm(`¿Eliminar a "${client.name}" con sus proyectos, tareas, cobros y gastos?\n\nIrá a la papelera y podrás restaurarlo durante 30 días.`)) return
     void wrap(async () => {
       await removeClient(client.id)
       onClose()
     }, 'Cliente eliminado')
   }
+
+  const archiveThis = () =>
+    void wrap(async () => {
+      await archiveClient(client.id, true)
+      onClose()
+    }, 'Cliente archivado')
 
   const cuotas = client.movements.filter((m) => m.kind !== 'inicial')
   const total = items.reduce((s, r) => s + (Number(r.amount) > 0 ? Number(r.amount) : 0), 0)
@@ -228,6 +234,9 @@ export default function EditClient({ clientId, onClose }: { clientId: string; on
           <p className={msg ? 'err' : 'ok-note'} role="alert">
             {msg || saved}
           </p>
+          <button type="button" className="ghost" disabled={busy} onClick={archiveThis} title="Lo oculta de las pantallas de trabajo; su historial sigue contando en Finanzas">
+            Archivar
+          </button>
           <button type="button" className="ghost danger" disabled={busy} onClick={removeThis}>
             Eliminar cliente
           </button>

@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { api } from './api'
 import { createList } from './cache'
 
@@ -10,10 +11,16 @@ export interface Task {
   due?: string | null
   /** astronauta que la creo (nombre) */
   owner: string
+  /** su proyecto (o el cliente de este) está archivado: no se muestra */
+  hidden?: boolean
 }
 
 const tasks = createList<Task>()
-export const useTasks = tasks.use
+/** Las tareas de trabajo: sin las de proyectos o clientes archivados. */
+export const useTasks = () => {
+  const all = tasks.use()
+  return useMemo(() => all.filter((t) => !t.hidden), [all])
+}
 export const loadTasks = async () => tasks.set(await api.get<Task[]>('/tasks'))
 export const resetTasks = () => tasks.set([])
 

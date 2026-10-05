@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import type { IconName } from './ui'
 import { api } from './api'
 import { createList } from './cache'
@@ -20,10 +21,20 @@ export interface Project {
   status: ProjectStatus
   /** fecha de entrega, YYYY-MM-DD */
   due?: string | null
+  /** archivado: oculto de las pantallas de trabajo */
+  archived?: boolean
+  /** su cliente está archivado (el proyecto se oculta con él) */
+  clientArchived?: boolean
 }
 
 const projects = createList<Project>()
-export const useProjects = projects.use
+/** Todos los proyectos, ocultos incluidos: para Finanzas (cruza gastos con clientes) y el Archivo. */
+export const useAllProjects = projects.use
+/** Los proyectos de trabajo: sin los archivados ni los de un cliente archivado. */
+export const useProjects = () => {
+  const all = projects.use()
+  return useMemo(() => all.filter((p) => !p.archived && !p.clientArchived), [all])
+}
 export const loadProjects = async () => projects.set(await api.get<Project[]>('/projects'))
 export const resetProjects = () => projects.set([])
 
@@ -50,7 +61,15 @@ export async function updateProject(id: string, d: ProjectPatch): Promise<Projec
   return p
 }
 
-/** Borra el proyecto (y sus tareas y gastos) en el servidor; refresca tareas y gastos. */
+/** Archiva o desarchiva un proyecto (sus tareas se ocultan con él). */
+export async function archiveProject(id: string, archived: boolean): Promise<Project> {
+  const p = await api.post<Project>(`/projects/${id}/${archived ? 'archive' : 'unarchive'}`)
+  projects.update((cur) => cur.map((x) => (x.id === id ? p : x)))
+  await loadTasks()
+  return p
+}
+
+/** Manda el proyecto (con sus tareas y gastos) a la papelera; refresca tareas y gastos. */
 export async function removeProject(id: string): Promise<void> {
   await api.del(`/projects/${id}`)
   projects.update((cur) => cur.filter((x) => x.id !== id))

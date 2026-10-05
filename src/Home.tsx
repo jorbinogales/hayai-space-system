@@ -1,7 +1,7 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
 import * as THREE from 'three'
 import { toScreen } from './scene'
-import { money, summary, useClients } from './store'
+import { money, summary, useAllClients, useClients } from './store'
 import { projectCounts, useProjects } from './projectData'
 import { monthSummary, useExpenses } from './expenseData'
 import { yearFinance } from './finance'
@@ -21,7 +21,7 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
   const expenses = useExpenses()
   const gx = monthSummary(expenses)
   const tk = taskCounts(useTasks())
-  const fin = yearFinance(useClients(), expenses)
+  const fin = yearFinance(useAllClients(), expenses)
 
   useEffect(() => {
     const v = new THREE.Vector3()

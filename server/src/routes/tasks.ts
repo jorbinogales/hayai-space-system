@@ -4,8 +4,9 @@ import { pool } from '../db.ts'
 import { sendToTrash } from '../trash.ts'
 import { HttpError, id, idParam, isoDate, parse, text } from '../util.ts'
 
-export const TASK_SELECT = `SELECT t.id, t.project_id AS "projectId", t.title, t.done, t.due_date AS due, u.name AS owner
-  FROM tasks t JOIN users u ON u.id = t.created_by`
+export const TASK_SELECT = `SELECT t.id, t.project_id AS "projectId", t.title, t.done, t.due_date AS due, u.name AS owner,
+    (p.archived_at IS NOT NULL OR c.archived_at IS NOT NULL) AS hidden
+  FROM tasks t JOIN projects p ON p.id = t.project_id JOIN clients c ON c.id = p.client_id JOIN users u ON u.id = t.created_by`
 
 export const tasksRouter = Router()
 

@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { pool } from '../db.ts'
+import { sendToTrash } from '../trash.ts'
 import { HttpError, id, idParam, isoDate, money, parse, text } from '../util.ts'
 
 const SELECT = `SELECT e.id, e.date, e.concept, e.amount, e.category, e.scope,
@@ -47,7 +48,6 @@ expensesRouter.post('/', async (req, res) => {
 })
 
 expensesRouter.delete('/:id', async (req, res) => {
-  const { rowCount } = await pool.query('DELETE FROM expenses WHERE id = $1', [idParam(req.params.id)])
-  if (!rowCount) throw new HttpError(404, 'Gasto no encontrado')
+  await sendToTrash('gasto', idParam(req.params.id), req.user!.id)
   res.status(204).end()
 })

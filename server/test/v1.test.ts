@@ -43,14 +43,16 @@ async function http(url: string, o: Opts = {}): Promise<Res> {
 
 let KEY = '' // Leandro
 let KEY_J = '' // Jorbi
+let KEY_D = '' // Leandro, con permiso de borrado
 const api = (path: string, o: Opts = {}) => http(`${ROOT}/api/v1${path}`, { key: KEY, ...o })
+const apiD = (path: string, o: Opts = {}) => api(path, { key: KEY_D, ...o })
 
 function cli(...args: string[]) {
   const r = spawnSync(process.execPath, ['--import', 'tsx', 'server/src/apikey-cli.ts', ...args], { cwd: root, env, encoding: 'utf8' })
   return { status: r.status, out: r.stdout + r.stderr }
 }
-function newKey(user: string, name: string) {
-  const r = cli('create', '--user', user, '--name', name)
+function newKey(user: string, name: string, scopes?: string) {
+  const r = cli('create', '--user', user, '--name', name, ...(scopes ? ['--scopes', scopes] : []))
   assert.equal(r.status, 0, r.out)
   const m = r.out.match(/hy_[A-Za-z0-9_-]+/)
   assert.ok(m, r.out)
@@ -90,6 +92,7 @@ before(async () => {
   await admin.connect()
   KEY = newKey('Leandro', 'growi')
   KEY_J = newKey('Jorbi', 'jorbi-laptop')
+  KEY_D = newKey('Leandro', 'limpieza', 'read,write,delete')
 })
 
 after(async () => {
@@ -173,8 +176,8 @@ describe('llaves y autenticación', () => {
     assert.match(ls.out, /\[revocada\].*temporal/)
   })
 
-  it('DELETE no existe en v1, ruta desconocida => 404; cuerpo no JSON => 415; JSON roto => 400', async () => {
-    assert.equal((await api(`/clientes/${NOPE}`, { method: 'DELETE' })).status, 404)
+  it('ruta desconocida => 404; cuerpo no JSON => 415; JSON roto => 400', async () => {
+    assert.equal((await apiD(`/clientes/${NOPE}`, { method: 'DELETE' })).status, 404)
     const nf = await api('/nada')
     assert.equal(nf.status, 404)
     assert.equal(nf.body.error.code, 'not_found')
@@ -273,7 +276,7 @@ describe('clientes', () => {
       page: 1,
       per_page: 20,
       total: 2,
-      resumen: { activos: 1, posibles: 1, recaudado: 200, cuotas_por_cobrar: 4 },
+      resumen: { activos: 1, posibles: 1, archivados: 0, recaudado: 200, cuotas_por_cobrar: 4 },
     })
     assert.ok(!('movimientos' in r.body.data[0]), 'la lista es resumen; el detalle trae movimientos')
   })
@@ -371,6 +374,8 @@ describe('proyectos', () => {
         responsable: 'Leandro',
         estado: 'visita',
         entrega: null,
+        archivado: false,
+        cliente_archivado: false,
         tareas: { total: 0, completadas: 0 },
       },
     )
@@ -617,7 +622,7 @@ describe('MCP', () => {
     assert.equal(g.headers.get('allow'), 'POST')
   })
 
-  it('tools/list: las herramientas del SPEC + las de pagos, con esquema, y ninguna de borrado', async () => {
+  it('tools/list: las herramientas del SPEC + pagos + papelera, con esquema; sin permiso de borrado no se ven las de borrar', async () => {
     const r = await rpc('tools/list')
     assert.equal(r.status, 200, JSON.stringify(r.body))
     const names: string[] = r.body.result.tools.map((t: any) => t.name)
@@ -629,8 +634,12 @@ describe('MCP', () => {
     ]
     for (const s of spec) assert.ok(names.includes(s), s)
     for (const s of ['hayai_pagos_listar', 'hayai_pago_registrar', 'hayai_pago_marcar_cobrado']) assert.ok(names.includes(s), s)
-    assert.equal(names.length, 17)
-    assert.ok(!names.some((x) => /borrar|eliminar|delete/.test(x)))
+    for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
+    assert.equal(names.length, 20) // lectura + escritura
+    assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
+    const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
+    assert.equal(full.length, 25)
+    assert.equal(full.filter((t: any) => /eliminar/.test(t.name) && t.annotations.destructiveHint === true).length, 5)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
     assert.equal(r.body.result.tools.find((t: any) => t.name === 'hayai_finanzas_resumen').annotations.readOnlyHint, true)
@@ -678,5 +687,315 @@ describe('MCP', () => {
     assert.equal(pend.meta.total_monto, 60)
     const lst = data(await tool('hayai_clientes_listar', { estado: 'activo' }))
     assert.deepEqual(lst.data.map((c: any) => c.nombre), ['Karelys R'])
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// Permisos por llave, papelera, archivo y gestión de llaves desde la web.
+// ---------------------------------------------------------------------------------------------------------------
+
+describe('permisos por llave', () => {
+  it('/me lista los permisos; la CLI valida la lista; la BD también', async () => {
+    const me = await api('/me')
+    assert.deepEqual(me.body.llave.permisos.map((x: any) => x.permiso), ['read', 'write'])
+    assert.equal(cli('create', '--user', 'Leandro', '--name', 'x', '--scopes', 'read,tirar').status, 1)
+    await assert.rejects(
+      admin.query("UPDATE api_keys SET scopes = ARRAY['admin'] WHERE name = 'growi'"),
+      /api_keys_scopes_ck/,
+    )
+    await assert.rejects(admin.query("UPDATE api_keys SET scopes = '{}' WHERE name = 'growi'"), /api_keys_scopes_ck/)
+  })
+
+  it('sin permiso de borrado, DELETE => 403 forbidden y no borra nada', async () => {
+    const r = await api(`/tareas/${t1}`, { method: 'DELETE' })
+    assert.equal(r.status, 403)
+    assert.equal(r.body.error.code, 'forbidden')
+    assert.equal(r.body.error.required_scope, 'delete')
+    assert.equal((await api(`/tareas/${t1}`)).status, 200)
+  })
+
+  it('llave de solo lectura: GET sí, POST/PATCH/DELETE => 403', async () => {
+    const ro = newKey('Elis', 'solo-lectura', 'read')
+    assert.equal((await api('/clientes', { key: ro })).status, 200)
+    const post = await api('/gastos', { key: ro, body: { concepto: 'x', monto: 1, categoria: 'Otros' } })
+    assert.equal(post.status, 403)
+    assert.equal(post.body.error.required_scope, 'write')
+    assert.equal((await api(`/tareas/${t1}`, { key: ro, method: 'PATCH', body: { estado: 'completada' } })).status, 403)
+    assert.equal((await api(`/tareas/${t1}`, { key: ro, method: 'DELETE' })).status, 403)
+  })
+
+  it('MCP: una herramienta que la llave no puede usar no existe para ella', async () => {
+    const r = await http(`${ROOT}/mcp`, {
+      key: KEY,
+      headers: { accept: 'application/json, text/event-stream' },
+      body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'hayai_cliente_eliminar', arguments: { id: karelys } } },
+    })
+    assert.ok(r.body.error || r.body.result?.isError, JSON.stringify(r.body))
+    assert.equal((await api(`/clientes/${karelys}`)).status, 200, 'el cliente sigue ahí')
+  })
+})
+
+describe('papelera y borrado', () => {
+  const resumenFinanzas = async () => (await api('/finanzas/resumen?periodo=todo')).body
+  let c = ''
+  let pa = ''
+  let ta = ''
+  let ga = ''
+  let pagoId = ''
+  let before: any
+
+  it('prepara un cliente con inicial, cobros, dos proyectos, tareas y gastos', async () => {
+    const cl = await apiD('/clientes', {
+      body: {
+        nombre: 'Borrable SA',
+        items: [{ concepto: 'Web', monto: 100 }],
+        fecha_inicial: '2026-09-15',
+        cobros: [{ fecha: '2026-12-01', monto: 50, concepto: 'Cuota' }],
+      },
+    })
+    assert.equal(cl.status, 201, JSON.stringify(cl.body))
+    c = cl.body.id
+    pagoId = cl.body.movimientos.find((m: any) => m.tipo === 'pago').id
+    pa = (await apiD('/proyectos', { body: { nombre: 'Proyecto A', cliente_id: c } })).body.id
+    await apiD('/proyectos', { body: { nombre: 'Proyecto B', cliente_id: c } })
+    ta = (await apiD('/tareas', { body: { titulo: 'Tarea de A', proyecto_id: pa } })).body.id
+    ga = (await apiD('/gastos', { body: { concepto: 'Hosting A', monto: 10, categoria: 'Infraestructura', ambito: 'proyecto', referencia_id: pa, fecha: '2026-09-20' } })).body.id
+    await apiD('/gastos', { body: { concepto: 'Dominio cliente', monto: 5, categoria: 'Otros', ambito: 'cliente', referencia_id: c, fecha: '2026-09-21' } })
+    before = await resumenFinanzas()
+    assert.ok(before.clientes.some((x: any) => x.id === c))
+  })
+
+  it('borrar un proyecto lo manda a la papelera con sus tareas y gastos', async () => {
+    const r = await apiD(`/proyectos/${pa}`, { method: 'DELETE' })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.entidad, 'proyecto')
+    assert.match(r.body.resumen, /1 tarea, 1 gasto/)
+    assert.ok(r.body.restaurable_hasta)
+    assert.equal((await apiD(`/proyectos/${pa}`)).status, 404)
+    assert.equal((await apiD(`/tareas/${ta}`)).status, 404)
+    assert.equal((await apiD(`/gastos/${ga}`)).status, 404)
+    const t = await apiD('/papelera')
+    const item = t.body.data.find((x: any) => x.nombre === 'Proyecto A')
+    assert.equal(item.origen, 'api:limpieza')
+    assert.equal(item.eliminado_por, 'Leandro')
+    pa = item.id // a partir de aquí pa es el id de papelera
+  })
+
+  it('borrar el cliente se lleva todo lo suyo; restaurar el proyecto antes que el cliente => 409', async () => {
+    const r = await apiD(`/clientes/${c}`, { method: 'DELETE' })
+    assert.equal(r.status, 200)
+    assert.match(r.body.resumen, /2 cobros, 1 proyecto, 0 tareas, 1 gasto/)
+    assert.equal((await apiD(`/clientes/${c}`)).status, 404)
+    const { rows } = await admin.query('SELECT (SELECT count(*) FROM payments WHERE client_id = $1)::int AS p, (SELECT count(*) FROM projects WHERE client_id = $1)::int AS j', [c])
+    assert.deepEqual(rows[0], { p: 0, j: 0 })
+    const bad = await apiD(`/papelera/${pa}/restaurar`, { method: 'POST', body: {} })
+    assert.equal(bad.status, 409)
+    assert.match(bad.body.error.message, /cliente/)
+  })
+
+  it('restaurar el cliente y luego el proyecto deja las finanzas exactamente como estaban', async () => {
+    const list = (await apiD('/papelera')).body.data
+    const cli = list.find((x: any) => x.nombre === 'Borrable SA')
+    const rc = await apiD(`/papelera/${cli.id}/restaurar`, { method: 'POST', body: {} })
+    assert.equal(rc.status, 200, JSON.stringify(rc.body))
+    assert.equal(rc.body.id, c, 'conserva el mismo id')
+    const det = (await apiD(`/clientes/${c}`)).body
+    assert.equal(det.n_items, 1)
+    assert.equal(det.movimientos.length, 2)
+    assert.equal(det.proyectos.length, 1)
+    const rp = await apiD(`/papelera/${pa}/restaurar`, { method: 'POST', body: {} })
+    assert.equal(rp.status, 200, JSON.stringify(rp.body))
+    assert.equal((await apiD(`/tareas/${ta}`)).body.titulo, 'Tarea de A')
+    assert.equal((await apiD(`/gastos/${ga}`)).body.concepto, 'Hosting A')
+    assert.deepEqual(await resumenFinanzas(), before)
+    assert.equal((await apiD(`/papelera/${cli.id}/restaurar`, { method: 'POST', body: {} })).status, 404, 'ya no está en la papelera')
+  })
+
+  it('cobros: la inicial no se borra; un cobro normal va a la papelera y vuelve', async () => {
+    const inicial = (await apiD(`/clientes/${c}`)).body.movimientos.find((m: any) => m.tipo === 'inicial')
+    assert.equal((await apiD(`/pagos/${inicial.id}`, { method: 'DELETE' })).status, 400)
+    const d = await apiD(`/pagos/${pagoId}`, { method: 'DELETE' })
+    assert.equal(d.status, 200)
+    assert.match(d.body.nombre, /Cuota/)
+    assert.equal((await apiD(`/clientes/${c}`)).body.movimientos.length, 1)
+    const back = await apiD(`/papelera/${d.body.papelera_id}/restaurar`, { method: 'POST', body: {} })
+    assert.equal(back.status, 200)
+    assert.equal((await apiD(`/clientes/${c}`)).body.movimientos.length, 2)
+  })
+
+  it('gastos y tareas sueltos: borrar y restaurar; un id que no existe => 404', async () => {
+    const g = await apiD(`/gastos/${ga}`, { method: 'DELETE' })
+    const t = await apiD(`/tareas/${ta}`, { method: 'DELETE' })
+    assert.equal(g.status, 200)
+    assert.equal(t.status, 200)
+    assert.equal((await apiD(`/gastos/${ga}`, { method: 'DELETE' })).status, 404)
+    // el gasto cuelga de un proyecto que sigue vivo, así que se restaura solo
+    assert.equal((await apiD(`/papelera/${g.body.papelera_id}/restaurar`, { method: 'POST', body: {} })).status, 200)
+    assert.equal((await apiD(`/papelera/${t.body.papelera_id}/restaurar`, { method: 'POST', body: {} })).status, 200)
+    assert.deepEqual(await resumenFinanzas(), before)
+  })
+
+  it('restaurar exige escritura (una llave solo lectura no puede) y la papelera se lista con lectura', async () => {
+    const d = await apiD(`/tareas/${ta}`, { method: 'DELETE' })
+    const ro = newKey('Elis', 'lector', 'read')
+    assert.equal((await api('/papelera', { key: ro })).status, 200)
+    assert.equal((await api(`/papelera/${d.body.papelera_id}/restaurar`, { key: ro, method: 'POST', body: {} })).status, 403)
+    assert.equal((await apiD(`/papelera/${d.body.papelera_id}/restaurar`, { method: 'POST', body: {} })).status, 200)
+  })
+
+  it('lo que pasa de 30 días se limpia solo', async () => {
+    const d = await apiD(`/tareas/${ta}`, { method: 'DELETE' })
+    await admin.query("UPDATE trash SET deleted_at = now() - interval '31 days' WHERE id = $1", [d.body.papelera_id])
+    const list = (await apiD('/papelera')).body.data
+    assert.ok(!list.some((x: any) => x.id === d.body.papelera_id))
+    assert.equal((await apiD(`/papelera/${d.body.papelera_id}/restaurar`, { method: 'POST', body: {} })).status, 404)
+  })
+})
+
+describe('archivo', () => {
+  let c = ''
+  let proj = ''
+  let tarea = ''
+
+  it('archivar un cliente lo oculta de listas, proyectos y tareas, pero Finanzas conserva su historial', async () => {
+    const cl = await api('/clientes', { body: { nombre: 'Para archivar', items: [{ concepto: 'Web', monto: 40 }], fecha_inicial: '2026-10-01' } })
+    c = cl.body.id
+    proj = (await api('/proyectos', { body: { nombre: 'Proyecto archivable', cliente_id: c } })).body.id
+    tarea = (await api('/tareas', { body: { titulo: 'Tarea archivable', proyecto_id: proj } })).body.id
+    const antes = (await api('/finanzas/resumen?periodo=todo')).body
+    const activosAntes = (await api('/clientes')).body.meta.resumen.activos
+
+    const a = await api(`/clientes/${c}`, { method: 'PATCH', body: { archivado: true } })
+    assert.equal(a.status, 200)
+    assert.equal(a.body.archivado, true)
+
+    const lst = (await api('/clientes')).body
+    assert.ok(!lst.data.some((x: any) => x.id === c))
+    assert.equal(lst.meta.resumen.activos, activosAntes - 1)
+    assert.equal(lst.meta.resumen.archivados, 1)
+    assert.ok((await api('/clientes?archivados=solo')).body.data.some((x: any) => x.id === c))
+    assert.ok((await api('/clientes?archivados=incluir')).body.data.some((x: any) => x.id === c))
+    assert.ok(!(await api('/proyectos')).body.data.some((x: any) => x.id === proj), 'el proyecto de un cliente archivado se oculta')
+    assert.ok((await api('/proyectos?archivados=solo')).body.data.some((x: any) => x.id === proj))
+    assert.ok(!(await api('/tareas')).body.data.some((x: any) => x.id === tarea))
+    assert.equal((await api(`/clientes/${c}`)).status, 200, 'por id sigue accesible')
+    assert.deepEqual((await api('/finanzas/resumen?periodo=todo')).body, antes, 'archivar no cambia los números')
+  })
+
+  it('desarchivar lo devuelve; archivar un proyecto es independiente del cliente', async () => {
+    const u = await api(`/clientes/${c}`, { method: 'PATCH', body: { archivado: false } })
+    assert.equal(u.body.archivado, false)
+    assert.ok((await api('/proyectos')).body.data.some((x: any) => x.id === proj))
+    const p = await api(`/proyectos/${proj}`, { method: 'PATCH', body: { archivado: true } })
+    assert.equal(p.body.archivado, true)
+    assert.equal(p.body.cliente_archivado, false)
+    assert.ok((await api('/clientes')).body.data.some((x: any) => x.id === c), 'el cliente sigue visible')
+    assert.ok(!(await api('/proyectos')).body.data.some((x: any) => x.id === proj))
+    assert.ok(!(await api('/tareas')).body.data.some((x: any) => x.id === tarea))
+    assert.ok((await api('/tareas?archivados=incluir')).body.data.some((x: any) => x.id === tarea))
+    await api(`/proyectos/${proj}`, { method: 'PATCH', body: { archivado: false } })
+    assert.ok((await api('/tareas')).body.data.some((x: any) => x.id === tarea))
+  })
+
+  it('archivados inválido => 400; PATCH vacío sigue rechazándose', async () => {
+    assert.equal((await api('/clientes?archivados=quizas')).status, 400)
+    assert.equal((await api(`/clientes/${c}`, { method: 'PATCH', body: {} })).status, 400)
+  })
+})
+
+describe('llaves y papelera desde la web', () => {
+  const NEW_PIN = '482913'
+  let cookie = ''
+  const web = (path: string, o: { method?: string; body?: unknown } = {}) =>
+    http(`${ROOT}/api${path}`, { headers: { cookie }, ...o })
+
+  before(async () => {
+    const login = await fetch(`${ROOT}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Jorbi', pin: '000000' }),
+    })
+    cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    assert.equal((await web('/auth/change-pin', { body: { currentPin: '000000', newPin: NEW_PIN } })).status, 200)
+  })
+
+  it('exige sesión', async () => {
+    assert.equal((await http(`${ROOT}/api/keys`)).status, 401)
+    assert.equal((await http(`${ROOT}/api/trash`)).status, 401)
+  })
+
+  it('crear una llave: pide el PIN, valida permisos, muestra la llave una sola vez y funciona en v1', async () => {
+    assert.equal((await web('/keys', { body: { name: 'mi-agente', scopes: ['read'], pin: '111111' } })).status, 403)
+    assert.equal((await web('/keys', { body: { name: 'mi-agente', scopes: [], pin: NEW_PIN } })).status, 400)
+    assert.equal((await web('/keys', { body: { name: 'mi-agente', scopes: ['root'], pin: NEW_PIN } })).status, 400)
+    assert.equal((await web('/keys', { body: { name: '  ', scopes: ['read'], pin: NEW_PIN } })).status, 400)
+
+    const r = await web('/keys', { body: { name: 'mi-agente', scopes: ['read', 'delete', 'read'], pin: NEW_PIN } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.match(r.body.key, /^hy_/)
+    assert.deepEqual(r.body.scopes, ['read', 'delete'])
+    const me = await api('/me', { key: r.body.key })
+    assert.equal(me.body.usuario.nombre, 'Jorbi')
+    assert.deepEqual(me.body.llave.permisos.map((x: any) => x.permiso), ['read', 'delete'])
+
+    const list = await web('/keys')
+    const mine = list.body.find((k: any) => k.id === r.body.id)
+    assert.equal(mine.name, 'mi-agente')
+    assert.ok(!JSON.stringify(list.body).includes(r.body.key), 'el listado nunca devuelve la llave')
+    assert.ok(!('key' in mine) && !('key_hash' in mine))
+  })
+
+  it('el listado es solo de las llaves del usuario en sesión; no se puede revocar la de otro', async () => {
+    const list = await web('/keys')
+    assert.ok(list.body.every((k: any) => k.name !== 'growi'), 'no aparecen las llaves de Leandro')
+    const other = (await admin.query("SELECT id FROM api_keys WHERE name = 'growi'")).rows[0].id
+    assert.equal((await web(`/keys/${other}`, { method: 'DELETE' })).status, 404)
+    assert.equal((await api('/me')).status, 200, 'la llave de Leandro sigue viva')
+  })
+
+  it('revocar: la llave deja de funcionar y desaparece del listado', async () => {
+    const r = await web('/keys', { body: { name: 'temporal-web', scopes: ['read'], pin: NEW_PIN } })
+    assert.equal((await api('/me', { key: r.body.key })).status, 200)
+    assert.equal((await web(`/keys/${r.body.id}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await api('/me', { key: r.body.key })).status, 401)
+    assert.ok(!(await web('/keys')).body.some((k: any) => k.id === r.body.id))
+    assert.equal((await web(`/keys/${r.body.id}`, { method: 'DELETE' })).status, 404)
+  })
+
+  it('máximo 10 llaves activas por socio', async () => {
+    let last = 0
+    for (let i = 0; i < 12; i++) last = (await web('/keys', { body: { name: `k${i}`, scopes: ['read'], pin: NEW_PIN } })).status
+    assert.equal(last, 409)
+    const n = (await admin.query("SELECT count(*)::int AS n FROM api_keys k JOIN users u ON u.id = k.user_id WHERE u.name = 'Jorbi' AND k.revoked_at IS NULL")).rows[0].n
+    assert.equal(n, 10)
+    await admin.query("UPDATE api_keys SET revoked_at = now() WHERE name LIKE 'k%' AND name ~ '^k[0-9]+$'")
+  })
+
+  it('papelera en la web: borrar desde la web también es recuperable; borrado definitivo solo aquí', async () => {
+    const g = await api('/gastos', { body: { concepto: 'Para la papelera', monto: 7, categoria: 'Otros', fecha: '2026-10-02' } })
+    assert.equal((await web(`/expenses/${g.body.id}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await api(`/gastos/${g.body.id}`)).status, 404)
+    const trash = await web('/trash')
+    const item = trash.body.find((t: any) => t.label.startsWith('Para la papelera'))
+    assert.equal(item.entity, 'gasto')
+    assert.equal(item.via, 'web')
+    assert.equal(item.deletedBy, 'Jorbi')
+    assert.ok(new Date(item.expiresAt) > new Date(item.deletedAt))
+    assert.equal((await web(`/trash/${item.id}/restore`, { body: {} })).status, 200)
+    assert.equal((await api(`/gastos/${g.body.id}`)).status, 200)
+
+    assert.equal((await web(`/expenses/${g.body.id}`, { method: 'DELETE' })).status, 204)
+    const again = (await web('/trash')).body.find((t: any) => t.label.startsWith('Para la papelera'))
+    assert.equal((await web(`/trash/${again.id}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await web(`/trash/${again.id}/restore`, { body: {} })).status, 404)
+    assert.equal((await web(`/trash/${again.id}`, { method: 'DELETE' })).status, 404)
+  })
+
+  it('archivar desde la web: POST /clients/:id/archive y /unarchive', async () => {
+    const cl = await api('/clientes', { body: { nombre: 'Archivo web' } })
+    const a = await web(`/clients/${cl.body.id}/archive`, { body: {} })
+    assert.equal(a.body.archived, true)
+    assert.equal((await web('/clients')).body.find((x: any) => x.id === cl.body.id).archived, true, 'la web recibe la lista completa con la marca')
+    assert.equal((await web(`/clients/${cl.body.id}/unarchive`, { body: {} })).body.archived, false)
   })
 })

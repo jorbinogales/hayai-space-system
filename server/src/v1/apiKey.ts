@@ -5,10 +5,20 @@ import { HttpError } from '../util.ts'
 
 export const KEY_PREFIX = 'hy_'
 
+export const SCOPES = ['read', 'write', 'delete'] as const
+export type Scope = (typeof SCOPES)[number]
+export const SCOPE_LABEL: Record<Scope, string> = { read: 'lectura', write: 'escritura', delete: 'borrado' }
+
 declare module 'express-serve-static-core' {
   interface Request {
-    apiKey?: { id: string; name: string; prefix: string }
+    apiKey?: { id: string; name: string; prefix: string; scopes: Scope[] }
   }
+}
+
+/** Falla con 403 si la llave no tiene el permiso. */
+export function requireScope(req: { apiKey?: { scopes: Scope[] } }, scope: Scope) {
+  if (!req.apiKey?.scopes.includes(scope))
+    throw new HttpError(403, `Esta llave no tiene permiso de ${SCOPE_LABEL[scope]}`, { required_scope: scope })
 }
 
 export const hashKey = (key: string) => createHash('sha256').update(key).digest('hex')
@@ -57,7 +67,7 @@ export async function apiKeyAuth(req: Request, _res: Response, next: NextFunctio
   if (!key.startsWith(KEY_PREFIX) || key.length > 200) throw reject()
 
   const { rows } = await pool.query(
-    `SELECT k.id AS key_id, k.name AS key_name, k.prefix, u.id, u.name, u.avatar, u.role
+    `SELECT k.id AS key_id, k.name AS key_name, k.prefix, k.scopes, u.id, u.name, u.avatar, u.role
      FROM api_keys k JOIN users u ON u.id = k.user_id
      WHERE k.key_hash = $1 AND k.revoked_at IS NULL AND u.active`,
     [hashKey(key)],
@@ -65,8 +75,9 @@ export async function apiKeyAuth(req: Request, _res: Response, next: NextFunctio
   const r = rows[0]
   if (!r) throw reject()
 
-  req.user = { id: r.id, name: r.name, avatar: r.avatar, role: r.role, mustChangePin: false }
-  req.apiKey = { id: r.key_id, name: r.key_name, prefix: r.prefix }
+  const scopes = r.scopes as Scope[]
+  req.user = { id: r.id, name: r.name, avatar: r.avatar, role: r.role, mustChangePin: false, scopes, via: `api:${r.key_name}` }
+  req.apiKey = { id: r.key_id, name: r.key_name, prefix: r.prefix, scopes }
   // last_used_at como mucho una vez por minuto: no escribimos en la BD en cada llamada.
   pool
     .query(

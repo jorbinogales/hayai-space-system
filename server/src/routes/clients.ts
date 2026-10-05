@@ -3,7 +3,8 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { pool, tx, type Db } from '../db.ts'
 import { HttpError, idParam, isoDate, money, parse, text } from '../util.ts'
-import { PROJECT_SELECT, deleteProjects, projectIcon } from './projects.ts'
+import { sendToTrash } from '../trash.ts'
+import { PROJECT_SELECT, projectIcon } from './projects.ts'
 import { TASK_SELECT } from './tasks.ts'
 
 type ChargeRow = { d: string; c: string; a: number; s: string; sid: string | null; si: number | null; st: number | null }
@@ -13,7 +14,7 @@ type Movement = { id: string; date: string; concept: string; amount: number; kin
 /** 3 consultas y se agrupa en memoria (sin N+1). Con ids, solo esos clientes. */
 export async function loadClients(db: Db, ids?: string[]) {
   const [clients, items, moves] = await Promise.all([
-    db.query(`SELECT id, name, avatar, is_prospect FROM clients ${ids ? 'WHERE id = ANY($1::uuid[])' : ''} ORDER BY created_at, id`, ids ? [ids] : []),
+    db.query(`SELECT id, name, avatar, is_prospect, archived_at FROM clients ${ids ? 'WHERE id = ANY($1::uuid[])' : ''} ORDER BY created_at, id`, ids ? [ids] : []),
     db.query(
       `SELECT id, client_id, concept, amount FROM client_items ${ids ? 'WHERE client_id = ANY($1::uuid[])' : ''} ORDER BY created_at, id`,
       ids ? [ids] : [],
@@ -41,6 +42,7 @@ export async function loadClients(db: Db, ids?: string[]) {
     name: c.name,
     avatar: c.avatar,
     prospect: c.is_prospect,
+    archived: c.archived_at !== null,
     items: itemsBy.get(c.id) ?? [],
     movements: movesBy.get(c.id) ?? [],
   }))
@@ -178,21 +180,21 @@ clientsRouter.patch('/:id', async (req, res) => {
   res.json(await clientOr404(pool, clientId))
 })
 
-// Borra el cliente con todo lo suyo: gastos, proyectos (y sus tareas/gastos), cobros e ítems.
+// "Borrar" manda el cliente con todo lo suyo (gastos, proyectos con sus tareas, cobros e ítems) a la papelera, donde se restaura.
 clientsRouter.delete('/:id', async (req, res) => {
-  const clientId = idParam(req.params.id)
-  const found = await tx(async (c) => {
-    const exists = (await c.query('SELECT 1 FROM clients WHERE id = $1 FOR UPDATE', [clientId])).rowCount
-    if (!exists) return 0
-    await deleteProjects(c, 'client_id = $1', [clientId])
-    await c.query('DELETE FROM expenses WHERE client_id = $1', [clientId])
-    await c.query('DELETE FROM payments WHERE client_id = $1', [clientId])
-    await c.query('DELETE FROM clients WHERE id = $1', [clientId]) // client_items: CASCADE
-    return 1
-  })
-  if (!found) throw new HttpError(404, 'Cliente no encontrado')
+  await sendToTrash('cliente', idParam(req.params.id), req.user!.id)
   res.status(204).end()
 })
+
+// Archivar oculta al cliente de las pantallas de trabajo sin tocar su historial.
+for (const [action, value] of [['archive', 'now()'], ['unarchive', 'NULL']] as const) {
+  clientsRouter.post(`/:id/${action}`, async (req, res) => {
+    const clientId = idParam(req.params.id)
+    const { rowCount } = await pool.query(`UPDATE clients SET archived_at = ${value} WHERE id = $1`, [clientId])
+    if (!rowCount) throw new HttpError(404, 'Cliente no encontrado')
+    res.json(await clientOr404(pool, clientId))
+  })
+}
 
 // Reemplaza el desglose de la inicial y sincroniza su movimiento (crea, actualiza o borra según la suma).
 clientsRouter.put('/:id/initial', async (req, res) => {
@@ -279,7 +281,7 @@ paymentsRouter.patch('/:id', async (req, res) => {
 paymentsRouter.delete('/:id', async (req, res) => {
   const paymentId = idParam(req.params.id)
   const clientId = await paymentOwner(paymentId)
-  await pool.query('DELETE FROM payments WHERE id = $1', [paymentId])
+  await sendToTrash('pago', paymentId, req.user!.id)
   res.json(await clientOr404(pool, clientId))
 })
 

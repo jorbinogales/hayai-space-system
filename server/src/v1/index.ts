@@ -4,11 +4,12 @@ import express, { Router, type NextFunction, type Request, type Response } from 
 import { exec, type Op } from '../services/common.ts'
 import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoActualizar, pagoRegistrar, pagosListar } from '../services/clientes.ts'
 import { finanzasResumen } from '../services/finanzas.ts'
+import { clienteEliminar, gastoEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
 import { gastoActualizar, gastoRegistrar, gastosListar, gastoVer } from '../services/gastos.ts'
 import { proyectoActualizar, proyectoCrear, proyectosListar, proyectoVer } from '../services/proyectos.ts'
 import { tareaActualizar, tareaCrear, tareasListar, tareaVer } from '../services/tareas.ts'
 import { HttpError } from '../util.ts'
-import { apiKeyAuth, keyRateLimit } from './apiKey.ts'
+import { apiKeyAuth, keyRateLimit, requireScope, SCOPE_LABEL, type Scope } from './apiKey.ts'
 
 const CODES: Record<number, string> = {
   400: 'validation_error',
@@ -64,17 +65,25 @@ v1Router.use((_req, res, next) => {
 v1Router.use(apiKeyAuth, keyRateLimit())
 v1Router.use(jsonOnly, express.json({ limit: '100kb' }))
 
+const SCOPE_OF = { get: 'read', post: 'write', patch: 'write', delete: 'delete' } as const
+
+// Cada ruta exige el permiso de su método (GET lee, POST/PATCH escriben, DELETE borra) ANTES de ejecutar nada.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function route(method: 'get' | 'post' | 'patch', path: string, o: Op<any, any>, status = 200) {
-  const input = method === 'get' ? fromQuery : fromBody
+function route(method: 'get' | 'post' | 'patch' | 'delete', path: string, o: Op<any, any>, status = 200) {
+  const input = method === 'get' || method === 'delete' ? fromQuery : fromBody
   v1Router[method](path, async (req, res) => {
+    requireScope(req, SCOPE_OF[method])
     res.status(status).json(await exec(o, req.user!, input(req)))
   })
 }
 
 // Quien soy: sirve para probar la conexion y ver a quien se atribuyen las escrituras de esta llave.
 v1Router.get('/me', (req, res) => {
-  res.json({ usuario: { id: req.user!.id, nombre: req.user!.name }, llave: { nombre: req.apiKey!.name, prefijo: req.apiKey!.prefix } })
+  const k = req.apiKey!
+  res.json({
+    usuario: { id: req.user!.id, nombre: req.user!.name },
+    llave: { nombre: k.name, prefijo: k.prefix, permisos: k.scopes.map((x: Scope) => ({ permiso: x, descripcion: SCOPE_LABEL[x] })) },
+  })
 })
 
 route('get', '/clientes', clientesListar)
@@ -82,19 +91,23 @@ route('get', '/clientes/:id', clienteVer)
 route('post', '/clientes', clienteCrear, 201)
 route('patch', '/clientes/:id', clienteActualizar)
 route('post', '/clientes/:cliente_id/pagos', pagoRegistrar, 201)
+route('delete', '/clientes/:id', clienteEliminar)
 
 route('get', '/pagos', pagosListar)
 route('patch', '/pagos/:id', pagoActualizar)
+route('delete', '/pagos/:id', pagoEliminar)
 
 route('get', '/proyectos', proyectosListar)
 route('get', '/proyectos/:id', proyectoVer)
 route('post', '/proyectos', proyectoCrear, 201)
 route('patch', '/proyectos/:id', proyectoActualizar)
+route('delete', '/proyectos/:id', proyectoEliminar)
 
 route('get', '/gastos', gastosListar)
 route('get', '/gastos/:id', gastoVer)
 route('post', '/gastos', gastoRegistrar, 201)
 route('patch', '/gastos/:id', gastoActualizar)
+route('delete', '/gastos/:id', gastoEliminar)
 
 route('get', '/finanzas/resumen', finanzasResumen)
 
@@ -102,8 +115,13 @@ route('get', '/tareas', tareasListar)
 route('get', '/tareas/:id', tareaVer)
 route('post', '/tareas', tareaCrear, 201)
 route('patch', '/tareas/:id', tareaActualizar)
+route('delete', '/tareas/:id', tareaEliminar)
 
-// Sin DELETE en v1 (SPEC §2): ni siquiera responde 405, simplemente no existe.
+// Papelera: lo borrado se puede ver y restaurar. El borrado definitivo no existe en la API.
+route('get', '/papelera', papeleraListar)
+route('post', '/papelera/:id/restaurar', papeleraRestaurar)
+
+// Lo que no es una ruta de arriba no existe.
 v1Router.use((_req, _res) => {
   throw new HttpError(404, 'No encontrado')
 })

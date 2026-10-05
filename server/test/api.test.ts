@@ -293,6 +293,7 @@ describe('datos', () => {
       name: 'Acme SA',
       avatar: 'orion',
       prospect: false,
+      archived: false,
       items: [
         { id: '<uuid>', concept: 'Landing', amount: 1500 },
         { id: '<uuid>', concept: 'Hosting', amount: 250.5 },
@@ -312,7 +313,7 @@ describe('datos', () => {
   it('POST /clients sin items => sin movimiento inicial; validaciones => 400 legible', async () => {
     const r = await call('/clients', { cookie, body: { name: 'Sin items', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] } })
     assert.equal(r.status, 201)
-    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Sin items', avatar: 'x', prospect: false, items: [], movements: [] })
+    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Sin items', avatar: 'x', prospect: false, archived: false, items: [], movements: [] })
     const bad = [
       { name: '', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] },
       { name: 'x'.repeat(81), avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] },
@@ -406,6 +407,7 @@ describe('datos', () => {
       clientId: '<uuid>',
       status: 'activo',
       due: '2026-05-01',
+      archived: false,
     })
     const noDue = await call('/projects', { cookie, body: { name: 'Sin fecha', icon: 'code', clientId, owner: 'Elis', status: 'planeacion', due: null } })
     assert.equal(noDue.status, 201)
@@ -489,7 +491,7 @@ describe('datos', () => {
   const NOPE = '11111111-1111-4111-8111-111111111111'
 
   it('editar cliente y cuotas: flujo completo (fechas pasadas, inicial, cuota suelta, serie, cobrar, editar, borrar)', async () => {
-    const keys = ['avatar', 'id', 'items', 'movements', 'name', 'prospect']
+    const keys = ['archived', 'avatar', 'id', 'items', 'movements', 'name', 'prospect']
     const created = await call('/clients', {
       cookie,
       body: {
@@ -656,9 +658,9 @@ describe('datos', () => {
     assert.equal(r.status, 201, JSON.stringify(r.body))
     assert.deepEqual(Object.keys(r.body).sort(), ['client', 'project', 'task'])
     const { client, project, task } = r.body
-    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, items: [], movements: [] })
+    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, archived: false, items: [], movements: [] })
     assert.deepEqual(shape(project), {
-      id: '<uuid>', name: 'Web Futuro', icon: 'globe', owner: 'Leandro', client: 'Futuro SA', clientId: '<uuid>', status: 'planeacion', due: '2020-03-01',
+      id: '<uuid>', name: 'Web Futuro', icon: 'globe', owner: 'Leandro', client: 'Futuro SA', clientId: '<uuid>', status: 'planeacion', due: '2020-03-01', archived: false,
     })
     assert.equal(project.clientId, client.id)
     assert.deepEqual(shape(task), { id: '<uuid>', projectId: '<uuid>', title: 'Visita a Futuro SA', done: false, due: '2020-02-10', owner: 'Elis' })
@@ -763,7 +765,7 @@ describe('datos', () => {
     assert.deepEqual(multi.body, {
       ...p.body, name: 'Renombrado', icon: 'chart', status: 'entrega', owner: 'Jorbi', client: 'Otro cliente', clientId: other.body.id, due: '2019-01-01',
     })
-    assert.deepEqual(Object.keys(multi.body), ['id', 'name', 'icon', 'owner', 'client', 'clientId', 'status', 'due'])
+    assert.deepEqual(Object.keys(multi.body), ['id', 'name', 'icon', 'owner', 'client', 'clientId', 'status', 'due', 'archived'])
     assert.deepEqual((await call('/projects', { cookie })).body.find((x: any) => x.id === p.body.id), multi.body) // GET igual
     const nul = await patch({ due: null })
     assert.equal(nul.body.due, null)

@@ -5,8 +5,10 @@ import { requirePinChanged, requireSession } from './auth.ts'
 import { authRouter } from './routes/auth.ts'
 import { clientsRouter, paymentsRouter, prospectsRouter } from './routes/clients.ts'
 import { expensesRouter } from './routes/expenses.ts'
+import { keysRouter } from './routes/keys.ts'
 import { projectsRouter } from './routes/projects.ts'
 import { tasksRouter } from './routes/tasks.ts'
+import { trashRouter } from './routes/trash.ts'
 import { usersRouter } from './routes/users.ts'
 import { mcpRouter } from './mcp/index.ts'
 import { v1Router } from './v1/index.ts'
@@ -65,6 +67,8 @@ export function createApp() {
   api.use('/projects', projectsRouter)
   api.use('/expenses', expensesRouter)
   api.use('/tasks', tasksRouter)
+  api.use('/keys', keysRouter)
+  api.use('/trash', trashRouter)
   api.use((_req, _res) => {
     throw new HttpError(404, 'No encontrado')
   })

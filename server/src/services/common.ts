@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { parse } from '../util.ts'
 
 /** Socio al que se atribuye lo que se escriba (el dueño de la llave de API). */
-export type Actor = { id: string; name: string }
+export type Actor = { id: string; name: string; via?: string }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyObject = z.ZodObject<any, any>
@@ -39,6 +39,11 @@ export const todayISO = () =>
 export const r2 = (n: number) => Math.round(n * 100) / 100
 export const cents = (n: number) => Math.round(n * 100)
 
+/** Archivados: por defecto se ocultan (como en las pantallas de trabajo de la web). */
+export const archivadosParam = z
+  .enum(['excluir', 'incluir', 'solo'], 'archivados inválido (excluir, incluir o solo)')
+  .default('excluir')
+
 // ---------- paginacion ----------
 export const pageShape = {
   page: z.number().int().min(1).default(1),
@@ -59,6 +64,10 @@ export function filters() {
     add(cond: string, value: unknown) {
       params.push(value)
       sql.push(cond.replace('?', `$${params.length}`))
+    },
+    /** Condicion fija, sin valor. */
+    raw(cond: string) {
+      sql.push(cond)
     },
     where: () => (sql.length ? `WHERE ${sql.join(' AND ')}` : ''),
     params: () => [...params],

@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { pool } from '../db.ts'
+import { sendToTrash } from '../trash.ts'
 import { HttpError, id, idParam, isoDate, parse, text } from '../util.ts'
 
 export const TASK_SELECT = `SELECT t.id, t.project_id AS "projectId", t.title, t.done, t.due_date AS due, u.name AS owner
@@ -48,7 +49,6 @@ tasksRouter.patch('/:id', async (req, res) => {
 })
 
 tasksRouter.delete('/:id', async (req, res) => {
-  const { rowCount } = await pool.query('DELETE FROM tasks WHERE id = $1', [idParam(req.params.id)])
-  if (!rowCount) throw new HttpError(404, 'Tarea no encontrada')
+  await sendToTrash('tarea', idParam(req.params.id), req.user!.id)
   res.status(204).end()
 })

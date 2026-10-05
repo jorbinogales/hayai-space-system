@@ -18,7 +18,16 @@ export const cookieOpts = {
   path: '/',
 }
 
-export type SessionUser = { id: string; name: string; avatar: string; role: string; mustChangePin: boolean }
+export type SessionUser = {
+  id: string
+  name: string
+  avatar: string
+  role: string
+  mustChangePin: boolean
+  /** Solo en llamadas con llave de API: sus permisos (read | write | delete) y de donde viene, para la papelera. */
+  scopes?: string[]
+  via?: string
+}
 
 declare module 'express-serve-static-core' {
   interface Request {

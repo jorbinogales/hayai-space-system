@@ -1,10 +1,10 @@
 import { z } from 'zod'
 import { pool } from '../db.ts'
 import { HttpError, id, isoDate, text } from '../util.ts'
-import { filters, op, pageShape, paged } from './common.ts'
+import { archivadosParam, filters, op, pageShape, paged } from './common.ts'
 
 const SELECT = `SELECT t.id, t.project_id, p.name AS project, t.title, t.done, t.due_date, u.name AS owner
-  FROM tasks t JOIN projects p ON p.id = t.project_id JOIN users u ON u.id = t.created_by`
+  FROM tasks t JOIN projects p ON p.id = t.project_id JOIN clients c ON c.id = p.client_id JOIN users u ON u.id = t.created_by`
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const out = (r: any) => ({
@@ -27,22 +27,29 @@ async function tarea(taskId: string) {
 }
 
 export const tareasListar = op(
-  z.strictObject({ estado: estado.optional(), proyecto_id: id.optional(), ...pageShape }),
+  z.strictObject({ estado: estado.optional(), proyecto_id: id.optional(), archivados: archivadosParam, ...pageShape }),
   async (_a, i) => {
+    // Las tareas de proyectos (o clientes) archivados se ocultan, igual que en la web.
+    const hide = (g: ReturnType<typeof filters>) => {
+      if (i.archivados === 'excluir') g.raw('p.archived_at IS NULL AND c.archived_at IS NULL')
+      if (i.archivados === 'solo') g.raw('(p.archived_at IS NOT NULL OR c.archived_at IS NOT NULL)')
+    }
     const base = filters()
     if (i.proyecto_id) base.add('t.project_id = ?', i.proyecto_id)
+    hide(base)
     // Los contadores respetan el proyecto pedido pero no el estado, para ver "n pendientes / m completadas".
     const counts = await pool.query(
       `SELECT count(*) FILTER (WHERE NOT t.done)::int AS pendientes, count(*) FILTER (WHERE t.done)::int AS completadas
-       FROM tasks t ${base.where()}`,
+       FROM tasks t JOIN projects p ON p.id = t.project_id JOIN clients c ON c.id = p.client_id ${base.where()}`,
       base.params(),
     )
     const f = filters()
     if (i.proyecto_id) f.add('t.project_id = ?', i.proyecto_id)
     if (i.estado) f.add('t.done = ?', i.estado === 'completada')
+    hide(f)
     const { clause, args } = f.page(i.per_page, i.page)
     const [total, rows] = await Promise.all([
-      pool.query(`SELECT count(*)::int AS n FROM tasks t ${f.where()}`, f.params()),
+      pool.query(`SELECT count(*)::int AS n FROM tasks t JOIN projects p ON p.id = t.project_id JOIN clients c ON c.id = p.client_id ${f.where()}`, f.params()),
       pool.query(`${SELECT} ${f.where()} ORDER BY t.done, t.due_date NULLS LAST, t.created_at, t.id ${clause}`, args),
     ])
     return paged(rows.rows.map(out), total.rows[0].n, i.page, i.per_page, { ...counts.rows[0] })

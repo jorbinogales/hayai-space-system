@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { pool, tx } from '../db.ts'
 import { expandCharge, insertCharges, insertItems, loadClients, repeatMonths } from '../routes/clients.ts'
 import { HttpError, id, isoDate, money, text } from '../util.ts'
-import { AVATAR_SEEDS, filters, op, pageShape, paged, projectStateOut, r2, todayISO } from './common.ts'
+import { archivadosParam, AVATAR_SEEDS, filters, op, pageShape, paged, projectStateOut, r2, todayISO } from './common.ts'
 
 type Loaded = Awaited<ReturnType<typeof loadClients>>[number]
 type Move = Loaded['movements'][number]
@@ -34,6 +34,7 @@ function resumen(c: Loaded) {
     nombre: c.name,
     avatar: c.avatar,
     estado: c.prospect ? 'posible' : 'activo',
+    archivado: c.archived,
     recaudado: r2(recaudado),
     por_cobrar: r2(porCobrar),
     pagos_completados: completados,
@@ -66,27 +67,30 @@ export async function clienteDetalle(clientId: string) {
 
 // ---------- clientes ----------
 export const clientesListar = op(
-  z.strictObject({ estado: z.enum(['activo', 'posible']).optional(), ...pageShape }),
+  z.strictObject({ estado: z.enum(['activo', 'posible']).optional(), archivados: archivadosParam, ...pageShape }),
   async (_a, i) => {
     const f = filters()
     if (i.estado) f.add('is_prospect = ?', i.estado === 'posible')
+    if (i.archivados === 'excluir') f.raw('archived_at IS NULL')
+    if (i.archivados === 'solo') f.raw('archived_at IS NOT NULL')
     const { clause, args } = f.page(i.per_page, i.page)
     const [total, ids, head] = await Promise.all([
       pool.query(`SELECT count(*)::int AS n FROM clients ${f.where()}`, f.params()),
       pool.query(`SELECT id FROM clients ${f.where()} ORDER BY created_at, id ${clause}`, args),
-      // Mismos totales que la cabecera de Clientes en la web: solo clientes activos (los posibles no cuentan).
+      // Mismos totales que la cabecera de Clientes en la web: solo clientes activos y no archivados (los posibles no cuentan).
       pool.query(
-        `SELECT (SELECT count(*)::int FROM clients WHERE NOT is_prospect) AS activos,
-                (SELECT count(*)::int FROM clients WHERE is_prospect) AS posibles,
+        `SELECT (SELECT count(*)::int FROM clients WHERE NOT is_prospect AND archived_at IS NULL) AS activos,
+                (SELECT count(*)::int FROM clients WHERE is_prospect AND archived_at IS NULL) AS posibles,
+                (SELECT count(*)::int FROM clients WHERE archived_at IS NOT NULL) AS archivados,
                 COALESCE(sum(p.amount) FILTER (WHERE p.status = 'cobrado'), 0) AS recaudado,
                 count(*) FILTER (WHERE p.status = 'pendiente')::int AS cuotas_por_cobrar
-         FROM payments p JOIN clients c ON c.id = p.client_id WHERE NOT c.is_prospect`,
+         FROM payments p JOIN clients c ON c.id = p.client_id WHERE NOT c.is_prospect AND c.archived_at IS NULL`,
       ),
     ])
     const list = ids.rows.length ? await loadClients(pool, ids.rows.map((r) => r.id)) : []
     const h = head.rows[0]
     return paged(list.map(resumen), total.rows[0].n, i.page, i.per_page, {
-      resumen: { activos: h.activos, posibles: h.posibles, recaudado: r2(h.recaudado), cuotas_por_cobrar: h.cuotas_por_cobrar },
+      resumen: { activos: h.activos, posibles: h.posibles, archivados: h.archivados, recaudado: r2(h.recaudado), cuotas_por_cobrar: h.cuotas_por_cobrar },
     })
   },
 )
@@ -141,13 +145,15 @@ export const clienteActualizar = op(
       nombre: text(80).optional(),
       avatar: text(40).optional(),
       estado: z.enum(['activo', 'posible']).optional(),
+      archivado: z.boolean().optional(), // true = archivar (se oculta pero conserva su historial), false = desarchivar
     })
-    .refine((v) => v.nombre !== undefined || v.avatar !== undefined || v.estado !== undefined, 'Envía al menos nombre, avatar o estado'),
+    .refine((v) => Object.entries(v).some(([k, x]) => k !== 'id' && x !== undefined), 'Envía al menos nombre, avatar, estado o archivado'),
   async (_a, b) => {
     const { rowCount } = await pool.query(
-      `UPDATE clients SET name = COALESCE($2, name), avatar = COALESCE($3, avatar), is_prospect = COALESCE($4::boolean, is_prospect)
+      `UPDATE clients SET name = COALESCE($2, name), avatar = COALESCE($3, avatar), is_prospect = COALESCE($4::boolean, is_prospect),
+         archived_at = CASE WHEN $5::boolean IS NULL THEN archived_at WHEN $5::boolean THEN COALESCE(archived_at, now()) ELSE NULL END
        WHERE id = $1`,
-      [b.id, b.nombre ?? null, b.avatar ?? null, b.estado === undefined ? null : b.estado === 'posible'],
+      [b.id, b.nombre ?? null, b.avatar ?? null, b.estado === undefined ? null : b.estado === 'posible', b.archivado ?? null],
     )
     if (!rowCount) throw new HttpError(404, 'Cliente no encontrado')
     return clienteDetalle(b.id)

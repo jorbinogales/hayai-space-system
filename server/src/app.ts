@@ -8,6 +8,8 @@ import { expensesRouter } from './routes/expenses.ts'
 import { projectsRouter } from './routes/projects.ts'
 import { tasksRouter } from './routes/tasks.ts'
 import { usersRouter } from './routes/users.ts'
+import { mcpRouter } from './mcp/index.ts'
+import { v1Router } from './v1/index.ts'
 import { HttpError } from './util.ts'
 
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS'])
@@ -42,6 +44,10 @@ export function createApp() {
     res.setHeader('Referrer-Policy', 'no-referrer')
     next()
   })
+
+  // Integraciones (X-API-Key, sin cookies ni CSRF): van antes de /api, que exige sesion de la web.
+  app.use('/api/v1', v1Router)
+  app.use('/mcp', mcpRouter)
 
   const api = express.Router()
   api.use((_req, res, next) => {

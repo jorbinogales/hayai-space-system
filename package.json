@@ -15,9 +15,11 @@
     "dev:api": "node --env-file-if-exists=.env server/dev-prepare.mjs && npm run dev:server",
     "dev:all": "concurrently -k -n db,api,web -c cyan,green,magenta \"npm:db:dev\" \"npm:dev:api\" \"npm:dev\"",
     "typecheck:server": "tsc -p server/tsconfig.json",
-    "test:server": "tsx --test server/test/api.test.ts"
+    "test:server": "tsx --test server/test/api.test.ts server/test/v1.test.ts",
+    "apikey": "tsx --env-file-if-exists=.env server/src/apikey-cli.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "express": "^5.2.1",
     "pg": "^8.23.1",
     "react": "^19.3.0",

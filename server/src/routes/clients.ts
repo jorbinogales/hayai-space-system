@@ -11,7 +11,7 @@ type Item = { id: string; concept: string; amount: number }
 type Movement = { id: string; date: string; concept: string; amount: number; kind: string; status: string; series: { id: string; index: number; total: number } | null }
 
 /** 3 consultas y se agrupa en memoria (sin N+1). Con ids, solo esos clientes. */
-async function loadClients(db: Db, ids?: string[]) {
+export async function loadClients(db: Db, ids?: string[]) {
   const [clients, items, moves] = await Promise.all([
     db.query(`SELECT id, name, avatar, is_prospect FROM clients ${ids ? 'WHERE id = ANY($1::uuid[])' : ''} ORDER BY created_at, id`, ids ? [ids] : []),
     db.query(
@@ -56,7 +56,7 @@ function addMonths(iso: string, k: number): string {
   return `${String(ny).padStart(4, '0')}-${String(nm).padStart(2, '0')}-${String(Math.min(d, last)).padStart(2, '0')}`
 }
 
-const repeatMonths = z
+export const repeatMonths = z
   .number('Repetición inválida (entero de 2 a 36)')
   .int('Repetición inválida (entero de 2 a 36)')
   .min(2, 'Mínimo 2 meses de repetición')
@@ -66,7 +66,7 @@ const status = z.enum(['pendiente', 'cobrado'], 'Estado inválido')
 const itemList = z.array(z.object({ concept: text(120), amount: money })).max(50, 'Máximo 50 conceptos')
 
 /** Un cobro con repeatMonths = N se materializa en N filas pendientes con su propio series_id. */
-function expandCharge(x: { date: string; amount: number; concept: string; status?: string; repeatMonths?: number }): ChargeRow[] {
+export function expandCharge(x: { date: string; amount: number; concept: string; status?: string; repeatMonths?: number }): ChargeRow[] {
   if (!x.repeatMonths) return [{ d: x.date, c: x.concept, a: x.amount, s: x.status ?? 'pendiente', sid: null, si: null, st: null }]
   const sid = randomUUID()
   return Array.from({ length: x.repeatMonths }, (_, i) => ({
@@ -80,7 +80,7 @@ function expandCharge(x: { date: string; amount: number; concept: string; status
   }))
 }
 
-async function insertCharges(c: Db, clientId: string, userId: string, rows: ChargeRow[]) {
+export async function insertCharges(c: Db, clientId: string, userId: string, rows: ChargeRow[]) {
   if (!rows.length) return
   await c.query(
     `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, series_id, series_index, series_total, created_at)
@@ -103,7 +103,7 @@ async function insertCharges(c: Db, clientId: string, userId: string, rows: Char
 }
 
 /** created_at = now() + n µs: el orden de inserción queda estable al listar (now() es igual dentro de la transacción). */
-async function insertItems(c: Db, clientId: string, items: Item[] | { concept: string; amount: number }[]) {
+export async function insertItems(c: Db, clientId: string, items: Item[] | { concept: string; amount: number }[]) {
   if (!items.length) return
   await c.query(
     `INSERT INTO client_items (client_id, concept, amount, created_at)

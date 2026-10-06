@@ -15,6 +15,7 @@ const PG_PORT = 54330
 const API_PORT = 3101
 const DATABASE_URL = `postgres://hayai:hayai@localhost:${PG_PORT}/hayai`
 const BASE = `http://localhost:${API_PORT}/api`
+const ISO_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 let embedded: EmbeddedPostgres
@@ -52,7 +53,18 @@ const shape = (x: any): any =>
       ? Object.fromEntries(Object.entries(x).map(([k, v]) => [k, shape(v)]))
       : typeof x === 'string' && UUID.test(x)
         ? '<uuid>'
-        : x
+        : typeof x === 'string' && ISO_TS.test(x)
+          ? '<ts>'
+          : x
+
+/** Campos del CRM que trae todo cliente de la web (ficha vacía, sin pipeline); un posible cliente los pisa con su etapa. */
+const CRM = {
+  createdAt: '<ts>',
+  phone: null, email: null, contactName: null, contactRole: null, address: null, notes: null, tags: [], source: null,
+  stage: null, estValue: null, probability: null, expectedClose: null, lostReason: null, stageChangedAt: null,
+  nextAction: null, nextActionDate: null, lastContactAt: null,
+}
+const CRM_KEYS = Object.keys(CRM)
 
 const login = (name: string, pin = '000000') => call('/auth/login', { body: { name, pin } })
 
@@ -294,6 +306,7 @@ describe('datos', () => {
       avatar: 'orion',
       prospect: false,
       archived: false,
+      ...CRM,
       items: [
         { id: '<uuid>', concept: 'Landing', amount: 1500 },
         { id: '<uuid>', concept: 'Hosting', amount: 250.5 },
@@ -313,7 +326,7 @@ describe('datos', () => {
   it('POST /clients sin items => sin movimiento inicial; validaciones => 400 legible', async () => {
     const r = await call('/clients', { cookie, body: { name: 'Sin items', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] } })
     assert.equal(r.status, 201)
-    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Sin items', avatar: 'x', prospect: false, archived: false, items: [], movements: [] })
+    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Sin items', avatar: 'x', prospect: false, archived: false, ...CRM, items: [], movements: [] })
     const bad = [
       { name: '', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] },
       { name: 'x'.repeat(81), avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] },
@@ -492,7 +505,7 @@ describe('datos', () => {
   const NOPE = '11111111-1111-4111-8111-111111111111'
 
   it('editar cliente y cuotas: flujo completo (fechas pasadas, inicial, cuota suelta, serie, cobrar, editar, borrar)', async () => {
-    const keys = ['archived', 'avatar', 'id', 'items', 'movements', 'name', 'prospect']
+    const keys = ['archived', 'avatar', 'id', 'items', 'movements', 'name', 'prospect', ...CRM_KEYS].sort()
     const created = await call('/clients', {
       cookie,
       body: {
@@ -659,7 +672,7 @@ describe('datos', () => {
     assert.equal(r.status, 201, JSON.stringify(r.body))
     assert.deepEqual(Object.keys(r.body).sort(), ['client', 'project', 'task'])
     const { client, project, task } = r.body
-    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, archived: false, items: [], movements: [] })
+    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, archived: false, ...CRM, stage: 'nuevo', probability: 10, stageChangedAt: '<ts>', items: [], movements: [] })
     assert.deepEqual(shape(project), {
       id: '<uuid>', name: 'Web Futuro', icon: 'globe', owner: 'Leandro', client: 'Futuro SA', clientId: '<uuid>', status: 'planeacion', due: '2020-03-01', archived: false, clientArchived: false,
     })
@@ -686,7 +699,7 @@ describe('datos', () => {
     // convert: prospect=false, conserva su proyecto; la segunda vez => 409
     const conv = await call(`/clients/${client.id}/convert`, { cookie, method: 'POST' })
     assert.equal(conv.status, 200, JSON.stringify(conv.body))
-    assert.deepEqual(conv.body, { ...client, prospect: false })
+    assert.deepEqual(shape(conv.body), { ...shape(client), prospect: false, stage: 'ganado', probability: 100, stageChangedAt: '<ts>' })
     assert.deepEqual((await call('/projects', { cookie })).body.find((p: any) => p.id === project.id), project)
     const twice = await call(`/clients/${client.id}/convert`, { cookie, method: 'POST' })
     assert.equal(twice.status, 409)

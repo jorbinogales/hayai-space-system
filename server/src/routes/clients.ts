@@ -3,6 +3,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { pool, tx, type Db } from '../db.ts'
 import { HttpError, idParam, isoDate, money, parse, text } from '../util.ts'
+import { applyClientPatch, STAGE_PROB } from '../crm.ts'
 import { sendToTrash } from '../trash.ts'
 import { PROJECT_SELECT, projectIcon } from './projects.ts'
 import { TASK_SELECT } from './tasks.ts'
@@ -14,7 +15,15 @@ type Movement = { id: string; date: string; concept: string; amount: number; kin
 /** 3 consultas y se agrupa en memoria (sin N+1). Con ids, solo esos clientes. */
 export async function loadClients(db: Db, ids?: string[]) {
   const [clients, items, moves] = await Promise.all([
-    db.query(`SELECT id, name, avatar, is_prospect, archived_at FROM clients ${ids ? 'WHERE id = ANY($1::uuid[])' : ''} ORDER BY created_at, id`, ids ? [ids] : []),
+    db.query(
+      `SELECT c.id, c.name, c.avatar, c.is_prospect, c.archived_at, c.created_at, c.phone, c.email, c.contact_name, c.contact_role, c.address, c.notes,
+              c.tags, c.lead_source, c.pipeline_stage, c.est_value, c.probability, c.expected_close, c.lost_reason, c.stage_changed_at,
+              c.next_action, c.next_action_date,
+              -- ultimo contacto real: las entradas automaticas de etapa no cuentan
+              (SELECT max(i.occurred_at) FROM interactions i WHERE i.client_id = c.id AND i.kind <> 'etapa') AS last_contact_at
+       FROM clients c ${ids ? 'WHERE c.id = ANY($1::uuid[])' : ''} ORDER BY c.created_at, c.id`,
+      ids ? [ids] : [],
+    ),
     db.query(
       `SELECT id, client_id, concept, amount FROM client_items ${ids ? 'WHERE client_id = ANY($1::uuid[])' : ''} ORDER BY created_at, id`,
       ids ? [ids] : [],
@@ -43,6 +52,24 @@ export async function loadClients(db: Db, ids?: string[]) {
     avatar: c.avatar,
     prospect: c.is_prospect,
     archived: c.archived_at !== null,
+    createdAt: c.created_at as Date,
+    phone: c.phone as string | null,
+    email: c.email as string | null,
+    contactName: c.contact_name as string | null,
+    contactRole: c.contact_role as string | null,
+    address: c.address as string | null,
+    notes: c.notes as string | null,
+    tags: c.tags as string[],
+    source: c.lead_source as string | null,
+    stage: c.pipeline_stage as string | null,
+    estValue: c.est_value as number | null,
+    probability: c.probability as number | null,
+    expectedClose: c.expected_close as string | null,
+    lostReason: c.lost_reason as string | null,
+    stageChangedAt: c.stage_changed_at as Date | null,
+    nextAction: c.next_action as string | null,
+    nextActionDate: c.next_action_date as string | null,
+    lastContactAt: c.last_contact_at as Date | null,
     items: itemsBy.get(c.id) ?? [],
     movements: movesBy.get(c.id) ?? [],
   }))
@@ -167,7 +194,7 @@ clientsRouter.patch('/:id', async (req, res) => {
   const clientId = idParam(req.params.id)
   const b = parse(
     z
-      .object({ name: text(80).optional(), avatar: text(40).optional() })
+      .strictObject({ name: text(80).optional(), avatar: text(40).optional() })
       .refine((v) => v.name !== undefined || v.avatar !== undefined, 'Envía al menos name o avatar'),
     req.body,
   )
@@ -241,13 +268,10 @@ clientsRouter.post('/:id/payments', async (req, res) => {
   res.status(201).json(await clientOr404(pool, clientId))
 })
 
+// Convertir = pasar a la etapa "ganado" (probabilidad 100, queda en la bitacora). Lo decide applyClientPatch, igual que en la API.
 clientsRouter.post('/:id/convert', async (req, res) => {
   const clientId = idParam(req.params.id)
-  const { rowCount } = await pool.query('UPDATE clients SET is_prospect = false WHERE id = $1 AND is_prospect', [clientId])
-  if (!rowCount) {
-    await clientOr404(pool, clientId)
-    throw new HttpError(409, 'El cliente ya no es un posible cliente')
-  }
+  await tx((c) => applyClientPatch(c, req.user!.id, clientId, { etapa: 'ganado' }))
   res.json(await clientOr404(pool, clientId))
 })
 
@@ -302,11 +326,12 @@ prospectsRouter.post('/', async (req, res) => {
   if (!owner) throw new HttpError(404, 'Responsable no encontrado')
 
   const ids = await tx(async (c) => {
-    const client = await c.query('INSERT INTO clients (name, avatar, is_prospect, created_by) VALUES ($1, $2, true, $3) RETURNING id', [
-      b.name,
-      b.avatar,
-      userId,
-    ])
+    // Entra al pipeline en "nuevo" (10 %), contando desde ahora.
+    const client = await c.query(
+      `INSERT INTO clients (name, avatar, is_prospect, pipeline_stage, probability, stage_changed_at, created_by)
+       VALUES ($1, $2, true, 'nuevo', $3, now(), $4) RETURNING id`,
+      [b.name, b.avatar, STAGE_PROB.nuevo, userId],
+    )
     const project = await c.query(
       `INSERT INTO projects (name, icon, client_id, owner_id, status, due_date, created_by)
        VALUES ($1, $2, $3, $4, 'planeacion', $5, $6) RETURNING id`,

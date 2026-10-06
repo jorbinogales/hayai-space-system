@@ -9,7 +9,7 @@ import { Icon, type IconName } from './ui'
 
 interface TrashItem {
   id: string
-  entity: 'cliente' | 'proyecto' | 'pago' | 'gasto' | 'tarea'
+  entity: 'cliente' | 'proyecto' | 'pago' | 'gasto' | 'tarea' | 'interaccion'
   label: string
   detail: string | null
   via: string
@@ -24,6 +24,7 @@ const KIND: Record<TrashItem['entity'], { label: string; icon: IconName }> = {
   pago: { label: 'Cobro', icon: 'wallet' },
   gasto: { label: 'Gasto', icon: 'receipt' },
   tarea: { label: 'Tarea', icon: 'check' },
+  interaccion: { label: 'Bitácora', icon: 'edit' },
 }
 
 /** Papelera y archivo: lo borrado se restaura 30 días; lo archivado se recupera cuando quieras. Nada se pierde por un descuido. */

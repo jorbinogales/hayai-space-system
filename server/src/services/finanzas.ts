@@ -27,14 +27,18 @@ export const finanzasResumen = op(
     const filas = clientes.rows.map((c) => {
       let recaudado = 0
       let porCobrar = 0
+      let vencido = 0
       for (const p of pagos.rows) {
         if (p.client_id !== c.id || !inPeriod(p.date)) continue
         if (p.status === 'cobrado') recaudado += cents(p.amount)
-        else porCobrar += cents(p.amount)
+        else {
+          porCobrar += cents(p.amount)
+          if (p.date < hoy) vencido += cents(p.amount) // vencido siempre es parte de por cobrar, nunca algo aparte
+        }
       }
       let g = 0
       for (const e of gastos.rows) if (inPeriod(e.date) && (e.client_id === c.id || e.project_client === c.id)) g += cents(e.amount)
-      return { id: c.id as string, nombre: c.name as string, recaudado, gastos: g, por_cobrar: porCobrar, utilidad: recaudado - g }
+      return { id: c.id as string, nombre: c.name as string, recaudado, gastos: g, por_cobrar: porCobrar, vencido, utilidad: recaudado - g }
     })
     filas.sort((a, b) => b.recaudado - a.recaudado)
 
@@ -45,11 +49,15 @@ export const finanzasResumen = op(
     const ingresos = filas.reduce((s, r) => s + r.recaudado, 0)
     const gastosTotal = filas.reduce((s, r) => s + r.gastos, 0) + generales
     const porCobrar = filas.reduce((s, r) => s + r.por_cobrar, 0)
+    const vencido = filas.reduce((s, r) => s + r.vencido, 0)
 
     // Todo lo pendiente sin importar el periodo y sin contar posibles clientes: lo que muestra la cabecera de Clientes.
     const prospectos = new Set(clientes.rows.filter((c) => c.is_prospect).map((c) => c.id))
     const porCobrarTotal = pagos.rows
       .filter((p) => p.status === 'pendiente' && !prospectos.has(p.client_id))
+      .reduce((s, p) => s + cents(p.amount), 0)
+    const vencidoTotal = pagos.rows
+      .filter((p) => p.status === 'pendiente' && p.date < hoy && !prospectos.has(p.client_id))
       .reduce((s, p) => s + cents(p.amount), 0)
 
     // Ultimos 6 meses terminando en el actual (para la grafica).
@@ -73,6 +81,9 @@ export const finanzasResumen = op(
       balance: (ingresos - gastosTotal) / 100,
       por_cobrar: porCobrar / 100,
       por_cobrar_total: porCobrarTotal / 100,
+      // De lo por cobrar, lo que ya paso de fecha (del periodo / de todo el tiempo sin contar posibles clientes).
+      vencido: vencido / 100,
+      vencido_total: vencidoTotal / 100,
       gastos_generales: generales / 100,
       clientes: filas.map((r) => ({
         id: r.id,
@@ -80,6 +91,7 @@ export const finanzasResumen = op(
         recaudado: r.recaudado / 100,
         gastos: r.gastos / 100,
         por_cobrar: r.por_cobrar / 100,
+        vencido: r.vencido / 100,
         utilidad: r.utilidad / 100,
       })),
       serie,

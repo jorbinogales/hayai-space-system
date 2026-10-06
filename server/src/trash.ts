@@ -6,7 +6,7 @@ import { pool, tx } from './db.ts'
 import { HttpError } from './util.ts'
 
 export const RETENTION_DAYS = 30
-export type Entity = 'cliente' | 'proyecto' | 'pago' | 'gasto' | 'tarea'
+export type Entity = 'cliente' | 'proyecto' | 'pago' | 'gasto' | 'tarea' | 'interaccion'
 
 type Row = Record<string, unknown>
 type Snapshot = { root: Row; children: Record<string, Row[]>; label: string; detail: string | null }
@@ -17,16 +17,18 @@ const NOT_FOUND: Record<Entity, string> = {
   pago: 'Pago no encontrado',
   gasto: 'Gasto no encontrado',
   tarea: 'Tarea no encontrada',
+  interaccion: 'Interacción no encontrada',
 }
 
 // Tabla de cada entidad e hijos, en orden de insercion (los padres antes que los hijos). Lista cerrada: nunca viene del cliente.
-const TABLE: Record<Entity, string> = { cliente: 'clients', proyecto: 'projects', pago: 'payments', gasto: 'expenses', tarea: 'tasks' }
+const TABLE: Record<Entity, string> = { cliente: 'clients', proyecto: 'projects', pago: 'payments', gasto: 'expenses', tarea: 'tasks', interaccion: 'interactions' }
 const INSERT_ORDER: Record<Entity, string[]> = {
-  cliente: ['clients', 'client_items', 'payments', 'projects', 'tasks', 'expenses'],
+  cliente: ['clients', 'client_items', 'interactions', 'payments', 'projects', 'tasks', 'expenses'],
   proyecto: ['projects', 'tasks', 'expenses'],
   pago: ['payments'],
   gasto: ['expenses'],
   tarea: ['tasks'],
+  interaccion: ['interactions'],
 }
 
 const rows = async (c: PoolClient, sql: string, params: unknown[]) =>
@@ -45,6 +47,8 @@ async function snapshot(c: PoolClient, entity: Entity, entityId: string): Promis
     const projectIds = projects.map((p) => p.id)
     const children = {
       client_items: await rows(c, 'SELECT * FROM client_items WHERE client_id = $1', [entityId]),
+      // La bitacora muere con el cliente (CASCADE): si no entra en la foto, se perderia para siempre.
+      interactions: await rows(c, 'SELECT * FROM interactions WHERE client_id = $1', [entityId]),
       payments: await rows(c, 'SELECT * FROM payments WHERE client_id = $1', [entityId]),
       projects,
       tasks: await rows(c, 'SELECT * FROM tasks WHERE project_id = ANY($1::uuid[])', [projectIds]),
@@ -55,6 +59,7 @@ async function snapshot(c: PoolClient, entity: Entity, entityId: string): Promis
       plural(projects.length, 'proyecto', 'proyectos'),
       plural(children.tasks.length, 'tarea', 'tareas'),
       plural(children.expenses.length, 'gasto', 'gastos'),
+      ...(children.interactions.length ? [plural(children.interactions.length, 'interacción', 'interacciones')] : []),
     ]
     return { root, children, label: String(root.name), detail: parts.join(', ') }
   }
@@ -72,6 +77,11 @@ async function snapshot(c: PoolClient, entity: Entity, entityId: string): Promis
     return { root, children: {}, label: `${root.concept} · ${money(root.amount)}`, detail: owner ? `Cobro de ${owner}` : null }
   }
   if (entity === 'gasto') return { root, children: {}, label: `${root.concept} · ${money(root.amount)}`, detail: `Gasto del ${root.date}` }
+  if (entity === 'interaccion') {
+    const owner = (await c.query('SELECT name FROM clients WHERE id = $1', [root.client_id])).rows[0]?.name
+    const summary = String(root.summary)
+    return { root, children: {}, label: `${root.kind}: ${summary.length > 60 ? `${summary.slice(0, 57)}...` : summary}`, detail: owner ? `Bitácora de ${owner}` : null }
+  }
   const project = (await c.query('SELECT name FROM projects WHERE id = $1', [root.project_id])).rows[0]?.name
   return { root, children: {}, label: String(root.title), detail: project ? `Tarea de ${project}` : null }
 }
@@ -91,6 +101,9 @@ export async function sendToTrash(entity: Entity, entityId: string, userId: stri
     if (!snap) throw new HttpError(404, NOT_FOUND[entity])
     // La inicial es el desglose del cliente (client_items): se edita desde ahí, no se borra como un cobro más.
     if (entity === 'pago' && snap.root.kind === 'inicial') throw new HttpError(400, 'La inicial se edita desde sus ítems, no se borra como un pago')
+
+    // Las entradas de etapa las escribe el sistema: borrarlas falsificaria el historial del pipeline.
+    if (entity === 'interaccion' && snap.root.kind === 'etapa') throw new HttpError(409, 'Las entradas de etapa las escribe el sistema y no se borran')
 
     // Orden inverso al de insercion: primero lo que depende de otras filas.
     if (entity === 'cliente') {
@@ -165,6 +178,7 @@ export async function restoreFromTrash(trashId: string) {
       if (entity === 'proyecto' && !(await exists(c, 'clients', root.client_id))) throw missing('el cliente de este proyecto')
       if (entity === 'pago' && !(await exists(c, 'clients', root.client_id))) throw missing('el cliente de este cobro')
       if (entity === 'tarea' && !(await exists(c, 'projects', root.project_id))) throw missing('el proyecto de esta tarea')
+      if (entity === 'interaccion' && !(await exists(c, 'clients', root.client_id))) throw missing('el cliente de esta interacción')
       if (entity === 'gasto') {
         if (!(await exists(c, 'clients', root.client_id))) throw missing('el cliente de este gasto')
         if (!(await exists(c, 'projects', root.project_id))) throw missing('el proyecto de este gasto')

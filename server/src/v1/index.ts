@@ -5,6 +5,7 @@ import { exec, type Op } from '../services/common.ts'
 import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoActualizar, pagoRegistrar, pagosListar } from '../services/clientes.ts'
 import { comprobanteArchivo, comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
 import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
+import { versionesListar, versionPublicar, versionVer } from '../services/versiones.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 import { finanzasResumen } from '../services/finanzas.ts'
 import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResumen } from '../services/alertas.ts'
@@ -161,6 +162,10 @@ route('delete', '/gastos/:id', gastoEliminar)
 
 route('get', '/finanzas/resumen', finanzasResumen)
 
+// Barra superior: versión actual + tasa BCV, e historial de versiones (el autor sale de la llave).
+route('get', '/version', versionVer)
+route('get', '/versiones', versionesListar)
+route('post', '/versiones', versionPublicar, 201)
 // Hub central (planeta HAYAI) y embudo del planeta Marketing.
 route('get', '/hub', hubVer)
 route('get', '/equipo', equipoVer)

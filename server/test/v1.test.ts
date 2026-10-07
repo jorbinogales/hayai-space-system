@@ -36,6 +36,11 @@ const graphHits: string[] = []
 const TARGET_PORT = 3198
 let target: Server
 let targetUp = true
+// Fuentes falsas de la tasa BCV: null = responde 500.
+const BCV_PORT = 3196
+let bcvServer: Server
+const bcvPayload: { principal: unknown; respaldo: unknown } = { principal: null, respaldo: null }
+const bcvHits = { principal: 0, respaldo: 0 }
 
 type Res = { status: number; body: any; headers: Headers }
 type Opts = { method?: string; body?: unknown; raw?: string; key?: string | null; headers?: Record<string, string> }
@@ -106,6 +111,14 @@ before(async () => {
     res.writeHead(targetUp ? 200 : 500).end(targetUp ? 'ok' : 'caido')
   })
   await new Promise<void>((ok) => target.listen(TARGET_PORT, ok))
+  bcvServer = createServer((req, res) => {
+    const which = req.url?.startsWith('/respaldo') ? 'respaldo' : 'principal'
+    bcvHits[which]++
+    const p = bcvPayload[which]
+    if (p === null) return void res.writeHead(500).end('{}')
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(p))
+  })
+  await new Promise<void>((ok) => bcvServer.listen(BCV_PORT, ok))
 
   env = {
     ...process.env,
@@ -127,6 +140,10 @@ before(async () => {
     SYSTEMS_ALLOW_PRIVATE: 'true',
     SYSTEMS_CHECK_MS: '2500',
     SYSTEMS_RETRY_MS: '100',
+    // Tasa BCV: dos fuentes falsas (principal y respaldo); la caché caduca en 300 ms y el refresco automático está apagado.
+    BCV_SOURCES: `http://localhost:${BCV_PORT}/principal,http://localhost:${BCV_PORT}/respaldo`,
+    BCV_TTL_MS: '300',
+    BCV_REFRESH_MS: '0',
   }
   const mig = spawnSync(process.execPath, ['server/db/migrate.mjs'], { cwd: root, env, encoding: 'utf8' })
   assert.equal(mig.status, 0, mig.stderr + mig.stdout)
@@ -152,6 +169,7 @@ after(async () => {
   server?.kill()
   graph?.close()
   target?.close()
+  bcvServer?.close()
   await embedded?.stop().catch(() => {})
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 })
 })
@@ -700,10 +718,10 @@ describe('MCP', () => {
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 63) // lectura + escritura
+    assert.equal(names.length, 66) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 73)
+    assert.equal(full.length, 76)
     assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -3384,5 +3402,198 @@ describe('Migración 010: datos que se mueven al estrenar el hub', () => {
     for (const b of doBlocks) await admin.query(b)
     const n = (await admin.query('SELECT count(*)::int AS n FROM payments WHERE client_id = $1 AND bank_reference IS NOT NULL', [c])).rows[0].n
     assert.equal(n, 0)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Barra superior: versión del sistema, tasa BCV e historial de versiones.
+// ---------------------------------------------------------------------------------------------------------------------
+describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la tasa)', () => {
+  const caracas = (offset = 0) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(Date.now() + offset * 86_400_000))
+  const oficial = (promedio: number, dia: string) => ({ moneda: 'USD', fuente: 'oficial', nombre: 'Dólar', compra: null, venta: null, promedio, fechaActualizacion: `${dia}T00:00:00-04:00` })
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const version = async () => (await api('/version')).body
+
+  it('parseRate: objeto o lista (fuente "oficial"), coma decimal, sin fecha = hoy; datos rotos y fechas imposibles se descartan', async () => {
+    const { parseRate } = await import('../src/bcv.ts')
+    const hoy = caracas()
+    assert.deepEqual(parseRate(oficial(873.87, hoy)), { rate: 873.87, date: hoy })
+    assert.deepEqual(parseRate([{ fuente: 'paralelo', promedio: 999 }, oficial(880.12345, hoy)]), { rate: 880.1235, date: hoy })
+    assert.deepEqual(parseRate({ precio: '870,5' })?.rate, 870.5)
+    assert.equal(parseRate({ promedio: 870 })?.date, hoy, 'sin fecha, la de hoy')
+    assert.equal(parseRate(oficial(870, caracas(-3)))?.date, caracas(-3), 'fin de semana o feriado: la fecha que reporta la fuente')
+    assert.equal(parseRate(oficial(870, caracas(1)))?.date, caracas(1), 'el BCV publica el día hábil siguiente')
+    for (const bad of [null, 'x', [], [{ fuente: 'paralelo', promedio: 5 }], { promedio: 0 }, { promedio: -4 }, { promedio: 'abc' }, { promedio: 1e9 }, oficial(870, caracas(30))]) assert.equal(parseRate(bad), null, JSON.stringify(bad))
+  })
+
+  it('la primera consulta espera a la fuente; /version trae versión + tasa con su fecha y la fuente; las siguientes salen de la caché', async () => {
+    bcvPayload.principal = oficial(873.87, caracas())
+    const r = await api('/version')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.version, '1.5.0')
+    assert.equal(r.body.hoy, caracas())
+    assert.deepEqual({ ...r.body.bcv, actualizada_el: '<t>' }, { moneda: 'USD', tasa: 873.87, fecha: caracas(), es_de_hoy: true, fuente: `localhost:${BCV_PORT}`, actualizada_el: '<t>' })
+    const hits = bcvHits.principal
+    await version()
+    assert.equal(bcvHits.principal, hits, 'dentro del TTL no vuelve a pedir')
+  })
+
+  it('caducada la caché responde al instante con lo guardado y actualiza en segundo plano; una sola petición aunque lleguen varias', async () => {
+    bcvPayload.principal = oficial(880.5, caracas())
+    await sleep(450)
+    const hits = bcvHits.principal
+    const primera = await version()
+    assert.equal(primera.bcv.tasa, 873.87, 'no hace esperar: devuelve la tasa guardada')
+    await Promise.all([version(), version()])
+    await sleep(300)
+    assert.equal(bcvHits.principal, hits + 1, 'un solo refresco para las tres consultas')
+    assert.equal((await version()).bcv.tasa, 880.5, 'la corrección del mismo día reemplaza el valor')
+  })
+
+  it('si la principal falla usa el respaldo; si fallan todas se sigue sirviendo la última tasa (la barra nunca queda en blanco)', async () => {
+    bcvPayload.principal = null
+    bcvPayload.respaldo = [{ fuente: 'paralelo', promedio: 999 }, oficial(881.25, caracas())]
+    await sleep(450)
+    await version() // dispara el refresco
+    await sleep(300)
+    assert.equal((await version()).bcv.tasa, 881.25)
+    assert.ok(bcvHits.respaldo >= 1)
+    bcvPayload.respaldo = null
+    await sleep(450)
+    await version()
+    await sleep(300)
+    const v = await version()
+    assert.equal(v.bcv.tasa, 881.25, 'todas fallan: queda la última guardada')
+    assert.equal(v.bcv.fecha, caracas())
+  })
+
+  it('una tasa con fecha más vieja no pisa a la más reciente; una de mañana (publicada por adelantado) pasa a ser la vigente con es_de_hoy=false', async () => {
+    bcvPayload.principal = oficial(700, caracas(-3))
+    await sleep(450)
+    await version()
+    await sleep(300)
+    const v = await version()
+    assert.equal(v.bcv.tasa, 881.25)
+    const { rows } = await admin.query('SELECT count(*)::int AS n FROM exchange_rates WHERE rate_date = $1', [caracas(-3)])
+    assert.equal(rows[0].n, 1, 'queda en el historial de tasas')
+    bcvPayload.principal = oficial(890, caracas(1))
+    await sleep(450)
+    await version()
+    await sleep(300)
+    const f = await version()
+    assert.deepEqual([f.bcv.tasa, f.bcv.fecha, f.bcv.es_de_hoy], [890, caracas(1), false])
+  })
+
+  it('MCP y web: la misma respuesta; sin llave o sin sesión 401', async () => {
+    const m = data(await mcp('hayai_version_ver', {}))
+    assert.equal(m.version, '1.5.0')
+    assert.equal(m.bcv.tasa, 890)
+    assert.equal((await http(`${ROOT}/api/v1/version`)).status, 401)
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    const cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    const w = await http(`${ROOT}/api/version`, { headers: { cookie } })
+    assert.equal(w.status, 200)
+    assert.equal(w.body.bcv.tasa, 890)
+    assert.equal((await http(`${ROOT}/api/version`)).status, 401)
+  })
+})
+
+describe('Historial de versiones (changelog)', () => {
+  const hoy = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+  const publicar = (b: Record<string, unknown>, key = KEY) => api('/versiones', { key, body: b })
+
+  it('GET /versiones: 1.0.0 y 1.5.0 vienen publicadas; la más nueva primero y marcada como actual', async () => {
+    const r = await api('/versiones')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.5.0', true], ['1.0.0', false]])
+    const [v15, v10] = r.body.data
+    assert.equal(v10.titulo, 'Versión de mierda')
+    assert.equal(v10.autor, 'Equipo HAYAI', 'las históricas no tienen autor individual')
+    assert.ok(v15.cambios.length >= 10 && v15.cambios.every((c: string) => c.length > 10))
+    for (const palabra of ['Actividad', 'Pipeline', 'Propuestas', 'Cobros', 'Factura', 'WhatsApp', 'MCP', 'Hub']) assert.ok(v15.cambios.join(' ').includes(palabra), palabra)
+    assert.match(v15.fecha, /^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('POST /versiones: el autor es el dueño de la llave, la fecha por defecto es hoy, pasa a ser la actual y avisa al equipo', async () => {
+    const base = (await api('/actividad?per_page=1', { key: KEY_J })).body.meta.ultimo_id as number
+    const r = await publicar({ version: '1.5.1', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.5.1', 'Leandro', hoy(), true, 2])
+    assert.equal((await api('/version')).body.version, '1.5.1')
+    assert.equal((await api('/versiones')).body.data[0].version, '1.5.1')
+    assert.equal((await api('/versiones')).body.data.filter((v: any) => v.actual).length, 1)
+    const ev = ((await api(`/actividad?desde_id=${base}&orden=asc`, { key: KEY_J })).body.data as any[]).filter((e) => e.tipo === 'version_nueva')
+    assert.equal(ev.length, 1)
+    assert.equal(ev[0].texto, 'Leandro publicó la versión 1.5.1: Ajustes de la barra')
+    assert.equal(ev[0].propia, false)
+    const j = await publicar({ version: '1.9.0', cambios: ['Algo de Jorbi'], fecha: '2026-10-01' }, KEY_J)
+    assert.deepEqual([j.body.autor, j.body.titulo, j.body.fecha], ['Jorbi', null, '2026-10-01'])
+  })
+
+  it('el orden es numérico (1.10.0 va después de 1.9.0) y la versión nueva siempre debe ser mayor que la actual', async () => {
+    assert.equal((await publicar({ version: '1.10.0', cambios: ['x'] })).status, 201)
+    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.5.1', '1.5.0', '1.0.0'])
+    assert.equal((await api('/version')).body.version, '1.10.0')
+    for (const v of ['1.10.0', '1.9.5', '1.4.0', '0.9.0']) {
+      const r = await publicar({ version: v, cambios: ['x'] })
+      assert.equal(r.status, 409, v)
+    }
+    assert.match((await publicar({ version: '1.9.9', cambios: ['x'] })).body.error.message, /mayor que la actual \(1\.10\.0\)/)
+  })
+
+  it('valida: formato semver, al menos un cambio, textos no vacíos, fecha no futura, sin campos de más', async () => {
+    const bad: Record<string, unknown>[] = [
+      { version: 'v2.0', cambios: ['x'] },
+      { version: '2.0', cambios: ['x'] },
+      { version: '2.0.0-beta', cambios: ['x'] },
+      { version: '2.0.0', cambios: [] },
+      { version: '2.0.0', cambios: ['  '] },
+      { version: '2.0.0', cambios: 'texto suelto' },
+      { version: '2.0.0' },
+      { version: '2.0.0', cambios: ['x'], fecha: '2099-01-01' },
+      { version: '2.0.0', cambios: ['x'], titulo: 'y'.repeat(81) },
+      { version: '2.0.0', cambios: ['x'], autor: 'Elis' },
+      { version: '2.0.0', cambios: Array.from({ length: 61 }, () => 'x') },
+    ]
+    for (const b of bad) assert.equal((await publicar(b)).status, 400, JSON.stringify(b).slice(0, 80))
+    assert.equal((await api('/version')).body.version, '1.10.0', 'nada de lo rechazado quedó publicado')
+  })
+
+  it('dos publicaciones a la vez de la misma versión: una gana y la otra recibe 409 (nadie se salta la regla de orden)', async () => {
+    const [a, b] = await Promise.all([publicar({ version: '1.11.0', cambios: ['A'] }), publicar({ version: '1.11.0', cambios: ['B'] }, KEY_J)])
+    assert.deepEqual([a.status, b.status].sort(), [201, 409])
+    assert.equal((await api('/versiones')).body.data.filter((v: any) => v.version === '1.11.0').length, 1)
+  })
+
+  it('permisos: una llave de solo lectura lee pero no publica; el historial no se edita ni se borra', async () => {
+    const ro = newKey('Elis', 'solo-lectura-versiones', 'read')
+    assert.equal((await api('/versiones', { key: ro })).status, 200)
+    assert.equal((await publicar({ version: '3.0.0', cambios: ['x'] }, ro)).status, 403)
+    const id = (await api('/versiones')).body.data[0].id
+    for (const m of ['PATCH', 'DELETE', 'PUT']) assert.equal((await api(`/versiones/${id}`, { method: m, body: {} })).status, 404, m)
+    assert.equal((await http(`${ROOT}/api/v1/versiones`)).status, 401)
+  })
+
+  it('MCP: hayai_versiones_listar y hayai_version_publicar (autor = dueño de la llave)', async () => {
+    const l = data(await mcp('hayai_versiones_listar', {}))
+    assert.ok(l.data.length >= 5 && l.data[0].actual === true)
+    const p = data(await mcp('hayai_version_publicar', { version: '1.12.0', titulo: 'Desde un agente', cambios: ['Publicado por MCP'] }, KEY_J))
+    assert.deepEqual([p.version, p.autor, p.actual], ['1.12.0', 'Jorbi', true])
+    assert.equal(data(await mcp('hayai_version_ver', {})).version, '1.12.0')
+    const err = await http(`${ROOT}/mcp`, { key: KEY, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'hayai_version_publicar', arguments: { version: '1.12.0', cambios: ['otra vez'] } } } })
+    assert.equal(err.body.result.isError, true, 'versión repetida => error de herramienta')
+  })
+
+  it('web (sesión): ver, listar y publicar; el autor es quien tiene la sesión', async () => {
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    const cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    const web = (path: string, o: { method?: string; body?: unknown } = {}) => http(`${ROOT}/api${path}`, { headers: { cookie }, ...o })
+    assert.equal((await web('/versions')).body.data[0].version, '1.12.0')
+    const p = await web('/versions', { body: { version: '1.13.0', cambios: ['Desde el formulario'] } })
+    assert.equal(p.status, 201, JSON.stringify(p.body))
+    assert.equal(p.body.autor, 'Jorbi')
+    assert.equal((await web('/version')).body.version, '1.13.0')
+    assert.equal((await web('/versions', { body: { version: '1.13.0', cambios: ['x'] } })).status, 409)
+    assert.equal((await http(`${ROOT}/api/versions`, { body: { version: '9.9.9', cambios: ['x'] } })).status, 401)
   })
 })

@@ -14,6 +14,7 @@ import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
 import { comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
 import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
+import { versionesListar, versionPublicar, versionVer } from '../services/versiones.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 import { finanzasResumen } from '../services/finanzas.ts'
 import { gastoRegistrar, gastosListar } from '../services/gastos.ts'
@@ -83,6 +84,10 @@ const TOOLS: Tool[] = [
   { name: 'hayai_receptores_listar', op: receptoresListar, scope: 'read', description: 'Mapeo documento (cédula, enmascarada) -> socio que recibe los fondos. Se usa para asignar recibido_por al leer un comprobante.' },
   { name: 'hayai_receptor_guardar', op: receptorGuardar, scope: 'write', description: 'Agrega o cambia un documento del mapeo: documento (p. ej. V-12345678) y socio (Elis, Jorbi o Leandro).' },
   { name: 'hayai_receptor_eliminar', op: receptorEliminar, scope: 'delete', description: 'Quita un documento del mapeo por su id (de hayai_receptores_listar).' },
+  // Barra superior: versión del sistema, tasa BCV e historial de versiones.
+  { name: 'hayai_version_ver', op: versionVer, scope: 'read', description: 'Versión actual del sistema (p. ej. 1.5.0) y la tasa del dólar oficial BCV en Bs. con SU fecha (en fin de semana o feriado es la última publicada). Úsala para saber en qué versión está HAYAI Space y a cuánto está el dólar.' },
+  { name: 'hayai_versiones_listar', op: versionesListar, scope: 'read', description: 'Historial completo de versiones (la más nueva primero), cada una con título, resumen, fecha, autor y la lista de cambios. Es el changelog del proyecto.' },
+  { name: 'hayai_version_publicar', op: versionPublicar, scope: 'write', description: 'Publica una versión nueva en el historial: version (p. ej. 1.6.0, debe ser mayor que la actual), cambios (lista de textos, al menos uno), titulo, resumen y fecha (por defecto hoy) opcionales. El autor es el dueño de la llave. No se edita ni se borra después. Avisa al equipo.' },
   // Hub central (planeta HAYAI): lo interno de la empresa.
   { name: 'hayai_hub_ver', op: hubVer, scope: 'read', description: 'Hub central de HAYAI en una sola respuesta: pulso interno (gastos generales del mes, tareas internas pendientes y vencidas, proyectos internos activos), astronautas (Elis, Jorbi, Leandro con rol, responsabilidades y carga), bitácora interna, acuerdos abiertos, sistemas con su semáforo y el estado de la analítica.' },
   { name: 'hayai_equipo_ver', op: equipoVer, scope: 'read', description: 'Los socios con su rol, responsabilidades y carga de trabajo (tareas abiertas, vencidas, completadas en 7 días e internas). Una tarea es de quien tiene asignada o, sin asignar, del responsable de su proyecto.' },

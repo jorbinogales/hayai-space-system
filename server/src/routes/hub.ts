@@ -6,6 +6,8 @@ import { pagoActualizar } from '../services/clientes.ts'
 import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 
+import { versionesListar, versionPublicar, versionVer } from '../services/versiones.ts'
+
 export const hubRouter = Router()
 
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -16,6 +18,9 @@ const query = (req: Request) => {
   return o
 }
 
+hubRouter.get('/version', async (req, res) => void res.json(await exec(versionVer, req.user!, {})))
+hubRouter.get('/versions', async (req, res) => void res.json(await exec(versionesListar, req.user!, {})))
+hubRouter.post('/versions', async (req, res) => void res.status(201).json(await exec(versionPublicar, req.user!, body(req))))
 hubRouter.get('/hub', async (req, res) => void res.json(await exec(hubVer, req.user!, {})))
 hubRouter.get('/team', async (req, res) => void res.json(await exec(equipoVer, req.user!, {})))
 hubRouter.patch('/team/:socio', async (req, res) => void res.json(await exec(equipoActualizar, req.user!, { ...body(req), socio: req.params.socio })))

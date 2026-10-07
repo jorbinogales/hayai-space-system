@@ -4,14 +4,14 @@
 // avisos de algo que no paso, ni algo que pasa sin aviso.
 import type { Pool, PoolClient } from 'pg'
 
-export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido', 'lead_meta', 'acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado'] as const
+export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido', 'lead_meta', 'acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado', 'version_nueva'] as const
 export type ActivityKind = (typeof KINDS)[number]
 
 /** Avisos que trae el sistema (no un socio): le llegan a TODOS, también a quien figura como actor. */
 export const SYSTEM_KINDS: readonly ActivityKind[] = ['lead_meta', 'sistema_caido', 'sistema_recuperado']
 export const isSystemKind = (k: string) => (SYSTEM_KINDS as readonly string[]).includes(k)
 /** Condicion SQL de la bitácora interna de HAYAI (hub): lo que no es de un cliente, más acuerdos y sistemas. */
-export const INTERNAL_ACTIVITY_SQL = "((a.client_id IS NULL AND a.kind <> 'lead_meta') OR a.kind IN ('acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado'))"
+export const INTERNAL_ACTIVITY_SQL = "((a.client_id IS NULL AND a.kind <> 'lead_meta') OR a.kind IN ('acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado', 'version_nueva'))"
 
 export const CHANNEL = 'activity'
 const RETENTION_DAYS = 60
@@ -65,6 +65,8 @@ export function activityText(kind: ActivityKind, actor: string, subject: string,
       return `Llegó un posible cliente de Meta Ads: ${subject}` // lo trae el sistema, no un socio: no nombra a nadie
     case 'acuerdo_nuevo':
       return `${actor} registró un acuerdo: ${subject}`
+    case 'version_nueva':
+      return `${actor} publicó la versión ${subject}${detail ? `: ${detail}` : ''}`
     case 'sistema_caido':
       return `El sistema «${subject}»${detail ? ` de ${detail}` : ''} dejó de responder`
     case 'sistema_recuperado':

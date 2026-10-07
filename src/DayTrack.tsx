@@ -25,7 +25,7 @@ export function dayItems(clients: Client[], tasks: Task[], projects: Project[], 
     .filter((t) => t.due && !t.done)
     .flatMap((t): DayItem[] => {
       const p = projects.find((x) => x.id === t.projectId)
-      return p?.clientId ? [{ id: `t-${t.id}`, kind: 'visita', clientId: p.clientId, date: t.due!, title: clients.find((c) => c.id === p.clientId)?.name ?? p.client, sub: t.title }] : []
+      return p?.clientId ? [{ id: `t-${t.id}`, kind: 'visita', clientId: p.clientId, date: t.due!, title: clients.find((c) => c.id === p.clientId)?.name ?? p.client ?? '', sub: t.title }] : []
     })
   return [...pay, ...visits]
 }
@@ -63,13 +63,13 @@ export default function DayTrack({
   const overdue = useMemo(() => items.filter((i) => i.kind === 'pago' && i.date < today).sort((a, b) => a.date.localeCompare(b.date)), [items, today])
 
   // la factura es del MES del pago: todos los cobros pendientes de ese cliente en ese mes
-  const monthInvoice = (p: DayItem, client: string): InvoiceData => {
+  const monthInvoice = (p: DayItem, client: string, phone?: string | null): InvoiceData => {
     const month = p.date.slice(0, 7)
     const lines = items
       .filter((i) => i.kind === 'pago' && i.clientId === p.clientId && i.date.startsWith(month))
       .sort((a, b) => a.date.localeCompare(b.date))
-      .map((i) => ({ date: i.date, concept: i.sub, amount: i.amount ?? 0 }))
-    return { clientId: p.clientId, client, month, lines }
+      .map((i) => ({ id: i.id, date: i.date, concept: i.sub, amount: i.amount ?? 0 }))
+    return { clientId: p.clientId, client, month, lines, phone }
   }
 
   const card = (p: DayItem) => {
@@ -90,7 +90,7 @@ export default function DayTrack({
           </span>
         </button>
         {p.kind === 'pago' && (
-          <button type="button" className="inv" title="Factura" aria-label={`Factura de ${cl.name}, ${money(p.amount ?? 0)}`} onClick={() => onInvoice(monthInvoice(p, cl.name))}>
+          <button type="button" className="inv" title="Factura" aria-label={`Factura de ${cl.name}, ${money(p.amount ?? 0)}`} onClick={() => onInvoice(monthInvoice(p, cl.name, cl.phone))}>
             <Icon name="receipt" size={14} />
           </button>
         )}

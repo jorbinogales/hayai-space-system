@@ -19,7 +19,7 @@ export const interaccionOut = (r: any) => ({
   fecha: (r.occurred_at as Date).toISOString(),
   resumen: r.summary as string,
   // Solo las de etapa: de que etapa a cual (y por que se perdio).
-  cambio: r.kind === 'etapa' ? { de: r.meta.de ?? null, a: r.meta.a, motivo: r.meta.motivo ?? null } : null,
+  cambio: r.kind === 'etapa' ? { de: r.meta.de ?? null, a: r.meta.a, motivo: r.meta.motivo ?? null, propuesta_version: r.meta.propuesta_version ?? null } : null,
   automatica: r.kind === 'etapa',
   registrada_por: r.author as string,
 })

@@ -1,11 +1,15 @@
 import { z } from 'zod'
 import { recordActivity } from '../activity.ts'
+import { stamp } from '../concurrency.ts'
 import { pool, tx } from '../db.ts'
 import { expandCharge, insertCharges, insertItems, loadClients, repeatMonths } from '../routes/clients.ts'
-import { applyClientPatch, COLD_DAYS, daysBetween, fichaShape, isOpenStage, OPEN_STAGES, STAGE_PROB, STAGES, type ClientPatch } from '../crm.ts'
+import { applyClientPatch, COLD_DAYS, daysBetween, entryStage, fichaShape, isOpenStage, loadStages, resolveStage, transitionShape, type ClientPatch } from '../crm.ts'
+import { moneyLabel, patchPayment } from '../payments.ts'
+import { DETAIL_COLUMNS, DETAIL_JOINS, detalleOut, detalleShape, hasDetalle, METHODS, pickDetalle, writeDetalle } from '../paymentDetail.ts'
 import { HttpError, id, isoDate, money, text } from '../util.ts'
 import { archivadosParam, AVATAR_SEEDS, dayISO, filters, op, pageShape, paged, projectStateOut, r2, todayISO } from './common.ts'
 import { interaccionOut } from './interacciones.ts'
+import { propuestasPor } from './propuestas.ts'
 
 type Loaded = Awaited<ReturnType<typeof loadClients>>[number]
 type Move = Loaded['movements'][number]
@@ -54,11 +58,14 @@ function resumen(c: Loaded) {
     // Vencido = pendiente con fecha anterior a hoy (hora de Caracas). Se deriva: no hay un estado "vencido" guardado.
     cuotas_vencidas: vencidasN,
     monto_vencido: r2(vencidasMonto),
+    actualizado_el: stamp(c.updatedAt), // mándalo como If-Match / actualizado_el al editar: si cambió, 409 en vez de pisar
     // ficha
     telefono: c.phone,
     email: c.email,
     etiquetas: c.tags,
     origen: c.source,
+    redes: c.socials,
+    fecha_implementacion: c.implementationDate,
     // pipeline (etapa es null en los clientes de antes del pipeline)
     etapa: c.stage,
     valor_estimado: c.estValue,
@@ -68,7 +75,7 @@ function resumen(c: Loaded) {
     motivo_perdida: c.lostReason,
     dias_en_etapa: c.stageChangedAt ? daysBetween(dayISO(c.stageChangedAt), hoy) : null,
     // Frio: posible cliente en etapa abierta sin contacto real (llamada, visita, WhatsApp o nota) hace mas de COLD_DAYS dias.
-    frio: c.prospect && isOpenStage(c.stage) && daysBetween(dayISO(c.lastContactAt ?? c.createdAt), hoy) > COLD_DAYS,
+    frio: isOpenStage(c.prospect, c.stage) && daysBetween(dayISO(c.lastContactAt ?? c.createdAt), hoy) > COLD_DAYS,
     ultimo_contacto: c.lastContactAt ? c.lastContactAt.toISOString() : null,
     // seguimiento
     proxima_accion: c.nextAction,
@@ -81,14 +88,15 @@ function resumen(c: Loaded) {
 export async function clienteDetalle(clientId: string) {
   const c = (await loadClients(pool, [clientId]))[0]
   if (!c) throw new HttpError(404, 'Cliente no encontrado')
-  const [{ rows }, recientes, total] = await Promise.all([
-    pool.query('SELECT id, name, status FROM projects WHERE client_id = $1 ORDER BY created_at, id', [clientId]),
+  const [{ rows }, recientes, total, propuestas] = await Promise.all([
+    pool.query('SELECT id, name, status, description, due_date FROM projects WHERE client_id = $1 ORDER BY created_at, id', [clientId]),
     pool.query(
       `SELECT i.id, i.client_id, i.kind, i.occurred_at, i.summary, i.meta, u.name AS author
        FROM interactions i JOIN users u ON u.id = i.created_by WHERE i.client_id = $1 ORDER BY i.occurred_at DESC, i.id LIMIT 10`,
       [clientId],
     ),
     pool.query('SELECT count(*)::int AS n FROM interactions WHERE client_id = $1', [clientId]),
+    propuestasPor('WHERE p.client_id = $1', [clientId]),
   ])
   return {
     ...resumen(c),
@@ -107,8 +115,12 @@ export async function clienteDetalle(clientId: string) {
       tipo: m.kind,
       estado: m.status,
       serie: serie(m),
+      actualizado_el: stamp(m.updatedAt),
     })),
-    proyectos: rows.map((p) => ({ id: p.id, nombre: p.name, estado: projectStateOut(p.status) })),
+    proyectos: rows.map((p) => ({ id: p.id, nombre: p.name, descripcion: p.description as string | null, estado: projectStateOut(p.status), entrega: p.due_date as string | null })),
+    // La propuesta que cuenta (borrador, presentada o aceptada) con sus items y totales; el historial completo es /clientes/:id/propuestas.
+    propuesta_vigente: propuestas.find((p) => p.vigente) ?? null,
+    propuestas_total: propuestas.length,
   }
 }
 
@@ -116,14 +128,14 @@ export async function clienteDetalle(clientId: string) {
 export const clientesListar = op(
   z.strictObject({
     estado: z.enum(['activo', 'posible']).optional(),
-    etapa: z.enum(STAGES, `Etapa inválida (${STAGES.join(', ')})`).optional(),
+    etapa: z.string('Etapa inválida').trim().min(1).max(30).optional(), // ver GET /pipeline/etapas (los nombres de la fase 1 se siguen aceptando)
     archivados: archivadosParam,
     ...pageShape,
   }),
   async (_a, i) => {
     const f = filters()
     if (i.estado) f.add('is_prospect = ?', i.estado === 'posible')
-    if (i.etapa) f.add('pipeline_stage = ?', i.etapa)
+    if (i.etapa) f.add('pipeline_stage = ?', resolveStage(await loadStages(pool), i.etapa).key)
     if (i.archivados === 'excluir') f.raw('archived_at IS NULL')
     if (i.archivados === 'solo') f.raw('archived_at IS NOT NULL')
     const { clause, args } = f.page(i.per_page, i.page)
@@ -160,7 +172,7 @@ export const clienteCrear = op(
       .array(z.strictObject({ fecha: isoDate, monto: money, concepto: text(120), repetir_meses: repeatMonths.optional() }))
       .max(100, 'Máximo 100 cobros')
       .default([]),
-    // estado 'posible' lo mete al pipeline (en 'nuevo' salvo que se pida otra etapa abierta); la ficha y el seguimiento valen para ambos.
+    // estado 'posible' lo mete al pipeline (en la primera etapa salvo que se pida otra etapa abierta); la ficha y el seguimiento valen para ambos.
     estado: z.enum(['activo', 'posible'], 'Estado inválido (activo o posible)').default('activo'),
     ...fichaShape,
   }),
@@ -168,10 +180,15 @@ export const clienteCrear = op(
     const posible = b.estado === 'posible'
     if (!posible && [b.etapa, b.valor_estimado, b.probabilidad, b.cierre_previsto, b.motivo_perdida].some((v) => v !== undefined))
       throw new HttpError(400, 'Los datos de pipeline (etapa, valor, probabilidad, cierre, motivo) solo aplican a un posible cliente: usa estado "posible"')
-    if (b.etapa && !isOpenStage(b.etapa))
-      throw new HttpError(400, `Un posible cliente entra en una etapa abierta (${OPEN_STAGES.join(', ')}); ganar o perder se hace después`)
-    const stage = posible ? (b.etapa ?? 'nuevo') : null
-    const ficha: ClientPatch = Object.fromEntries(Object.keys(fichaShape).flatMap((k) => (k in b && b[k as keyof typeof b] !== undefined ? [[k, b[k as keyof typeof b]]] : [])))
+    const stages = await loadStages(pool)
+    const entry = posible ? (b.etapa ? resolveStage(stages, b.etapa) : entryStage(stages)) : null
+    if (entry && entry.kind !== 'abierta')
+      throw new HttpError(400, `Un posible cliente entra en una etapa abierta (${stages.filter((s) => s.kind === 'abierta' && s.active).map((s) => s.key).join(', ')}); ganar o perder se hace después`)
+    if (entry?.key === 'propuesta_presentada') throw new HttpError(400, 'Arma una propuesta antes de pasar a "propuesta_presentada": entra en otra etapa y avanza después')
+    const stage = entry?.key ?? null
+    const ficha: ClientPatch = Object.fromEntries(
+      Object.keys(fichaShape).flatMap((k) => (k !== 'etapa' && k in b && b[k as keyof typeof b] !== undefined ? [[k, b[k as keyof typeof b]]] : [])),
+    )
     const items = b.items.map((x) => ({ concept: x.concepto, amount: x.monto }))
     const totalCents = items.reduce((s, x) => s + Math.round(x.amount * 100), 0)
     const avatar = b.avatar ?? AVATAR_SEEDS[Math.floor(Math.random() * AVATAR_SEEDS.length)]
@@ -183,10 +200,10 @@ export const clienteCrear = op(
       const { rows } = await c.query(
         `INSERT INTO clients (name, avatar, created_by, is_prospect, pipeline_stage, probability, stage_changed_at)
          VALUES ($1, $2, $3, $4::boolean, $5, $6, CASE WHEN $4::boolean THEN now() END) RETURNING id`,
-        [b.nombre, avatar, actor.id, posible, stage, stage ? STAGE_PROB[stage] : null],
+        [b.nombre, avatar, actor.id, posible, stage, entry ? entry.probability : null],
       )
       const cid: string = rows[0].id
-      if (Object.keys(ficha).length) await applyClientPatch(c, actor.id, cid, ficha) // misma validacion que al actualizar
+      if (Object.keys(ficha).length) await applyClientPatch(c, actor.id, cid, ficha, actor.via) // misma validacion que al actualizar
       await insertItems(c, cid, items)
       if (totalCents > 0) {
         await c.query(
@@ -209,13 +226,14 @@ export const clienteActualizar = op(
       id,
       nombre: text(80).optional(),
       avatar: text(40).optional(),
-      estado: z.enum(['activo', 'posible'], 'Estado inválido (activo o posible)').optional(), // activo = ganado; posible = vuelve al pipeline en "nuevo"
+      estado: z.enum(['activo', 'posible'], 'Estado inválido (activo o posible)').optional(), // activo = ganado; posible = vuelve al pipeline en la primera etapa
       archivado: z.boolean().optional(), // true = archivar (se oculta pero conserva su historial), false = desarchivar
       ...fichaShape,
+      ...transitionShape,
     })
     .refine((v) => Object.entries(v).some(([k, x]) => k !== 'id' && x !== undefined), 'Envía al menos un campo a modificar'),
   async (actor, { id: clientId, ...patch }) => {
-    await tx((c) => applyClientPatch(c, actor.id, clientId, patch))
+    await tx((c) => applyClientPatch(c, actor.id, clientId, patch, actor.via))
     return clienteDetalle(clientId)
   },
 )
@@ -231,11 +249,15 @@ export const pagosListar = op(
     hasta: isoDate.optional(),
     // vencido=true: solo lo pendiente con fecha anterior a hoy; false: lo que no lo esta. (Por query llega como texto.)
     vencido: z.union([z.boolean(), z.enum(['true', 'false'])], 'vencido inválido (true o false)').optional(),
+    recibido_por: text(40).optional(), // socio que recibió los fondos (para cuadrar a quién entró el dinero)
+    metodo: z.enum(METHODS, `Método inválido (${METHODS.join(', ')})`).optional(),
     ...pageShape,
   }),
   async (_a, i) => {
     const f = filters()
     if (i.estado) f.add('p.status = ?', i.estado)
+    if (i.recibido_por) f.add('lower(ru.name) = lower(?)', i.recibido_por)
+    if (i.metodo) f.add('p.method = ?', i.metodo)
     if (i.vencido !== undefined) {
       const si = i.vencido === true || i.vencido === 'true'
       f.add(si ? "(p.status = 'pendiente' AND p.date < ?::date)" : "NOT (p.status = 'pendiente' AND p.date < ?::date)", todayISO())
@@ -243,12 +265,12 @@ export const pagosListar = op(
     if (i.cliente_id) f.add('p.client_id = ?', i.cliente_id)
     if (i.desde) f.add('p.date >= ?', i.desde)
     if (i.hasta) f.add('p.date <= ?', i.hasta)
-    const from = `FROM payments p JOIN clients c ON c.id = p.client_id ${f.where()}`
+    const from = `FROM payments p JOIN clients c ON c.id = p.client_id ${DETAIL_JOINS} ${f.where()}`
     const { clause, args } = f.page(i.per_page, i.page)
     const [agg, rows] = await Promise.all([
       pool.query(`SELECT count(*)::int AS n, COALESCE(sum(p.amount), 0) AS total ${from}`, f.params()),
       pool.query(
-        `SELECT p.id, p.client_id, c.name AS client, p.date, p.concept, p.amount, p.kind, p.status, p.series_index, p.series_total
+        `SELECT p.id, p.client_id, c.name AS client, p.date, p.concept, p.amount, p.kind, p.status, p.series_index, p.series_total, ${DETAIL_COLUMNS}
          ${from} ORDER BY p.date, p.created_at, p.id ${clause}`,
         args,
       ),
@@ -265,6 +287,7 @@ export const pagosListar = op(
         tipo: r.kind,
         estado: r.status,
         vencido: r.status === 'pendiente' && r.date < hoy,
+        ...detalleOut(r),
       })),
       agg.rows[0].n,
       i.page,
@@ -283,11 +306,13 @@ export const pagoRegistrar = op(
       concepto: text(120),
       estado: pagoEstado.default('pendiente'),
       repetir_meses: repeatMonths.optional(),
+      ...detalleShape, // bolívares, tasa, referencia, bancos, recibido_por, método y notas (no con repetir_meses: se registran cuota por cuota)
     })
     .refine((v) => !(v.repetir_meses && v.estado === 'cobrado'), {
       path: ['estado'],
       message: 'Un pago recurrente se crea pendiente; márcalo como cobrado cuota por cuota',
-    }),
+    })
+    .refine((v) => !(v.repetir_meses && hasDetalle(v)), { path: ['repetir_meses'], message: 'Los datos del cobro (bolívares, banco, referencia...) se registran en cada cuota, no al repetir' }),
   async (actor, b) => {
     await tx(async (c) => {
       if (!(await c.query('SELECT 1 FROM clients WHERE id = $1 FOR UPDATE', [b.cliente_id])).rowCount)
@@ -298,6 +323,14 @@ export const pagoRegistrar = op(
         actor.id,
         expandCharge({ date: b.fecha, amount: b.monto, concept: b.concepto, status: b.estado, repeatMonths: b.repetir_meses }),
       )
+      if (hasDetalle(b)) {
+        const made = (await c.query('SELECT id FROM payments WHERE client_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1', [b.cliente_id])).rows[0].id as string
+        await writeDetalle(c, made, pickDetalle(b))
+      }
+      if (b.estado === 'cobrado') {
+        const name = (await c.query('SELECT name FROM clients WHERE id = $1', [b.cliente_id])).rows[0].name as string
+        await recordActivity(c, { kind: 'cobro_cobrado', actorId: actor.id, subject: name, detail: moneyLabel(b.monto), clientId: b.cliente_id, via: actor.via })
+      }
     })
     return clienteDetalle(b.cliente_id)
   },
@@ -309,23 +342,17 @@ const pagoPatch = {
   monto: money.optional(),
   concepto: text(120).optional(),
   estado: pagoEstado.optional(),
+  ...detalleShape,
 }
 
-async function actualizarPago(b: { id: string; fecha?: string; monto?: number; concepto?: string; estado?: string }) {
-  const row = (await pool.query('SELECT client_id, kind FROM payments WHERE id = $1', [b.id])).rows[0]
-  if (!row) throw new HttpError(404, 'Pago no encontrado')
-  if (row.kind === 'inicial') throw new HttpError(400, 'La inicial se edita desde sus ítems, no como un pago')
-  await pool.query(
-    `UPDATE payments SET date = COALESCE($2, date), amount = COALESCE($3, amount), concept = COALESCE($4, concept), status = COALESCE($5, status)
-     WHERE id = $1`,
-    [b.id, b.fecha ?? null, b.monto ?? null, b.concepto ?? null, b.estado ?? null],
-  )
-  return clienteDetalle(row.client_id as string)
+async function actualizarPago(actor: { id: string; via?: string }, b: { id: string; fecha?: string; monto?: number; concepto?: string; estado?: 'pendiente' | 'cobrado' } & ReturnType<typeof pickDetalle>) {
+  const { id: paymentId, ...patch } = b
+  return clienteDetalle(await patchPayment(actor, paymentId, patch)) // un cobro que pasa a cobrado avisa al equipo (payments.ts)
 }
 
 export const pagoActualizar = op(
   z.strictObject(pagoPatch).refine((v) => Object.entries(v).some(([k, x]) => k !== 'id' && x !== undefined), 'Envía al menos un campo a modificar'),
-  (_a, b) => actualizarPago(b),
+  (actor, b) => actualizarPago(actor, b),
 )
 
-export const pagoMarcarCobrado = op(z.strictObject({ id }), (_a, b) => actualizarPago({ id: b.id, estado: 'cobrado' }))
+export const pagoMarcarCobrado = op(z.strictObject({ id }), (actor, b) => actualizarPago(actor, { id: b.id, estado: 'cobrado' }))

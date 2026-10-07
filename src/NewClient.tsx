@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { Icon } from './ui'
 import { addClient, money, todayISO, type Client, type Draft } from './store'
 import { AVATAR_SEEDS, AvatarPicker } from './blob'
+import { DraftBar } from './UpdateUI'
+import { useFormGuard } from './updates'
 
 interface Row {
   /** cobros: repetir cada mes */
@@ -27,6 +29,23 @@ export default function NewClient({ onClose, onCreate }: { onClose: () => void; 
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const first = useRef<HTMLInputElement>(null)
+  // para el borrador y los cambios sin guardar: solo lo escrito (sin las llaves internas de cada fila)
+  const flat = (rows: Row[]) => rows.map((r) => [r.a, r.b, r.d, r.rep ?? false, r.n ?? ''] as const)
+  const unflat = (rows: ReturnType<typeof flat>): Row[] => rows.map(([a, b, d, rep, n]) => ({ key: k++, a, b, d, rep, n }))
+  const start = useRef({ name: '', iDate: todayISO(), items: flat(items), charges: flat(charges) })
+  const guard = useFormGuard({
+    id: 'cliente:nuevo',
+    label: 'Nuevo cliente',
+    values: { name, iDate, items: flat(items), charges: flat(charges) },
+    initial: start.current,
+    labels: { name: 'nombre', iDate: 'fecha de la inicial', items: 'inicial', charges: 'cobros' },
+    apply: (v) => {
+      setName(v.name)
+      setIDate(v.iDate)
+      setItems(v.items.length ? unflat(v.items) : [row()])
+      setCharges(v.charges.length ? unflat(v.charges) : [row('Pago mensual')])
+    },
+  })
 
   const close = useRef(onClose)
   close.current = onClose
@@ -60,7 +79,9 @@ export default function NewClient({ onClose, onCreate }: { onClose: () => void; 
     if (its.length > 0 && !iDate) return setError('Indica la fecha en que se cobró la inicial.')
     setBusy(true)
     try {
-      onCreate(await addClient({ name, avatar, initialDate: iDate, items: its, charges: chs }))
+      const c = await addClient({ name, avatar, initialDate: iDate, items: its, charges: chs })
+      guard.saved()
+      onCreate(c)
     } catch (err) {
       setBusy(false)
       setError(err instanceof Error ? err.message : 'No se pudo guardar el cliente.')
@@ -78,6 +99,7 @@ export default function NewClient({ onClose, onCreate }: { onClose: () => void; 
           </button>
         </header>
 
+        <DraftBar guard={guard} />
         <div className="sheet-body">
           <label className="field">
             <span>Nombre</span>

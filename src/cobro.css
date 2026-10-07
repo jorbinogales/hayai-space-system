@@ -1,0 +1,170 @@
+/* Detalle de cobro (modal oscuro «Space»). Todo cuelga de .cobro-sheet / .cobro-*: no toca el resto de la app. */
+
+.modal.cobro-modal { z-index: 45; background: rgba(10, 7, 4, 0.62); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+.sheet.cobro-sheet { width: min(1040px, 100%); position: relative; overflow: hidden; outline: none; background: linear-gradient(180deg, #221b13, #16110b); }
+.cobro-sheet header { align-items: flex-start; padding: 22px 24px 8px; }
+.cobro-head { flex: 1; min-width: 0; }
+.cobro-eyebrow { margin: 0 0 6px; font-size: 0.68rem; letter-spacing: 0.24em; text-transform: uppercase; color: rgba(244, 235, 221, 0.6); font-weight: 600; }
+.cobro-sheet h2 { margin: 0; font: 700 clamp(1.7rem, 4.4vw, 2.4rem) / 1.05 var(--display); letter-spacing: -0.02em; }
+.cobro-sub { margin: 8px 0 0; font-size: 0.9rem; color: rgba(244, 235, 221, 0.72); overflow-wrap: anywhere; }
+.cobro-pill { flex: none; align-self: center; padding: 6px 14px; border-radius: 999px; font: 700 0.72rem / 1 var(--sans); letter-spacing: 0.1em; text-transform: uppercase; background: #f4ebdd; color: var(--night); }
+.cobro-pill.ok { background: #ffd27a; }
+.cobro-pill.due { background: rgba(239, 157, 37, 0.24); color: #ffd27a; box-shadow: inset 0 0 0 1px rgba(239, 157, 37, 0.5); }
+.cobro-pill.late { background: rgba(190, 59, 31, 0.28); color: #ffb09a; box-shadow: inset 0 0 0 1px rgba(255, 155, 126, 0.5); }
+.cobro-live { margin: 0; min-height: 0; padding: 0 24px; font-size: 0.8rem; color: #8fe0b5; }
+.cobro-live:empty { display: none; }
+
+.cobro-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 24px 18px; display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 22px; align-items: start; }
+.cobro-main, .cobro-side { display: grid; gap: 18px; min-width: 0; align-content: start; }
+.cobro-block { display: grid; gap: 10px; min-width: 0; }
+.cobro-block > h3, .cobro-card > h3 { margin: 0; font: 600 0.7rem / 1.2 var(--sans); letter-spacing: 0.2em; text-transform: uppercase; color: rgba(244, 235, 221, 0.6); }
+.cobro-card { display: grid; gap: 14px; padding: 20px 22px; border-radius: 18px; background: rgba(244, 235, 221, 0.05); box-shadow: inset 0 0 0 1px rgba(244, 235, 221, 0.12); min-width: 0; }
+.cobro-card.is-detail { background: linear-gradient(180deg, rgba(255, 210, 122, 0.07), rgba(244, 235, 221, 0.03)); box-shadow: inset 0 0 0 1px rgba(239, 157, 37, 0.28); }
+.cobro-card.is-detail > h3 { color: #ffd27a; }
+.cobro-card.is-dark { background: rgba(0, 0, 0, 0.26); gap: 10px; padding: 8px 18px 16px; }
+.cobro-muted { margin: 8px 0 0; font-size: 0.86rem; color: rgba(244, 235, 221, 0.62); line-height: 1.5; }
+.cobro-note { margin: 0; font-size: 0.76rem; line-height: 1.5; color: rgba(244, 235, 221, 0.55); }
+.cobro-none { color: rgba(244, 235, 221, 0.4); font-weight: 400; }
+.cobro-num, .cobro-doc { font-variant-numeric: tabular-nums; }
+.cobro-doc { color: #ffd27a; white-space: nowrap; }
+
+/* datos */
+.cobro-facts { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
+.cobro-fact { display: grid; gap: 4px; min-width: 0; }
+.cobro-fact dt { font-size: 0.76rem; color: rgba(244, 235, 221, 0.6); }
+.cobro-fact dd { margin: 0; font: 600 1rem / 1.25 var(--sans); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cobro-usd { font: 700 1.5rem / 1.1 var(--display); color: #ffd27a; }
+.cobro-bs { font: 700 1.5rem / 1.1 var(--display); }
+.cobro-calc { margin: -4px 0 0; font-size: 0.78rem; color: rgba(244, 235, 221, 0.55); font-variant-numeric: tabular-nums; }
+.cobro-card hr { width: 100%; height: 1px; margin: 0; border: 0; background: rgba(244, 235, 221, 0.14); }
+.cobro-route { display: grid; grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr); gap: 12px; align-items: center; }
+.cobro-route > div { display: grid; gap: 4px; min-width: 0; }
+.cobro-route span { font-size: 0.76rem; color: rgba(244, 235, 221, 0.6); }
+.cobro-route strong { font-weight: 600; font-size: 0.95rem; overflow-wrap: anywhere; }
+.cobro-route i { font-style: normal; font-size: 1.2rem; color: var(--amber); text-align: center; }
+.cobro-mask { font-variant-numeric: tabular-nums; color: rgba(244, 235, 221, 0.8); font-weight: 500; white-space: nowrap; }
+.cobro-recv { margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 0.86rem; color: rgba(244, 235, 221, 0.85); }
+.cobro-recv strong { color: #f4ebdd; }
+.cobro-recv.is-none { color: rgba(244, 235, 221, 0.65); }
+.cobro-av { flex: none; width: 28px; height: 28px; display: grid; place-items: center; }
+.cobro-notes { margin: 0; display: grid; gap: 2px; font-size: 0.88rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cobro-notes span { font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(244, 235, 221, 0.55); }
+
+/* botones y enlaces */
+.cobro-btn { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.cobro-btn.is-sm { min-height: 40px; padding: 8px 16px; font-size: 0.84rem; }
+.cobro-btn:disabled, .cobro-sheet .primary:disabled, .cobro-sheet .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+.cobro-sheet footer .primary { display: inline-flex; align-items: center; gap: 6px; }
+.cobro-link { padding: 0; min-height: 36px; border: 0; background: none; color: #ffd27a; font: 600 0.84rem / 1 var(--sans); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; text-align: left; }
+.cobro-link.is-bad { color: #ff9b84; }
+.cobro-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
+.cobro-x { flex: none; width: 36px; height: 36px; display: grid; place-items: center; border: 0; border-radius: 50%; background: none; color: rgba(244, 235, 221, 0.55); cursor: pointer; }
+.cobro-x:hover { background: rgba(255, 255, 255, 0.1); color: #f4ebdd; }
+.cobro-sheet :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+/* errores, estados */
+.cobro-err { margin: 0; color: #ff9b7e; font-size: 0.86rem; line-height: 1.45; }
+.cobro-state { flex: 1; display: grid; justify-items: center; align-content: center; gap: 14px; padding: 56px 24px; text-align: center; color: rgba(244, 235, 221, 0.75); }
+.cobro-state p { margin: 0; }
+.cobro-spin { flex: none; width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid rgba(244, 235, 221, 0.2); border-top-color: var(--amber); animation: cobro-spin 0.8s linear infinite; }
+@keyframes cobro-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .cobro-spin { animation-duration: 2.4s; } }
+
+/* comprobante */
+.cobro-drop { display: grid; justify-items: center; gap: 6px; padding: 30px 22px; border: 1.5px dashed rgba(244, 235, 221, 0.35); border-radius: 18px; background: none; color: #f4ebdd; font-family: inherit; text-align: center; cursor: pointer; transition: background 140ms var(--ease), border-color 140ms var(--ease); }
+.cobro-drop:hover, .cobro-drop.is-over { background: rgba(239, 157, 37, 0.12); border-color: var(--amber); }
+.cobro-drop strong { font-size: 0.98rem; }
+.cobro-drop small { font-size: 0.82rem; color: rgba(244, 235, 221, 0.65); }
+.cobro-drop-ico { color: var(--amber); display: grid; place-items: center; }
+.cobro-reading { grid-template-columns: auto 1fr; align-items: center; gap: 14px; }
+.cobro-reading p { margin: 4px 0 0; font-size: 0.84rem; color: rgba(244, 235, 221, 0.7); }
+.cobro-file { grid-template-columns: 170px minmax(0, 1fr); gap: 18px; align-items: start; }
+.cobro-thumb { width: 100%; height: 220px; padding: 0; border: 0; border-radius: 12px; overflow: hidden; background: #fbf7ef; cursor: zoom-in; display: grid; place-items: center; box-shadow: inset 0 0 0 1px rgba(244, 235, 221, 0.2); }
+.cobro-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; background: #fbf7ef; }
+.cobro-thumb span { padding: 10px; font-size: 0.78rem; color: #4a3f33; }
+.cobro-thumb:disabled { cursor: default; }
+.cobro-fileinfo { display: grid; gap: 8px; min-width: 0; align-content: start; }
+.cobro-fileinfo strong { font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cobro-fileinfo small { font-size: 0.8rem; color: rgba(244, 235, 221, 0.65); font-variant-numeric: tabular-nums; }
+.cobro-fileinfo p { margin: 0; font-size: 0.82rem; line-height: 1.55; color: rgba(244, 235, 221, 0.7); }
+.cobro-zoom { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: 56px 16px 16px; background: rgba(10, 7, 4, 0.94); }
+.cobro-zoom img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 10px; background: #fbf7ef; }
+.cobro-zoom .x { position: absolute; top: 12px; right: 12px; }
+
+/* detección */
+.cobro-detect { display: grid; gap: 8px; padding: 16px 18px; border-radius: 16px; background: rgba(244, 235, 221, 0.06); box-shadow: inset 0 0 0 1px rgba(244, 235, 221, 0.12), inset 4px 0 0 rgba(244, 235, 221, 0.3); min-width: 0; }
+.cobro-detect.is-ok { box-shadow: inset 0 0 0 1px rgba(244, 235, 221, 0.12), inset 4px 0 0 #3f9a5d; }
+.cobro-detect.is-warn { box-shadow: inset 0 0 0 1px rgba(244, 235, 221, 0.12), inset 4px 0 0 var(--amber); }
+.cobro-detect.is-bad { box-shadow: inset 0 0 0 1px rgba(244, 235, 221, 0.12), inset 4px 0 0 #d4624f; }
+.cobro-detect > strong { font-size: 0.95rem; }
+.cobro-detect > p { margin: 0; font-size: 0.86rem; line-height: 1.55; color: rgba(244, 235, 221, 0.82); }
+.cobro-detect b { color: #f4ebdd; }
+.cobro-resolved { color: #8fe0b5 !important; font-weight: 600; }
+.cobro-confirm-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 2px; }
+.cobro-ocr { font-size: 0.8rem; color: rgba(244, 235, 221, 0.65); }
+.cobro-ocr summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; }
+.cobro-ocr pre { margin: 6px 0 0; max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.74rem / 1.5 ui-monospace, 'SF Mono', Menlo, monospace; padding: 10px; border-radius: 10px; background: rgba(0, 0, 0, 0.3); }
+
+/* cédulas */
+.cobro-recs { list-style: none; margin: 0; padding: 0; }
+.cobro-recs li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 4px 0; border-bottom: 1px solid rgba(244, 235, 221, 0.1); font-size: 0.9rem; }
+.cobro-recs .cobro-doc { color: rgba(244, 235, 221, 0.82); }
+.cobro-confirm { display: inline-flex; gap: 10px; }
+.cobro-rform { display: grid; gap: 10px; padding-top: 6px; }
+.cobro-rform.is-compact { margin-top: 4px; }
+
+/* formulario */
+.cobro-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; }
+.cobro-usd-row { grid-column: 1 / -1; margin: 0; font-size: 0.86rem; color: rgba(244, 235, 221, 0.75); }
+.cobro-usd-row b { color: #ffd27a; font-size: 1.1rem; margin: 0 6px; }
+.cobro-usd-row small { color: rgba(244, 235, 221, 0.5); }
+.cobro-field { display: grid; gap: 6px; min-width: 0; align-content: start; }
+.cobro-field > span { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(244, 235, 221, 0.68); font-weight: 600; }
+.cobro-field > small { font-size: 0.76rem; line-height: 1.4; color: rgba(244, 235, 221, 0.55); }
+.cobro-field > small.is-bad { color: #ff9b84; }
+.cobro-field.is-wide, .cobro-pair { grid-column: 1 / -1; }
+.cobro-pair { display: grid; grid-template-columns: minmax(0, 1fr) 110px; gap: 12px; }
+.cobro-sheet select, .cobro-sheet textarea { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 1px solid rgba(244, 235, 221, 0.2); border-radius: 12px; background: rgba(255, 255, 255, 0.06); color: #f4ebdd; font: inherit; font-size: 0.95rem; color-scheme: dark; }
+.cobro-sheet textarea { resize: vertical; line-height: 1.45; }
+.cobro-sheet select option { background: #221b13; color: #f4ebdd; }
+.cobro-sheet input, .cobro-sheet select, .cobro-sheet textarea { min-height: 44px; }
+.cobro-sheet select:focus, .cobro-sheet textarea:focus { outline: 2px solid var(--amber); outline-offset: 0; border-color: transparent; }
+.cobro-sheet input[type='date'] { min-height: 44px; }
+.cobro-sheet .draft-bar { margin: 0 24px 4px; }
+.cobro-sheet footer { padding: 12px 24px 18px; flex-wrap: wrap; }
+.cobro-sheet footer .err, .cobro-sheet footer .ok-note { min-width: 0; }
+.cobro-sheet footer button { white-space: nowrap; }
+.cobro-sheet .x { width: 40px; height: 40px; }
+
+@media (max-width: 860px) {
+  .cobro-body { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+}
+@media (max-width: 600px) {
+  .cobro-modal { padding: 8px; }
+  .sheet.cobro-sheet { max-height: calc(100dvh - 16px); border-radius: 18px; }
+  .cobro-sheet header { padding: 16px 16px 6px; gap: 8px; flex-wrap: wrap; }
+  .cobro-head { flex-basis: calc(100% - 52px); }
+  .cobro-pill { order: 3; }
+  .cobro-body { padding: 8px 16px 14px; }
+  .cobro-card { padding: 16px; }
+  .cobro-file { grid-template-columns: minmax(0, 1fr); }
+  .cobro-thumb { height: 200px; }
+  .cobro-form { grid-template-columns: minmax(0, 1fr); }
+  .cobro-facts { gap: 14px 16px; }
+  .cobro-usd, .cobro-bs { font-size: 1.2rem; }
+  .cobro-route { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .cobro-route i { text-align: left; transform: rotate(90deg); width: 20px; }
+  .cobro-confirm-row { grid-template-columns: minmax(0, 1fr); }
+  .cobro-sheet footer { padding: 12px 16px 16px; }
+  .cobro-sheet footer > button { flex: 1 1 auto; justify-content: center; }
+  .cobro-live { padding: 0 16px; }
+  .cobro-sheet .draft-bar { margin: 0 16px 4px; }
+}
+@media print { .cobro-modal { display: none; } }
+
+/* enlace al detalle del cobro desde una línea de la factura */
+.inv-lines li:has(.inv-open) { grid-template-columns: 56px 1fr auto 30px; }
+.inv-open { width: 30px; height: 30px; display: grid; place-items: center; align-self: center; border: 0; border-radius: 50%; background: rgba(22, 17, 11, 0.07); color: #16110b; cursor: pointer; transition: background 140ms var(--ease); }
+.inv-open:hover { background: rgba(239, 157, 37, 0.35); }
+.inv-open:focus-visible { outline: 2px solid #16110b; outline-offset: 2px; }
+@media print { .inv-open { display: none; } .inv-lines li:has(.inv-open) { grid-template-columns: 56px 1fr auto; } }

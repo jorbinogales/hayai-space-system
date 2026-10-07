@@ -5,6 +5,8 @@ import { Blobvatar, AVATAR_SEEDS, AvatarPicker } from './blob'
 import { addProspect, todayISO, type Client } from './store'
 import { astronautNames, avatarFor, PROJECT_ICONS } from './projectData'
 import { useSession } from './session'
+import { DraftBar } from './UpdateUI'
+import { useFormGuard } from './updates'
 
 const ICON_LABEL: Record<string, string> = { globe: 'Web', phone: 'App móvil', chart: 'Panel / datos', cart: 'Tienda', palette: 'Diseño', box: 'Sistema', code: 'Desarrollo' }
 
@@ -22,6 +24,19 @@ export default function NewProspect({ onClose, onCreate }: { onClose: () => void
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const first = useRef<HTMLInputElement>(null)
+  const guard = useFormGuard({
+    id: 'posible:nuevo',
+    label: 'Posible cliente',
+    values: { name, project, visitDate, visitTitle },
+    initial: { name: '', project: '', visitDate: '', visitTitle: '' },
+    labels: { name: 'nombre', project: 'proyecto', visitDate: 'fecha de la visita', visitTitle: 'título de la visita' },
+    apply: (v) => {
+      setName(v.name)
+      setProject(v.project)
+      setVisitDate(v.visitDate)
+      setVisitTitle(v.visitTitle)
+    },
+  })
 
   const close = useRef(onClose)
   close.current = onClose
@@ -39,7 +54,9 @@ export default function NewProspect({ onClose, onCreate }: { onClose: () => void
     if (!owner) return setError('Elige quién será el responsable.')
     setBusy(true)
     try {
-      onCreate(await addProspect({ name: name.trim(), avatar, project: { name: project.trim(), icon, owner, due: null }, visit: { date: visitDate || null, title: visitTitle.trim() || undefined } }))
+      const c = await addProspect({ name: name.trim(), avatar, project: { name: project.trim(), icon, owner, due: null }, visit: { date: visitDate || null, title: visitTitle.trim() || undefined } })
+      guard.saved()
+      onCreate(c)
     } catch (err) {
       setBusy(false)
       setError(err instanceof Error ? err.message : 'No se pudo guardar el posible cliente.')
@@ -56,6 +73,7 @@ export default function NewProspect({ onClose, onCreate }: { onClose: () => void
           </button>
         </header>
 
+        <DraftBar guard={guard} />
         <div className="sheet-body">
           <label className="field">
             <span>Nombre</span>

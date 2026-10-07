@@ -4,7 +4,9 @@ import { Icon } from './ui'
 import { Blobvatar } from './blob'
 import { useClients } from './store'
 import { useSession } from './session'
-import { addProject, archiveProject, removeProject, updateProject, astronautNames, avatarFor, PROJECT_ICONS, STATUS_LABEL, type Project, type ProjectStatus } from './projectData'
+import { DraftBar } from './UpdateUI'
+import { saveGuarded, useFormGuard } from './updates'
+import { addProject, archiveProject, loadProjects, projectNow, removeProject, updateProject, astronautNames, avatarFor, PROJECT_ICONS, STATUS_LABEL, type Project, type ProjectStatus } from './projectData'
 
 const STATUSES: ProjectStatus[] = ['planeacion', 'activo', 'entrega']
 const ICON_LABEL: Record<string, string> = { globe: 'Web', phone: 'App móvil', chart: 'Panel / datos', cart: 'Tienda', palette: 'Diseño', box: 'Sistema', code: 'Desarrollo' }
@@ -27,6 +29,24 @@ export default function NewProject({ onClose, onCreate, project }: { onClose: ()
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const first = useRef<HTMLInputElement>(null)
+  // la marca del proyecto que se vio al abrir (o al guardar): se manda como If-Match al editar
+  const base = useRef(project?.updatedAt)
+  const start = useRef({ name, icon: icon as string, client, owner, status: status as string, due })
+  const guard = useFormGuard({
+    id: `proyecto:${project?.id ?? 'nuevo'}`,
+    label: project ? `Proyecto · ${project.name}` : 'Nuevo proyecto',
+    values: { name, icon: icon as string, client, owner, status: status as string, due },
+    initial: start.current,
+    labels: { name: 'nombre', icon: 'icono', client: 'cliente', owner: 'responsable', status: 'estado', due: 'fecha de entrega' },
+    apply: (v) => {
+      setName(v.name)
+      setIcon(v.icon as typeof icon)
+      setClient(v.client)
+      setOwner(v.owner)
+      setStatus(v.status as ProjectStatus)
+      setDue(v.due)
+    },
+  })
 
   const close = useRef(onClose)
   close.current = onClose
@@ -44,7 +64,30 @@ export default function NewProject({ onClose, onCreate, project }: { onClose: ()
     if (!due && !project) return setError('Indica la fecha de entrega.') // al editar (p.ej. un posible proyecto) puede quedar sin fecha
     setBusy(true)
     try {
-      onCreate(project ? await updateProject(project.id, { name: name.trim(), icon, clientId: client, owner, status, due: due || null }) : await addProject({ name, icon, clientId: client, owner, status, due }))
+      if (!project) {
+        const p = await addProject({ name, icon, clientId: client, owner, status, due })
+        guard.saved()
+        return onCreate(p)
+      }
+      const patch = { name: name.trim(), icon, clientId: client, owner, status, due: due || null }
+      const r = await saveGuarded({
+        title: 'Alguien cambió este proyecto mientras lo editabas',
+        base: base.current,
+        save: (ifMatch) => updateProject(project.id, patch, ifMatch),
+        fresh: async () => {
+          await loadProjects()
+          const f = projectNow(project.id)
+          return { stamp: f?.updatedAt, values: { name: f?.name, owner: f?.owner, client: f?.client, status: f?.status && STATUS_LABEL[f.status], due: f?.due } }
+        },
+        mine: { name: patch.name, owner, client: clients.find((c) => c.id === client)?.name, status: STATUS_LABEL[status], due: patch.due },
+        labels: { name: 'Nombre', owner: 'Responsable', client: 'Cliente', status: 'Estado', due: 'Entrega' },
+      })
+      guard.saved()
+      if (r.kind === 'saved') return onCreate(r.value)
+      // eligió la versión guardada: el proyecto ya está al día en la lista; se cierra sin tocarlo
+      base.current = r.stamp
+      setBusy(false)
+      onClose()
     } catch (err) {
       setBusy(false)
       setError(err instanceof Error ? err.message : 'No se pudo guardar el proyecto.')
@@ -86,6 +129,7 @@ export default function NewProject({ onClose, onCreate, project }: { onClose: ()
           </button>
         </header>
 
+        <DraftBar guard={guard} />
         <div className="sheet-body">
           <label className="field">
             <span>Nombre</span>

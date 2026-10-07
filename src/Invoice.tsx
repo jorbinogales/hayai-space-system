@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import Cobro from './Cobro'
 import { Icon } from './ui'
 import { fmtDate, money, todayISO } from './store'
 
 export interface InvoiceLine {
+  /** id del cobro (pago) de la línea: con él se abre el detalle del cobro; las líneas agregadas a mano no lo tienen */
+  id?: string
   /** YYYY-MM-DD */
   date: string
   concept: string
@@ -17,6 +20,21 @@ export interface InvoiceData {
   /** YYYY-MM */
   month: string
   lines: InvoiceLine[]
+  /** telefono guardado en la ficha del cliente: si existe, WhatsApp abre directo su chat */
+  phone?: string | null
+}
+
+/** Solo digitos con codigo de pais, listo para wa.me. '+58 414…' queda igual; '0414…' o '414…' (Venezuela) se completa con 58. null si no sirve. */
+export function waNumber(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const plus = raw.trim().startsWith('+')
+  let d = raw.replace(/\D/g, '')
+  if (!plus) {
+    if (d.startsWith('00')) d = d.slice(2)
+    else if (d.startsWith('0') && d.length === 11) d = `58${d.slice(1)}`
+    else if (d.length === 10 && !d.startsWith('0')) d = `58${d}`
+  }
+  return d.length >= 10 && d.length <= 15 ? d : null
 }
 
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
@@ -112,6 +130,7 @@ export default function Invoice({ data: initial, onClose }: { data: InvoiceData;
   // los datos se pueden corregir antes de imprimir o compartir; los cambios son solo de esta factura, no tocan los cobros
   const [data, setData] = useState(initial)
   const [edit, setEdit] = useState(false)
+  const [cobroId, setCobroId] = useState<string | null>(null)
   const setLine = (i: number, patch: Partial<InvoiceLine>) => setData((d) => ({ ...d, lines: d.lines.map((l, j) => (j === i ? { ...l, ...patch } : l)) }))
   const close = useRef(onClose)
   close.current = onClose
@@ -122,6 +141,12 @@ export default function Invoice({ data: initial, onClose }: { data: InvoiceData;
   }, [])
 
   const whatsapp = async () => {
+    // Con el telefono de la ficha el chat se abre directo con el cliente (wa.me/<numero>). Sin el, se comparte la imagen como antes.
+    const to = waNumber(data.phone)
+    if (to) {
+      window.open(`https://wa.me/${to}?text=${encodeURIComponent(asText(data))}`, '_blank', 'noopener')
+      return
+    }
     try {
       const file = new File([await toPng(data)], `factura-${number(data)}.png`, { type: 'image/png' })
       if (navigator.canShare?.({ files: [file] })) {
@@ -192,6 +217,11 @@ export default function Invoice({ data: initial, onClose }: { data: InvoiceData;
                       <span className="inv-date">{fmtDate(l.date)}</span>
                       <span className="inv-concept">{l.concept}</span>
                       <b>{money(l.amount)}</b>
+                      {l.id && (
+                        <button type="button" className="inv-open" onClick={() => setCobroId(l.id!)} aria-label={`Ver el detalle del cobro ${l.concept}`} title="Ver el detalle del cobro">
+                          <Icon name="arrow" size={13} />
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -211,11 +241,12 @@ export default function Invoice({ data: initial, onClose }: { data: InvoiceData;
           <button type="button" className="ghost" onClick={() => window.print()}>
             <Icon name="print" size={16} /> Imprimir
           </button>
-          <button type="button" className="primary" onClick={() => void whatsapp()}>
+          <button type="button" className="primary" title={waNumber(data.phone) ? 'Abre el chat de WhatsApp del cliente' : 'Comparte la factura por WhatsApp'} onClick={() => void whatsapp()}>
             <Icon name="share" size={16} /> WhatsApp
           </button>
         </footer>
       </div>
+      {cobroId && <Cobro id={cobroId} onClose={() => setCobroId(null)} />}
     </div>,
     document.body,
   )

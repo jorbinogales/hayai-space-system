@@ -17,7 +17,9 @@ import History from './History'
 import { Blobvatar } from './blob'
 import { Icon, ZoomControls } from './ui'
 import { reduced, useDive } from './warp'
-import { hashClientId } from './nav'
+import { go, hashClientId } from './nav'
+import { loadStages, useLoaded } from './hubData'
+import { FlatFrame, OrbitalView, PipelineView, ViewSwitch, useViewMode, type Lead } from './orbital'
 
 const ANCHOR_LON = -0.5 // longitud (rad) de la posicion destacada, a la izquierda del meridiano central
 const LATS = [0.12, 0.5, 0.22, -0.4, 0.42, -0.04, -0.52, 0.28, -0.26]
@@ -185,6 +187,9 @@ export default function Clients({ onBack }: { onBack: () => void }) {
   const projects = useProjects()
   const tasks = useTasks()
   const [exiting, setExiting] = useState(false)
+  const [view, setView] = useViewMode() // planeta (3D, el de siempre) · orbital · pipeline en columnas
+  const stages = useLoaded(loadStages, []) // etapas del pipeline: nombres y probabilidades siempre de la API
+  const flat = view !== 'planeta'
   const [off, setOff] = useState(0) // desplazamiento (dias) de la ventana de 30 dias de la linea de tiempo
   const deep = form || cal || prosp || edit !== null
   const back = () => {
@@ -311,6 +316,8 @@ export default function Clients({ onBack }: { onBack: () => void }) {
       setOpen(id)
     }
   }
+  // en las vistas orbital y pipeline un clic abre el cajon por enlace (#clientes/<id>), igual que desde la busqueda o un aviso; otro clic lo cierra
+  const pickLink = (id: string) => (open === id ? pick(id) : go({ screen: 'clientes', clientId: id }))
   const c = clients.find((x) => x.id === shown) ?? clients[0] // sin clientes: undefined, la card y el planeta quedan vacios
   const st = c ? stats(c) : null
   const sm = summary(clients)
@@ -319,7 +326,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
   const today = todayISO()
 
   return (
-    <main className={`screen layer clients arriving${open ? ' has-drawer' : ''}${deep ? ' deep' : ''}${exiting ? ' exiting' : ''}`}>
+    <main className={`screen layer clients arriving${open ? ' has-drawer' : ''}${deep ? ' deep' : ''}${exiting ? ' exiting' : ''}${flat ? ' view-flat' : ''}`}>
       <div className="overlay" ref={(el) => void (br.current.overlay = el)}>
         <svg className="link" aria-hidden="true">
           <path ref={(el) => void (br.current.link = el)} fill="none" />
@@ -344,10 +351,13 @@ export default function Clients({ onBack }: { onBack: () => void }) {
         ))}
 
         <div className="clients-left">
-          <button className="back" onClick={back}>
-            <Icon name="back" size={16} />
-            Volver al core
-          </button>
+          <div className="ob-topline">
+            <button className="back" onClick={back}>
+              <Icon name="back" size={16} />
+              Volver al core
+            </button>
+            <ViewSwitch view={view} onChange={setView} />
+          </div>
           <h1>Clientes</h1>
           <div ref={(el) => void (br.current.sum = el)}>
             <p className="summary">
@@ -401,9 +411,10 @@ export default function Clients({ onBack }: { onBack: () => void }) {
                   (() => {
                     const pr = projects.find((p) => p.clientId === c.id)
                     const v = tasks.find((t) => t.projectId === pr?.id && !t.done && t.due)
+                    const stage = stages.data?.find((x) => x.etapa === (c as Lead).stage)
                     return (
                       <>
-                        <li>Por visitar</li>
+                        <li>{stage?.nombre ?? 'Posible cliente'}</li>
                         <li>{v?.due ? `Visita el ${fmtDate(v.due)}` : 'Visita sin fecha'}</li>
                       </>
                     )
@@ -475,6 +486,24 @@ export default function Clients({ onBack }: { onBack: () => void }) {
             <DayTrack items={dayRows} clients={clients} start={addDays(today, off)} selected={selected} live={live} onPick={toggle} onInvoice={setInvoice} />
           </div>
         </section>
+
+        {flat && (
+          <FlatFrame
+            view={view}
+            onView={setView}
+            onBack={back}
+            onNew={() => setForm(true)}
+            onProspect={() => setProsp(true)}
+            eyebrow={view === 'orbital' ? 'PLANETA VENTAS · VISTA ORBITAL' : 'PLANETA VENTAS · PIPELINE'}
+            title={view === 'orbital' ? 'Quién está cerca de cerrar' : 'El camino de cada posible cliente'}
+          >
+            {view === 'orbital' ? (
+              <OrbitalView clients={clients as Lead[]} stages={stages} openId={open} onPick={pickLink} onSwitch={setView} onProspect={() => setProsp(true)} />
+            ) : (
+              <PipelineView clients={clients as Lead[]} stages={stages} openId={open} onPick={pickLink} />
+            )}
+          </FlatFrame>
+        )}
 
         <History
           client={clients.find((x) => x.id === open) ?? null}

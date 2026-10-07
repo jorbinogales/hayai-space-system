@@ -9,14 +9,18 @@ import { cents, op, todayISO } from './common.ts'
 // Ojo: la moneda no se convierte. Hoy toda la API escribe USD (columna currency = 'USD' por defecto).
 
 export const finanzasResumen = op(
-  z.strictObject({ periodo: z.enum(['mes', 'anio', 'todo'], 'Periodo inválido (mes, anio o todo)').default('mes') }),
+  z.strictObject({
+    periodo: z.enum(['mes', 'anio', 'todo'], 'Periodo inválido (mes, anio o todo)').default('mes'),
+    // true: la vista interna de HAYAI (hub): solo gastos generales y de proyectos sin cliente, sin ingresos ni tabla de clientes.
+    interno: z.union([z.boolean(), z.enum(['true', 'false'])], 'interno inválido (true o false)').default(false),
+  }),
   async (_a, i) => {
     const hoy = todayISO()
     const prefijo = i.periodo === 'mes' ? hoy.slice(0, 7) : hoy.slice(0, 4)
     const inPeriod = (d: string) => i.periodo === 'todo' || d.startsWith(prefijo)
 
     const [clientes, pagos, gastos] = await Promise.all([
-      pool.query('SELECT id, name, is_prospect FROM clients ORDER BY created_at, id'),
+      pool.query('SELECT id, name, is_prospect, archived_at IS NOT NULL AS archived FROM clients ORDER BY created_at, id'),
       pool.query('SELECT client_id, date, amount, status FROM payments'),
       pool.query(
         `SELECT e.date, e.amount, e.client_id, p.client_id AS project_client
@@ -24,7 +28,7 @@ export const finanzasResumen = op(
       ),
     ])
 
-    const filas = clientes.rows.map((c) => {
+    const filas = clientes.rows.flatMap((c) => {
       let recaudado = 0
       let porCobrar = 0
       let vencido = 0
@@ -38,7 +42,9 @@ export const finanzasResumen = op(
       }
       let g = 0
       for (const e of gastos.rows) if (inPeriod(e.date) && (e.client_id === c.id || e.project_client === c.id)) g += cents(e.amount)
-      return { id: c.id as string, nombre: c.name as string, recaudado, gastos: g, por_cobrar: porCobrar, vencido, utilidad: recaudado - g }
+      // Un cliente archivado sin un solo movimiento en el periodo (p. ej. el antiguo "HAYAI (interno)") no ocupa una fila vacía.
+      if (c.archived && !recaudado && !g && !porCobrar) return []
+      return [{ id: c.id as string, nombre: c.name as string, recaudado, gastos: g, por_cobrar: porCobrar, vencido, utilidad: recaudado - g }]
     })
     filas.sort((a, b) => b.recaudado - a.recaudado)
 
@@ -73,9 +79,30 @@ export const finanzasResumen = op(
       }
     })
 
+    if (i.interno === true || i.interno === 'true') {
+      // Vista interna (hub): lo que HAYAI gasta sin imputarlo a un cliente. Mismo criterio que la fila "Gastos generales" de Finanzas.
+      const internos = gastos.rows.filter((e) => !e.client_id && !e.project_client)
+      return {
+        periodo: i.periodo,
+        hoy,
+        interno: true,
+        ingresos: 0,
+        gastos: generales / 100,
+        balance: -generales / 100,
+        por_cobrar: 0,
+        por_cobrar_total: 0,
+        vencido: 0,
+        vencido_total: 0,
+        gastos_generales: generales / 100,
+        clientes: [],
+        serie: serie.map((s) => ({ mes: s.mes, ingresos: 0, gastos: internos.filter((e) => e.date.startsWith(s.mes)).reduce((t, e) => t + cents(e.amount), 0) / 100 })),
+      }
+    }
+
     return {
       periodo: i.periodo,
       hoy,
+      interno: false,
       ingresos: ingresos / 100,
       gastos: gastosTotal / 100,
       balance: (ingresos - gastosTotal) / 100,

@@ -23,6 +23,7 @@ export function useDragScroll(ref: RefObject<HTMLElement | null>, axis: 'x' | 'y
 
     const onDown = (e: PointerEvent) => {
       if (e.pointerType === 'touch' || e.button !== 0) return // en tactil ya hay desplazamiento nativo
+      if ((e.target as Element | null)?.closest?.('input, textarea, select')) return // en un campo, arrastrar selecciona texto
       cancelAnimationFrame(raf)
       down = true
       moved = false

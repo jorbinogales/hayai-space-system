@@ -1,10 +1,12 @@
 import { z } from 'zod'
-import { pool } from '../db.ts'
+import { assertFresh, stamp } from '../concurrency.ts'
+import { pool, tx } from '../db.ts'
 import { HttpError, id, isoDate, money, text } from '../util.ts'
 import { CATEGORIES, filters, op, pageShape, paged, r2, todayISO } from './common.ts'
 
-const SELECT = `SELECT e.id, e.date, e.concept, e.amount, e.category, e.scope, e.client_id, e.project_id,
-    COALESCE(c.name, p.name) AS ref, u.name AS owner
+const SELECT = `SELECT e.id, e.updated_at, e.date, e.concept, e.amount, e.category, e.scope, e.client_id, e.project_id,
+    COALESCE(c.name, p.name) AS ref, u.name AS owner,
+    (e.scope = 'general' OR (e.scope = 'proyecto' AND p.client_id IS NULL)) AS internal
   FROM expenses e
   LEFT JOIN clients c ON c.id = e.client_id
   LEFT JOIN projects p ON p.id = e.project_id
@@ -18,10 +20,13 @@ const out = (r: any) => ({
   monto: r.amount as number,
   categoria: r.category as string,
   ambito: r.scope as string,
+  es_interno: r.internal as boolean, // general o de un proyecto interno: no se imputa a ningún cliente
   referencia: r.scope === 'general' ? null : { id: (r.client_id ?? r.project_id) as string, nombre: r.ref as string },
   registrado_por: r.owner as string,
+  actualizado_el: stamp(r.updated_at),
 })
 
+const INTERNAL = "(e.scope = 'general' OR (e.scope = 'proyecto' AND p.client_id IS NULL))"
 const categoria = z.enum(CATEGORIES, `Categoría inválida (${CATEGORIES.join(', ')})`)
 const ambito = z.enum(['general', 'cliente', 'proyecto'], 'Ámbito inválido (general, cliente o proyecto)')
 
@@ -44,16 +49,24 @@ async function checkRef(scope: string, refId: string | null) {
 }
 
 export const gastosListar = op(
-  z.strictObject({ desde: isoDate.optional(), hasta: isoDate.optional(), categoria: categoria.optional(), ambito: ambito.optional(), ...pageShape }),
+  z.strictObject({
+    desde: isoDate.optional(),
+    hasta: isoDate.optional(),
+    categoria: categoria.optional(),
+    ambito: ambito.optional(),
+    interno: z.union([z.boolean(), z.enum(['true', 'false'])], 'interno inválido (true o false)').optional(), // true: solo gastos internos de HAYAI (generales o de proyectos sin cliente)
+    ...pageShape,
+  }),
   async (_a, i) => {
     const f = filters()
     if (i.desde) f.add('e.date >= ?', i.desde)
     if (i.hasta) f.add('e.date <= ?', i.hasta)
     if (i.categoria) f.add('e.category = ?', i.categoria)
     if (i.ambito) f.add('e.scope = ?', i.ambito)
+    if (i.interno !== undefined) f.raw(i.interno === true || i.interno === 'true' ? INTERNAL : `NOT ${INTERNAL}`)
     const { clause, args } = f.page(i.per_page, i.page)
     const [agg, rows] = await Promise.all([
-      pool.query(`SELECT count(*)::int AS n, COALESCE(sum(e.amount), 0) AS total FROM expenses e ${f.where()}`, f.params()),
+      pool.query(`SELECT count(*)::int AS n, COALESCE(sum(e.amount), 0) AS total FROM expenses e LEFT JOIN projects p ON p.id = e.project_id ${f.where()}`, f.params()),
       pool.query(`${SELECT} ${f.where()} ORDER BY e.date DESC, e.created_at DESC, e.id ${clause}`, args),
     ])
     // total_monto = suma de TODO el filtro (no solo de esta página): p. ej. el total del mes.
@@ -114,12 +127,15 @@ export const gastoActualizar = op(
       b.referencia_id !== undefined ? b.referencia_id : b.ambito !== undefined && b.ambito !== cur.scope ? null : (cur.client_id ?? cur.project_id)
     await checkRef(scope, ref)
 
-    await pool.query(
-      `UPDATE expenses SET date = COALESCE($2, date), concept = COALESCE($3, concept), amount = COALESCE($4, amount),
-         category = COALESCE($5, category), scope = $6, client_id = $7, project_id = $8
-       WHERE id = $1`,
-      [b.id, b.fecha ?? null, b.concepto ?? null, b.monto ?? null, b.categoria ?? null, scope, scope === 'cliente' ? ref : null, scope === 'proyecto' ? ref : null],
-    )
+    await tx(async (c) => {
+      await assertFresh(c, 'expenses', b.id)
+      await c.query(
+        `UPDATE expenses SET date = COALESCE($2, date), concept = COALESCE($3, concept), amount = COALESCE($4, amount),
+           category = COALESCE($5, category), scope = $6, client_id = $7, project_id = $8
+         WHERE id = $1`,
+        [b.id, b.fecha ?? null, b.concepto ?? null, b.monto ?? null, b.categoria ?? null, scope, scope === 'cliente' ? ref : null, scope === 'proyecto' ? ref : null],
+      )
+    })
     return gasto(b.id)
   },
 )

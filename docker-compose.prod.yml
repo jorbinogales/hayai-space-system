@@ -28,6 +28,16 @@ services:
       NODE_ENV: production
       TRUST_PROXY: "1" # Caddy va delante: asi el limite por IP ve la IP real
       PORT: "3001"
+      # Leads de Meta Ads (webhook): apagado hasta tener las credenciales. Ver README, "Meta Lead Ads".
+      META_LEADS_ENABLED: ${META_LEADS_ENABLED:-false}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
+      META_PAGE_TOKEN: ${META_PAGE_TOKEN:-}
+      META_LEADS_OWNER: ${META_LEADS_OWNER:-Elis,Jorbi,Leandro}
+      # Cobros: mapeo cedula -> socio que recibe ("V-111=Elis,V-222=Jorbi"). Va SOLO en el .env del VPS, nunca al repo.
+      RECEIVER_DOCUMENTS: ${RECEIVER_DOCUMENTS:-}
+      # Semaforo de los sistemas de los clientes: cada cuantos ms se verifican (0 lo apaga; por defecto 600000 = 10 min).
+      SYSTEMS_CHECK_MS: ${SYSTEMS_CHECK_MS:-600000}
     depends_on:
       db:
         condition: service_healthy

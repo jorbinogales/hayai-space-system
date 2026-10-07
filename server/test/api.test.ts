@@ -23,7 +23,10 @@ let dataDir: string
 let server: ChildProcess
 let admin: pg.Client
 
-type Res = { status: number; body: any; cookie?: string; setCookie?: string }
+type Res = { status: number; body: any; full?: any; cookie?: string; setCookie?: string }
+
+const stripStamp = (x: any): any =>
+  Array.isArray(x) ? x.map(stripStamp) : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'updatedAt').map(([k, v]) => [k, stripStamp(v)])) : x
 
 async function call(path: string, o: { method?: string; body?: unknown; raw?: string; cookie?: string; headers?: Record<string, string> } = {}): Promise<Res> {
   const headers: Record<string, string> = { ...o.headers }
@@ -39,7 +42,9 @@ async function call(path: string, o: { method?: string; body?: unknown; raw?: st
   const setCookie = r.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))
   return {
     status: r.status,
-    body: text ? JSON.parse(text) : undefined,
+    // updatedAt = versión del registro (cambia en cada escritura): se quita de body para comparar formas exactas; `full` la conserva.
+    body: stripStamp(text ? JSON.parse(text) : undefined),
+    full: text ? JSON.parse(text) : undefined,
     setCookie,
     cookie: setCookie?.split(';')[0],
   }
@@ -62,7 +67,7 @@ const CRM = {
   createdAt: '<ts>',
   phone: null, email: null, contactName: null, contactRole: null, address: null, notes: null, tags: [], source: null,
   stage: null, estValue: null, probability: null, expectedClose: null, lostReason: null, stageChangedAt: null,
-  nextAction: null, nextActionDate: null, lastContactAt: null,
+  nextAction: null, nextActionDate: null, lastContactAt: null, socials: [], implementationDate: null,
 }
 const CRM_KEYS = Object.keys(CRM)
 
@@ -422,6 +427,7 @@ describe('datos', () => {
       due: '2026-05-01',
       archived: false,
       clientArchived: false,
+      description: null,
     })
     const noDue = await call('/projects', { cookie, body: { name: 'Sin fecha', icon: 'code', clientId, owner: 'Elis', status: 'planeacion', due: null } })
     assert.equal(noDue.status, 201)
@@ -478,7 +484,7 @@ describe('datos', () => {
   it('tareas: crear, listar, marcar/desmarcar (done_at coherente), borrar, 404', async () => {
     const t = await call('/tasks', { cookie, body: { projectId, title: 'Diseñar home' } })
     assert.equal(t.status, 201, JSON.stringify(t.body))
-    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Diseñar home', done: false, due: null, owner: 'Elis', hidden: false })
+    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Diseñar home', done: false, due: null, owner: 'Elis', hidden: false, milestoneId: null })
     assert.equal(t.body.projectId, projectId)
     assert.deepEqual((await call('/tasks', { cookie })).body, [t.body])
 
@@ -672,12 +678,12 @@ describe('datos', () => {
     assert.equal(r.status, 201, JSON.stringify(r.body))
     assert.deepEqual(Object.keys(r.body).sort(), ['client', 'project', 'task'])
     const { client, project, task } = r.body
-    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, archived: false, ...CRM, stage: 'nuevo', probability: 10, stageChangedAt: '<ts>', items: [], movements: [] })
+    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, archived: false, ...CRM, stage: 'prospecto', probability: 10, stageChangedAt: '<ts>', items: [], movements: [] })
     assert.deepEqual(shape(project), {
-      id: '<uuid>', name: 'Web Futuro', icon: 'globe', owner: 'Leandro', client: 'Futuro SA', clientId: '<uuid>', status: 'planeacion', due: '2020-03-01', archived: false, clientArchived: false,
+      id: '<uuid>', name: 'Web Futuro', icon: 'globe', owner: 'Leandro', client: 'Futuro SA', clientId: '<uuid>', status: 'planeacion', due: '2020-03-01', archived: false, clientArchived: false, description: null,
     })
     assert.equal(project.clientId, client.id)
-    assert.deepEqual(shape(task), { id: '<uuid>', projectId: '<uuid>', title: 'Visita a Futuro SA', done: false, due: '2020-02-10', owner: 'Elis', hidden: false })
+    assert.deepEqual(shape(task), { id: '<uuid>', projectId: '<uuid>', title: 'Visita a Futuro SA', done: false, due: '2020-02-10', owner: 'Elis', hidden: false, milestoneId: null })
     assert.equal(task.projectId, project.id)
     const { rows } = await admin.query('SELECT created_by FROM clients WHERE id = $1', [client.id])
     assert.equal(rows[0].created_by, (await call('/auth/me', { cookie })).body.id)
@@ -699,7 +705,8 @@ describe('datos', () => {
     // convert: prospect=false, conserva su proyecto; la segunda vez => 409
     const conv = await call(`/clients/${client.id}/convert`, { cookie, method: 'POST' })
     assert.equal(conv.status, 200, JSON.stringify(conv.body))
-    assert.deepEqual(shape(conv.body), { ...shape(client), prospect: false, stage: 'ganado', probability: 100, stageChangedAt: '<ts>' })
+    assert.match(conv.body.implementationDate, /^\d{4}-\d\d-\d\d$/, 'la pantalla actual no pide el día de implementación: queda hoy')
+    assert.deepEqual(shape(conv.body), { ...shape(client), prospect: false, stage: 'ganado', probability: 100, stageChangedAt: '<ts>', implementationDate: conv.body.implementationDate })
     assert.deepEqual((await call('/projects', { cookie })).body.find((p: any) => p.id === project.id), project)
     const twice = await call(`/clients/${client.id}/convert`, { cookie, method: 'POST' })
     assert.equal(twice.status, 409)
@@ -739,7 +746,7 @@ describe('datos', () => {
   it('tareas con fecha: due en POST/PATCH/GET, null la borra, PATCH vacío => 400', async () => {
     const t = await call('/tasks', { cookie, body: { projectId, title: 'Con fecha', due: '2019-05-05' } })
     assert.equal(t.status, 201, JSON.stringify(t.body))
-    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Con fecha', done: false, due: '2019-05-05', owner: 'Elis', hidden: false })
+    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Con fecha', done: false, due: '2019-05-05', owner: 'Elis', hidden: false, milestoneId: null })
     assert.deepEqual((await call('/tasks', { cookie })).body.find((x: any) => x.id === t.body.id), t.body)
     const nul = await call('/tasks', { cookie, body: { projectId, title: 'Sin fecha', due: null } })
     assert.equal(nul.body.due, null)
@@ -779,7 +786,7 @@ describe('datos', () => {
     assert.deepEqual(multi.body, {
       ...p.body, name: 'Renombrado', icon: 'chart', status: 'entrega', owner: 'Jorbi', client: 'Otro cliente', clientId: other.body.id, due: '2019-01-01',
     })
-    assert.deepEqual(Object.keys(multi.body), ['id', 'name', 'icon', 'owner', 'client', 'clientId', 'status', 'due', 'archived', 'clientArchived'])
+    assert.deepEqual(Object.keys(multi.body), ['id', 'name', 'description', 'icon', 'owner', 'client', 'clientId', 'status', 'due', 'archived', 'clientArchived'])
     assert.deepEqual((await call('/projects', { cookie })).body.find((x: any) => x.id === p.body.id), multi.body) // GET igual
     const nul = await patch({ due: null })
     assert.equal(nul.body.due, null)

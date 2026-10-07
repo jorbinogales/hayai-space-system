@@ -3,12 +3,15 @@ import { Icon, ZoomControls } from './ui'
 import { Blobvatar } from './blob'
 import { useCosmos } from './Cosmos'
 import { useDragScroll } from './drag'
-import { money, useAllClients } from './store'
+import { money, todayISO, useAllClients } from './store'
 import { useAllProjects } from './projectData'
 import { useExpenses } from './expenseData'
+import { isInternalExpense, useInternalFilter } from './nav'
+import { InternalChip } from './InternalChip'
 import { dashboard, series, type Period } from './finance'
 import { reduced } from './warp'
 
+const NO_CLIENTS: ReturnType<typeof useAllClients> = []
 const PERIODS: { key: Period; label: string }[] = [
   { key: 'mes', label: 'Este mes' },
   { key: 'anio', label: 'Este año' },
@@ -21,7 +24,10 @@ export default function Finances({ onBack }: { onBack: () => void }) {
   // Finanzas cuenta TODO, archivado o no: archivar oculta, no borra el historial.
   const clients = useAllClients()
   const projects = useAllProjects()
-  const expenses = useExpenses()
+  const allExpenses = useExpenses()
+  // atajo interno del Hub: enfoca los gastos generales de HAYAI (sin cliente) y deja fuera lo cobrado a clientes
+  const internal = useInternalFilter()
+  const expenses = useMemo(() => (internal ? allExpenses.filter((x) => isInternalExpense(x, projects)) : allExpenses), [internal, allExpenses, projects])
   const [period, setPeriod] = useState<Period>('mes')
   const [exiting, setExiting] = useState(false)
   const scroll = useRef<HTMLDivElement>(null)
@@ -35,8 +41,14 @@ export default function Finances({ onBack }: { onBack: () => void }) {
     window.setTimeout(onBack, reduced() ? 50 : 300)
   }
 
-  const d = useMemo(() => dashboard(clients, expenses, projects, period), [clients, expenses, projects, period])
-  const s = useMemo(() => series(clients, expenses, 6), [clients, expenses])
+  // en modo interno no entra ningun cliente: todo lo que queda son gastos generales
+  const shownClients = internal ? NO_CLIENTS : clients
+  const d = useMemo(() => dashboard(shownClients, expenses, projects, period), [shownClients, expenses, projects, period])
+  const s = useMemo(() => series(shownClients, expenses, 6), [shownClients, expenses])
+  const movs = useMemo(() => {
+    const t = todayISO()
+    return expenses.filter((x) => period === 'todo' || x.date.startsWith(period === 'mes' ? t.slice(0, 7) : t.slice(0, 4))).length
+  }, [expenses, period])
   const max = Math.max(1, ...s.flatMap((m) => [m.ingresos, m.gastos]))
   const maxRow = Math.max(1, ...d.rows.map((r) => Math.max(r.recaudado, r.gastos)))
 
@@ -61,6 +73,7 @@ export default function Finances({ onBack }: { onBack: () => void }) {
           <header className="plist-head">
             <h1>Finanzas</h1>
             <div className="plist-side">
+              {internal && <InternalChip label="Solo internos" />}
               <div className="seg seg-light" role="tablist" aria-label="Periodo">
                 {PERIODS.map((p) => (
                   <button key={p.key} role="tab" aria-selected={period === p.key} className={period === p.key ? 'is-on' : ''} onClick={() => setPeriod(p.key)}>
@@ -72,6 +85,18 @@ export default function Finances({ onBack }: { onBack: () => void }) {
           </header>
 
           <div className="plist-scroll" ref={scroll}>
+            {internal ? (
+              <div className="kpis">
+                <article className="kpi">
+                  <small>Gastos generales de HAYAI</small>
+                  <strong>{money(d.generales)}</strong>
+                </article>
+                <article className="kpi">
+                  <small>Movimientos</small>
+                  <strong>{movs}</strong>
+                </article>
+              </div>
+            ) : (
             <div className="kpis">
               <article className="kpi">
                 <small>Recaudado</small>
@@ -90,14 +115,15 @@ export default function Finances({ onBack }: { onBack: () => void }) {
                 <strong className="due">{money(d.pendiente)}</strong>
               </article>
             </div>
+            )}
 
             <div className="gcard fcard">
-              <h2>Ingresos y gastos · últimos 6 meses</h2>
+              <h2>{internal ? 'Gastos generales · últimos 6 meses' : 'Ingresos y gastos · últimos 6 meses'}</h2>
               <div className="legend" aria-hidden="true">
-                <span className="lg-in">Recaudado</span>
+                {!internal && <span className="lg-in">Recaudado</span>}
                 <span className="lg-out">Gastos</span>
               </div>
-              <svg className="fchart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Ingresos y gastos por mes: ${s.map((m) => `${m.label} ${money(m.ingresos)} recaudado, ${money(m.gastos)} gastos`).join('; ')}`}>
+              <svg className="fchart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={internal ? `Gastos generales por mes: ${s.map((m) => `${m.label} ${money(m.gastos)}`).join('; ')}` : `Ingresos y gastos por mes: ${s.map((m) => `${m.label} ${money(m.ingresos)} recaudado, ${money(m.gastos)} gastos`).join('; ')}`}>
                 {[0.25, 0.5, 0.75, 1].map((t) => (
                   <line key={t} x1={pad.l} x2={W - pad.r} y1={y(max * t)} y2={y(max * t)} className="grid" />
                 ))}
@@ -120,7 +146,7 @@ export default function Finances({ onBack }: { onBack: () => void }) {
                 })}
               </svg>
 
-              <h2 className="ft-title">Por cliente</h2>
+              <h2 className="ft-title">{internal ? 'Lo interno' : 'Por cliente'}</h2>
               <div className="ftable" role="table" aria-label="Recaudado y gastos por cliente">
                 <div className="fr fh" role="row">
                   <span role="columnheader">Cliente</span>
@@ -129,7 +155,7 @@ export default function Finances({ onBack }: { onBack: () => void }) {
                   <span role="columnheader">Utilidad</span>
                   <span role="columnheader">Por cobrar</span>
                 </div>
-                {d.rows.length === 0 && <p className="empty-note dark">Cuando registres clientes y cobros, aquí verás lo recaudado por cada uno.</p>}
+                {!internal && d.rows.length === 0 && <p className="empty-note dark">Cuando registres clientes y cobros, aquí verás lo recaudado por cada uno.</p>}
                 {d.rows.map((r) => (
                   <div className="fr" role="row" key={r.id}>
                     <span className="fc-name" role="cell">
@@ -154,7 +180,7 @@ export default function Finances({ onBack }: { onBack: () => void }) {
                     </span>
                   </div>
                 ))}
-                <div className="fr fgen" role="row">
+                <div className={`fr fgen${internal ? ' is-focus' : ''}`} role="row">
                   <span className="fc-name" role="cell">
                     <span className="fgen-ico" aria-hidden="true">
                       H

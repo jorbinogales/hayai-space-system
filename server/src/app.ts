@@ -9,10 +9,14 @@ import { keysRouter } from './routes/keys.ts'
 import { projectsRouter } from './routes/projects.ts'
 import { tasksRouter } from './routes/tasks.ts'
 import { crmRouter } from './routes/crm.ts'
+import { hubRouter } from './routes/hub.ts'
 import { trashRouter } from './routes/trash.ts'
 import { usersRouter } from './routes/users.ts'
 import { mcpRouter } from './mcp/index.ts'
 import { v1Router } from './v1/index.ts'
+import { metaRouter } from './meta.ts'
+import { conflictGuard } from './concurrency.ts'
+import { versionHeader } from './services/versiones.ts'
 import { HttpError } from './util.ts'
 
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS'])
@@ -51,14 +55,19 @@ export function createApp() {
   // Integraciones (X-API-Key, sin cookies ni CSRF): van antes de /api, que exige sesion de la web.
   app.use('/api/v1', v1Router)
   app.use('/mcp', mcpRouter)
+  // Webhook de Meta (firma HMAC sobre el cuerpo crudo; apagado por META_LEADS_ENABLED). Antes de /api: no usa sesion ni CSRF.
+  app.use('/api/webhooks/meta', metaRouter)
 
   const api = express.Router()
   api.use((_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store')
     next()
   })
+  api.use(versionHeader) // X-Hayai-Version: la pestaña abierta detecta una versión nueva en cualquier respuesta
   api.use(csrf)
+  api.post('/cobros/:id/comprobante', express.json({ limit: '6mb' })) // la imagen viaja en base64 (hasta 4 MB)
   api.use(express.json({ limit: '100kb' }))
+  api.use(conflictGuard) // If-Match: no pisar lo que cambió mientras alguien editaba
   api.use('/auth', authRouter)
   api.use(requireSession, requirePinChanged)
   api.use('/users', usersRouter)
@@ -71,6 +80,7 @@ export function createApp() {
   api.use('/keys', keysRouter)
   api.use('/trash', trashRouter)
   api.use(crmRouter)
+  api.use(hubRouter)
   api.use((_req, _res) => {
     throw new HttpError(404, 'No encontrado')
   })

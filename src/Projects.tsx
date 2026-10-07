@@ -7,6 +7,13 @@ import { fmtDate, todayISO, useClients } from './store'
 import { useCosmos } from './Cosmos'
 import { useDragScroll } from './drag'
 import NewProject from './NewProject'
+import ProjectDetail, { EditProject } from './projectDetail'
+
+/** Id de proyecto del hash actual (`#proyectos/<id>`), o null. */
+const hashProjectId = (): string | null => {
+  const [screen, id] = location.hash.slice(1).split('/')
+  return screen === 'proyectos' && id ? id : null
+}
 
 /** Pantalla Proyectos: el planeta (del mundo compartido) queda a la izquierda, medio escondido, y a la derecha la lista de proyectos. */
 export default function Projects({ onBack }: { onBack: () => void }) {
@@ -16,6 +23,7 @@ export default function Projects({ onBack }: { onBack: () => void }) {
   const pc = projectCounts(projects)
   const [form, setForm] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
+  const [detail, setDetail] = useState<string | null>(hashProjectId) // proyecto abierto en su detalle: enlace `#proyectos/<id>`
   const [exiting, setExiting] = useState(false)
   const today = todayISO()
   const scroller = useRef<HTMLDivElement>(null)
@@ -26,6 +34,13 @@ export default function Projects({ onBack }: { onBack: () => void }) {
     return () => setDeep(false)
   }, [form, editing, setDeep])
   useEffect(() => {
+    const onHash = () => setDetail(hashProjectId())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+  const openDetail = (id: string) => void (location.hash = `proyectos/${id}`)
+  const closeDetail = () => void (location.hash = 'proyectos')
+  useEffect(() => {
     world.screenRate = null // gira a la velocidad propia del planeta
   }, [world])
 
@@ -35,7 +50,7 @@ export default function Projects({ onBack }: { onBack: () => void }) {
   }
 
   return (
-    <main className={`screen layer projects arriving${form || editing ? ' deep' : ''}${exiting ? ' exiting' : ''}`}>
+    <main className={`screen layer projects arriving${form || editing ? ' deep' : ''}${exiting ? ' exiting' : ''}${detail ? ' has-detail' : ''}`}>
       <div className="overlay">
         <div className="clients-left">
           <button className="back" onClick={back}>
@@ -86,8 +101,12 @@ export default function Projects({ onBack }: { onBack: () => void }) {
                         </button>
                       </span>
                     </header>
-                    <h2>{p.name}</h2>
-                    <p className="p-client">{p.client}</p>
+                    <h2>
+                      <button type="button" className="p-open" onClick={() => openDetail(p.id)} aria-label={`Abrir el detalle de ${p.name}`}>
+                        {p.name}
+                      </button>
+                    </h2>
+                    <p className="p-client">{p.client ?? 'Interno de HAYAI'}</p>
                     {p.due && (
                       <p className={`p-due${p.due < today ? ' late' : ''}`}>
                         <Icon name="calendar" size={14} />
@@ -111,9 +130,8 @@ export default function Projects({ onBack }: { onBack: () => void }) {
         <ZoomControls onZoom={(f) => world.zoomBy(f)} />
       </div>
 
-      {editing && projects.find((p) => p.id === editing) && (
-        <NewProject project={projects.find((p) => p.id === editing)} onClose={() => setEditing(null)} onCreate={() => setEditing(null)} />
-      )}
+      {detail && <ProjectDetail key={detail} id={detail} onBack={closeDetail} />}
+      {editing && projects.find((p) => p.id === editing) && <EditProject projectId={editing} onClose={() => setEditing(null)} />}
       {form && (
         <NewProject
           onClose={() => setForm(false)}

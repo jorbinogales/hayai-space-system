@@ -6,7 +6,7 @@ import { pool, tx } from './db.ts'
 import { HttpError } from './util.ts'
 
 export const RETENTION_DAYS = 30
-export type Entity = 'cliente' | 'proyecto' | 'pago' | 'gasto' | 'tarea' | 'interaccion'
+export type Entity = 'cliente' | 'proyecto' | 'pago' | 'gasto' | 'tarea' | 'interaccion' | 'hito' | 'checklist_item'
 
 type Row = Record<string, unknown>
 type Snapshot = { root: Row; children: Record<string, Row[]>; label: string; detail: string | null }
@@ -18,17 +18,21 @@ const NOT_FOUND: Record<Entity, string> = {
   gasto: 'Gasto no encontrado',
   tarea: 'Tarea no encontrada',
   interaccion: 'Interacción no encontrada',
+  hito: 'Hito no encontrado',
+  checklist_item: 'Elemento no encontrado',
 }
 
 // Tabla de cada entidad e hijos, en orden de insercion (los padres antes que los hijos). Lista cerrada: nunca viene del cliente.
-const TABLE: Record<Entity, string> = { cliente: 'clients', proyecto: 'projects', pago: 'payments', gasto: 'expenses', tarea: 'tasks', interaccion: 'interactions' }
+const TABLE: Record<Entity, string> = { cliente: 'clients', proyecto: 'projects', pago: 'payments', gasto: 'expenses', tarea: 'tasks', interaccion: 'interactions', hito: 'project_milestones', checklist_item: 'project_checklist' }
 const INSERT_ORDER: Record<Entity, string[]> = {
-  cliente: ['clients', 'client_items', 'interactions', 'payments', 'projects', 'tasks', 'expenses'],
-  proyecto: ['projects', 'tasks', 'expenses'],
-  pago: ['payments'],
+  cliente: ['clients', 'client_items', 'interactions', 'payments', 'payment_receipts', 'systems', 'proposals', 'proposal_items', 'projects', 'project_milestones', 'project_checklist', 'tasks', 'expenses'],
+  proyecto: ['projects', 'project_milestones', 'project_checklist', 'tasks', 'expenses'],
+  pago: ['payments', 'payment_receipts'],
   gasto: ['expenses'],
   tarea: ['tasks'],
   interaccion: ['interactions'],
+  hito: ['project_milestones'],
+  checklist_item: ['project_checklist'],
 }
 
 const rows = async (c: PoolClient, sql: string, params: unknown[]) =>
@@ -45,36 +49,50 @@ async function snapshot(c: PoolClient, entity: Entity, entityId: string): Promis
   if (entity === 'cliente') {
     const projects = await rows(c, 'SELECT * FROM projects WHERE client_id = $1', [entityId])
     const projectIds = projects.map((p) => p.id)
+    const proposals = await rows(c, 'SELECT * FROM proposals WHERE client_id = $1', [entityId])
     const children = {
       client_items: await rows(c, 'SELECT * FROM client_items WHERE client_id = $1', [entityId]),
       // La bitacora muere con el cliente (CASCADE): si no entra en la foto, se perderia para siempre.
       interactions: await rows(c, 'SELECT * FROM interactions WHERE client_id = $1', [entityId]),
       payments: await rows(c, 'SELECT * FROM payments WHERE client_id = $1', [entityId]),
+      // Comprobantes (la imagen vive en la fila) y sistemas: mueren con el cliente por CASCADE, asi que entran en la foto.
+      payment_receipts: await rows(c, 'SELECT * FROM payment_receipts WHERE payment_id IN (SELECT id FROM payments WHERE client_id = $1)', [entityId]),
+      systems: await rows(c, 'SELECT * FROM systems WHERE client_id = $1', [entityId]),
+      // Las propuestas (y sus items) mueren con el cliente por CASCADE: sin foto se perderia la negociacion.
+      proposals,
+      proposal_items: await rows(c, 'SELECT * FROM proposal_items WHERE proposal_id = ANY($1::uuid[])', [proposals.map((p) => p.id)]),
       projects,
+      project_milestones: await rows(c, 'SELECT * FROM project_milestones WHERE project_id = ANY($1::uuid[])', [projectIds]),
+      project_checklist: await rows(c, 'SELECT * FROM project_checklist WHERE project_id = ANY($1::uuid[])', [projectIds]),
       tasks: await rows(c, 'SELECT * FROM tasks WHERE project_id = ANY($1::uuid[])', [projectIds]),
       expenses: await rows(c, 'SELECT * FROM expenses WHERE client_id = $1 OR project_id = ANY($2::uuid[])', [entityId, projectIds]),
     }
     const parts = [
       plural(children.payments.length, 'cobro', 'cobros'),
+      ...(proposals.length ? [plural(proposals.length, 'propuesta', 'propuestas')] : []),
       plural(projects.length, 'proyecto', 'proyectos'),
       plural(children.tasks.length, 'tarea', 'tareas'),
       plural(children.expenses.length, 'gasto', 'gastos'),
+      ...(children.systems.length ? [plural(children.systems.length, 'sistema', 'sistemas')] : []),
       ...(children.interactions.length ? [plural(children.interactions.length, 'interacción', 'interacciones')] : []),
     ]
     return { root, children, label: String(root.name), detail: parts.join(', ') }
   }
   if (entity === 'proyecto') {
     const children = {
+      project_milestones: await rows(c, 'SELECT * FROM project_milestones WHERE project_id = $1', [entityId]),
+      project_checklist: await rows(c, 'SELECT * FROM project_checklist WHERE project_id = $1', [entityId]),
       tasks: await rows(c, 'SELECT * FROM tasks WHERE project_id = $1', [entityId]),
       expenses: await rows(c, 'SELECT * FROM expenses WHERE project_id = $1', [entityId]),
     }
-    const owner = (await c.query('SELECT name FROM clients WHERE id = $1', [root.client_id])).rows[0]?.name
+    const owner = root.client_id ? (await c.query('SELECT name FROM clients WHERE id = $1', [root.client_id])).rows[0]?.name : null
     const detail = [owner && `de ${owner}`, plural(children.tasks.length, 'tarea', 'tareas'), plural(children.expenses.length, 'gasto', 'gastos')]
     return { root, children, label: String(root.name), detail: detail.filter(Boolean).join(', ') }
   }
   if (entity === 'pago') {
     const owner = (await c.query('SELECT name FROM clients WHERE id = $1', [root.client_id])).rows[0]?.name
-    return { root, children: {}, label: `${root.concept} · ${money(root.amount)}`, detail: owner ? `Cobro de ${owner}` : null }
+    const receipts = await rows(c, 'SELECT * FROM payment_receipts WHERE payment_id = $1', [entityId])
+    return { root, children: { payment_receipts: receipts }, label: `${root.concept} · ${money(root.amount)}`, detail: owner ? `Cobro de ${owner}${receipts.length ? ' (con comprobante)' : ''}` : null }
   }
   if (entity === 'gasto') return { root, children: {}, label: `${root.concept} · ${money(root.amount)}`, detail: `Gasto del ${root.date}` }
   if (entity === 'interaccion') {
@@ -83,6 +101,12 @@ async function snapshot(c: PoolClient, entity: Entity, entityId: string): Promis
     return { root, children: {}, label: `${root.kind}: ${summary.length > 60 ? `${summary.slice(0, 57)}...` : summary}`, detail: owner ? `Bitácora de ${owner}` : null }
   }
   const project = (await c.query('SELECT name FROM projects WHERE id = $1', [root.project_id])).rows[0]?.name
+  if (entity === 'hito') {
+    // Borrar el hito suelta sus tareas (SET NULL): se guarda cuales eran para volver a colgarlas al restaurar.
+    const links = await rows(c, 'SELECT id, milestone_id FROM tasks WHERE milestone_id = $1', [entityId])
+    return { root, children: { task_links: links }, label: String(root.title), detail: project ? `Hito de ${project}` : null }
+  }
+  if (entity === 'checklist_item') return { root, children: {}, label: String(root.text), detail: project ? `Checklist de ${project}` : null }
   return { root, children: {}, label: String(root.title), detail: project ? `Tarea de ${project}` : null }
 }
 
@@ -176,6 +200,7 @@ export async function restoreFromTrash(trashId: string) {
       const missing = (what: string) =>
         new HttpError(409, `No se puede restaurar: ${what} ya no existe o está en la papelera. Restaura primero eso.`)
       if (entity === 'proyecto' && !(await exists(c, 'clients', root.client_id))) throw missing('el cliente de este proyecto')
+      if ((entity === 'hito' || entity === 'checklist_item') && !(await exists(c, 'projects', root.project_id))) throw missing('el proyecto de este elemento')
       if (entity === 'pago' && !(await exists(c, 'clients', root.client_id))) throw missing('el cliente de este cobro')
       if (entity === 'tarea' && !(await exists(c, 'projects', root.project_id))) throw missing('el proyecto de esta tarea')
       if (entity === 'interaccion' && !(await exists(c, 'clients', root.client_id))) throw missing('el cliente de esta interacción')
@@ -190,6 +215,12 @@ export async function restoreFromTrash(trashId: string) {
         if (!list.length) continue
         await c.query(`INSERT INTO ${table} SELECT * FROM jsonb_populate_recordset(NULL::${table}, $1::jsonb)`, [JSON.stringify(list)])
       }
+      // Un hito restaurado recupera las tareas que colgaban de el (las que sigan existiendo y no tengan otro hito).
+      if (entity === 'hito' && children.task_links?.length)
+        await c.query(
+          `UPDATE tasks t SET milestone_id = $1 WHERE t.id = ANY($2::uuid[]) AND t.milestone_id IS NULL AND t.project_id = $3`,
+          [t.entity_id, children.task_links.map((l) => l.id), root.project_id],
+        )
       await c.query('DELETE FROM trash WHERE id = $1', [trashId])
       return { entidad: entity, id: t.entity_id as string, nombre: t.label as string, restaurado: true }
     })

@@ -70,6 +70,8 @@ const qs = (f: FeedFilters) => {
 }
 
 export const loadFeed = (f: FeedFilters = {}) => api.get<FeedPage>(`/feed${qs(f)}`)
+/** Un ítem por id (GET /feed/:id): la campana abre una tarjeta que puede no estar en la primera página. */
+export const loadFeedItem = (id: string) => api.get<FeedItem>(`/feed/${encodeURIComponent(id)}`)
 
 /** Publicar a mano (la fuente es «manual»; quien publica sale de la sesión). */
 export const publishFeed = (b: { titulo: string; tipo: FeedTipo; resumen?: string; datos?: Record<string, unknown>; fuente?: string }) =>

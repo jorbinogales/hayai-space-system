@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Screen } from './App'
 import { api } from './api'
 import { Blobvatar } from './blob'
+import Feed from './Feed'
 import { loadHub, useLoaded, type Acuerdo, type AcuerdoEstado, type Astronauta, type HubData, type Sistema } from './hubData'
 import { useLive, type Activity } from './live'
 import { setInternal } from './nav'
@@ -631,6 +632,8 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
           )}
 
           {ready ? <Pulse d={d} /> : <div className="hb-pulse" aria-hidden="true">{[0, 1, 2, 3].map((i) => <article key={i} className="hb-stat is-skel"><i /><i /><i /></article>)}</div>}
+
+          <Feed seed={d?.feed} />
 
           <div className="hb-grid is-7-5">
             <Block id="team" title="Los astronautas" ready={ready} aside={d && <span className="hb-aside">{plural(d.astronautas.length, 'socio', 'socios')}</span>}>

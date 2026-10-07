@@ -63,6 +63,8 @@ export interface HubData {
   bitacora: Activity[]
   acuerdos: { abiertos: Acuerdo[]; por_estado: Record<AcuerdoEstado, number> }
   sistemas: { data: Sistema[]; resumen: Record<SistemaEstado, number> }
+  /** feed de oportunidades: cuántos hay nuevos (sirve para el contador antes de que cargue el feed) */
+  feed: { nuevos: number; total: number }
   analytics: { disponible: boolean; planeta: 'marketing'; resumen: unknown }
 }
 

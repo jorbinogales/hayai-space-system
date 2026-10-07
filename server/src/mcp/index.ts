@@ -8,6 +8,7 @@ import type { SessionUser } from '../auth.ts'
 import { exec, type Op } from '../services/common.ts'
 import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoMarcarCobrado, pagoRegistrar, pagosListar } from '../services/clientes.ts'
 import { notificacionesLeer, notificacionesListar, pipelineResumen } from '../services/alertas.ts'
+import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { clienteEliminar, gastoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
@@ -49,6 +50,8 @@ const TOOLS: Tool[] = [
   { name: 'hayai_pipeline_resumen', op: pipelineResumen, scope: 'read', description: 'Resumen del pipeline de ventas: por etapa abierta (nuevo, contactado, propuesta, negociacion) cantidad, valor_total y valor_ponderado (valor x probabilidad); abiertos, ganados y perdidos; frios (posibles clientes sin contacto real hace más de 14 días) y seguimientos_vencidos.' },
   { name: 'hayai_notificaciones_listar', op: notificacionesListar, scope: 'read', description: 'Alertas vigentes del socio dueño de la llave: cuotas vencidas y seguimientos de hoy o atrasados (se derivan al consultar: pagar o reprogramar las quita). estado: todas | sin_leer; tipo: cuota_vencida | seguimiento. meta.sin_leer es lo que muestra la campana.' },
   { name: 'hayai_notificaciones_marcar_leidas', op: notificacionesLeer, scope: 'write', description: 'Marca alertas como leídas para el socio dueño de la llave: claves (las de hayai_notificaciones_listar) o todas=true.' },
+  { name: 'hayai_actividad_listar', op: actividadListar, scope: 'read', description: 'Actividad del equipo: clientes nuevos, posibles clientes nuevos, tareas nuevas y tareas completadas, con el texto ya redactado ("Leandro añadió la tarea «X» en Y") y el socio que lo hizo. Lo más reciente primero. Para consultar solo lo nuevo desde la última vez: orden=asc y desde_id=<meta.ultimo_id que guardaste>. meta.sin_leer cuenta lo de otros socios posterior al "visto hasta" del dueño de la llave.' },
+  { name: 'hayai_actividad_marcar_leida', op: actividadLeer, scope: 'write', description: 'Mueve el "visto hasta" de la actividad del dueño de la llave: hasta_id (nunca retrocede) o todas=true.' },
   { name: 'hayai_buscar', op: buscar, scope: 'read', description: 'Búsqueda global sin importar acentos ni mayúsculas, por palabras. Busca en clientes (nombre, teléfono, email, contacto, dirección, etiquetas, notas), proyectos y tareas. tipo opcional (cliente | proyecto | tarea); archivados: excluir (por defecto) | incluir | solo; limite por tipo (máx. 25).' },
   // Papelera: borrar nunca destruye, manda a la papelera 30 días y se puede restaurar.
   { name: 'hayai_papelera_listar', op: papeleraListar, scope: 'read', description: 'Lista lo que hay en la papelera (borrado en los últimos 30 días), con quién lo borró y hasta cuándo se puede restaurar.' },

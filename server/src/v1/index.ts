@@ -5,6 +5,7 @@ import { exec, type Op } from '../services/common.ts'
 import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoActualizar, pagoRegistrar, pagosListar } from '../services/clientes.ts'
 import { finanzasResumen } from '../services/finanzas.ts'
 import { notificacionesLeer, notificacionesListar, pipelineResumen } from '../services/alertas.ts'
+import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { clienteEliminar, gastoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
@@ -53,7 +54,7 @@ const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
 /** Query string -> entrada: page y per_page llegan como texto y el esquema espera numeros. */
 const fromQuery = (req: Request) => {
   const o: Record<string, unknown> = { ...req.query }
-  for (const k of ['page', 'per_page', 'limite']) if (typeof o[k] === 'string') o[k] = Number(o[k])
+  for (const k of ['page', 'per_page', 'limite', 'desde_id']) if (typeof o[k] === 'string') o[k] = Number(o[k])
   return { ...o, ...req.params }
 }
 /** Cuerpo JSON + parametros de la ruta (los de la ruta mandan: el :id de la URL no se puede pisar desde el cuerpo). */
@@ -123,6 +124,8 @@ route('get', '/finanzas/resumen', finanzasResumen)
 route('get', '/pipeline', pipelineResumen)
 route('get', '/notificaciones', notificacionesListar)
 route('post', '/notificaciones/leer', notificacionesLeer) // marca como leídas las alertas de ESTE socio (el dueño de la llave)
+route('get', '/actividad', actividadListar) // lo que hacen los demás socios; desde_id + orden=asc para consultar solo lo nuevo
+route('post', '/actividad/leer', actividadLeer) // mueve el "visto hasta" de ESTE socio
 route('get', '/buscar', buscar)
 
 route('get', '/tareas', tareasListar)

@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { pool, tx, type Db } from '../db.ts'
 import { HttpError, idParam, isoDate, money, parse, text } from '../util.ts'
 import { applyClientPatch, STAGE_PROB } from '../crm.ts'
+import { recordActivity } from '../activity.ts'
 import { sendToTrash } from '../trash.ts'
 import { PROJECT_SELECT, projectIcon } from './projects.ts'
 import { TASK_SELECT } from './tasks.ts'
@@ -177,6 +178,7 @@ clientsRouter.post('/', async (req, res) => {
       )
     }
     await insertCharges(c, id, userId, b.charges.flatMap(expandCharge))
+    await recordActivity(c, { kind: 'cliente_nuevo', actorId: userId, subject: b.name, clientId: id })
     return id
   })
 
@@ -343,6 +345,8 @@ prospectsRouter.post('/', async (req, res) => {
       b.visit.date ?? null,
       userId,
     ])
+    // Un solo aviso para todo el alta (cliente + proyecto + visita): "añadió un posible cliente", no tres.
+    await recordActivity(c, { kind: 'posible_nuevo', actorId: userId, subject: b.name, clientId: client.rows[0].id })
     return { client: client.rows[0].id as string, project: project.rows[0].id as string, task: task.rows[0].id as string }
   })
 

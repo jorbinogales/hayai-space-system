@@ -640,12 +640,12 @@ describe('MCP', () => {
     for (const s of spec) assert.ok(names.includes(s), s)
     for (const s of ['hayai_pagos_listar', 'hayai_pago_registrar', 'hayai_pago_marcar_cobrado']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
-    for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar'])
+    for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 27) // lectura + escritura
+    assert.equal(names.length, 29) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 33)
+    assert.equal(full.length, 35)
     assert.equal(full.filter((t: any) => /eliminar/.test(t.name) && t.annotations.destructiveHint === true).length, 6)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -1738,5 +1738,300 @@ describe('CRM: web (sesión)', () => {
     assert.ok(item, 'aparece en la papelera con su propio tipo')
     assert.equal((await web(`/trash/${item.id}/restore`, { body: {} })).status, 200)
     assert.equal((await web(`/clients/${c.id}/interactions`)).body.meta.total, 1)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Actividad del equipo: cliente nuevo, tarea nueva, tarea completada; el aviso nombra al dueño de la llave; en vivo por SSE.
+// ---------------------------------------------------------------------------------------------------------------------
+describe('Actividad del equipo', () => {
+  const act = async (q = '', key = KEY) => (await api(`/actividad${q}`, { key })).body
+  const ultimo = async () => (await act('?per_page=1')).meta.ultimo_id as number
+  const nuevos = async (desde: number, key = KEY) => (await act(`?desde_id=${desde}&orden=asc&per_page=100`, key)).data as any[]
+  let proyecto = ''
+  let clienteId = ''
+
+  before(async () => {
+    await act('', KEY_J) // el "visto hasta" de Jorbi nace aquí: lo anterior no cuenta como sin leer
+  })
+
+  it('un cliente creado por API: el aviso dice "Leandro añadió…" (dueño de la llave), nunca la herramienta; la vía queda en la BD', async () => {
+    const base = await ultimo()
+    const r = await api('/clientes', { body: { nombre: 'Actividad Panadería' } })
+    assert.equal(r.status, 201)
+    clienteId = r.body.id
+    const ev = await nuevos(base)
+    assert.equal(ev.length, 1)
+    assert.equal(ev[0].tipo, 'cliente_nuevo')
+    assert.equal(ev[0].texto, 'Leandro añadió un cliente nuevo: Actividad Panadería')
+    assert.equal(ev[0].actor.nombre, 'Leandro')
+    assert.equal(ev[0].cliente_id, clienteId)
+    assert.deepEqual(Object.keys(ev[0]).sort(), ['actor', 'cliente_id', 'detalle', 'fecha', 'id', 'leida', 'propia', 'proyecto_id', 'sujeto', 'tarea_id', 'texto', 'tipo'])
+    assert.ok(!/growi|muse|api/i.test(ev[0].texto), 'el texto no menciona la herramienta')
+    const { rows } = await admin.query('SELECT via FROM activity WHERE id = $1', [ev[0].id])
+    assert.equal(rows[0].via, 'api:growi', 'la vía se guarda como dato de auditoría')
+  })
+
+  it('propia vs de otros: quien lo hizo no lo cuenta como sin leer; el otro socio sí; leída sigue al "visto hasta"', async () => {
+    const mine = await act('?per_page=1')
+    assert.equal(mine.data[0].propia, true)
+    assert.equal(mine.data[0].leida, true)
+    const theirs = await act('?per_page=1', KEY_J)
+    assert.equal(theirs.data[0].propia, false)
+    assert.equal(theirs.data[0].leida, false)
+    assert.ok(theirs.meta.sin_leer >= 1)
+    assert.equal(mine.meta.sin_leer, 0)
+  })
+
+  it('posible cliente: un solo aviso (no tres) tanto por API como por la web; tarea nueva y completada con su proyecto', async () => {
+    const base = await ultimo()
+    const p = await api('/clientes', { body: { nombre: 'Actividad Posible', estado: 'posible' } })
+    const ev = await nuevos(base)
+    assert.deepEqual(ev.map((e) => e.tipo), ['posible_nuevo'])
+    assert.equal(ev[0].texto, 'Leandro añadió un posible cliente: Actividad Posible')
+    assert.ok(p.body.id)
+
+    const pr = await api('/proyectos', { body: { nombre: 'Sistema Panadería', cliente_id: clienteId } })
+    proyecto = pr.body.id
+    assert.deepEqual(await nuevos(await ultimo()), [], 'crear un proyecto no avisa (no se pidió)')
+
+    const b2 = await ultimo()
+    const t = await api('/tareas', { body: { titulo: 'Llamar a María', proyecto_id: proyecto }, key: KEY_J })
+    assert.equal(t.status, 201)
+    const e2 = await nuevos(b2)
+    assert.equal(e2.length, 1)
+    assert.equal(e2[0].texto, 'Jorbi añadió la tarea «Llamar a María» en Sistema Panadería')
+    assert.equal(e2[0].tarea_id, t.body.id)
+    assert.equal(e2[0].proyecto_id, proyecto)
+    assert.equal(e2[0].cliente_id, clienteId)
+
+    const b3 = await ultimo()
+    const done = await api(`/tareas/${t.body.id}`, { method: 'PATCH', body: { estado: 'completada' } })
+    assert.equal(done.status, 200)
+    const e3 = await nuevos(b3)
+    assert.deepEqual(e3.map((e) => e.texto), ['Leandro completó la tarea «Llamar a María» de Sistema Panadería'])
+    // repetir "completada", reabrir, cambiar título o fecha: nada de eso avisa
+    await api(`/tareas/${t.body.id}`, { method: 'PATCH', body: { estado: 'completada' } })
+    await api(`/tareas/${t.body.id}`, { method: 'PATCH', body: { estado: 'pendiente' } })
+    await api(`/tareas/${t.body.id}`, { method: 'PATCH', body: { titulo: 'Llamar a María otra vez', vence: '2026-12-01' } })
+    assert.equal((await nuevos(b3)).length, 1)
+    // completarla de nuevo después de reabrirla sí vuelve a avisar (es otro momento)
+    await api(`/tareas/${t.body.id}`, { method: 'PATCH', body: { estado: 'completada' } })
+    const e4 = await nuevos(b3)
+    assert.equal(e4.length, 2)
+    assert.equal(e4[1].sujeto, 'Llamar a María otra vez')
+    assert.equal((await api(`/tareas/${t.body.id}`, { method: 'PATCH', body: { estado: 'pendiente' } })).status, 200)
+  })
+
+  it('lo que falla no avisa: validación, proyecto inexistente, tarea inexistente', async () => {
+    const base = await ultimo()
+    assert.equal((await api('/clientes', { body: { nombre: '' } })).status, 400)
+    assert.equal((await api('/clientes', { body: { nombre: 'Falla', cobros: [{ fecha: '2026-13-01', monto: 1, concepto: 'x' }] } })).status, 400)
+    assert.equal((await api('/tareas', { body: { titulo: 'x', proyecto_id: NOPE } })).status, 404)
+    assert.equal((await api(`/tareas/${NOPE}`, { method: 'PATCH', body: { estado: 'completada' } })).status, 404)
+    assert.deepEqual(await nuevos(base), [])
+    assert.equal((await admin.query("SELECT count(*)::int AS n FROM clients WHERE name = 'Falla'")).rows[0].n, 0)
+  })
+
+  it('filtros y cursor: tipo, desde_id + orden=asc, paginación, validaciones', async () => {
+    const todos = (await act('?per_page=100&orden=asc')).data as any[]
+    assert.ok(todos.length >= 6)
+    assert.deepEqual(todos.map((e) => e.id), [...todos.map((e) => e.id)].sort((a, b) => a - b))
+    const soloTareas = (await act('?tipo=tarea_completada&per_page=100')).data as any[]
+    assert.ok(soloTareas.length >= 2 && soloTareas.every((e) => e.tipo === 'tarea_completada'))
+    const mitad = todos[2].id
+    assert.ok((await nuevos(mitad)).every((e) => e.id > mitad))
+    const p1 = (await act('?per_page=2&page=1')).data
+    const p2 = (await act('?per_page=2&page=2')).data
+    assert.equal(p1.length, 2)
+    assert.ok(p1[1].id > p2[0].id, 'descendente: la página 2 es más vieja')
+    for (const q of ['?tipo=otro', '?orden=raro', '?desde_id=abc', '?desde_id=-1', '?per_page=0', '?per_page=101'])
+      assert.equal((await api(`/actividad${q}`)).status, 400, q)
+  })
+
+  it('"visto hasta": hasta_id y todas mueven el cursor, nunca retroceden ni pasan del último; cada socio el suyo', async () => {
+    const last = await ultimo()
+    const before = (await act('', KEY_J)).meta
+    assert.ok(before.sin_leer >= 1)
+    const parcial = await api('/actividad/leer', { body: { hasta_id: before.visto_hasta + 1 }, key: KEY_J })
+    assert.equal(parcial.body.visto_hasta, before.visto_hasta + 1)
+    const atras = await api('/actividad/leer', { body: { hasta_id: 0 }, key: KEY_J })
+    assert.equal(atras.body.visto_hasta, before.visto_hasta + 1, 'no retrocede')
+    const lejos = await api('/actividad/leer', { body: { hasta_id: 999999999 }, key: KEY_J })
+    assert.equal(lejos.body.visto_hasta, last, 'no pasa del último id real')
+    assert.equal(lejos.body.sin_leer, 0)
+    // Leandro no se movió
+    const base = await ultimo()
+    const sinLeerAntes = (await act('')).meta.sin_leer // lo que Jorbi hizo antes también cuenta: su cursor no se movió con el de Jorbi
+    await api('/tareas', { body: { titulo: 'Para Leandro', proyecto_id: proyecto }, key: KEY_J })
+    assert.equal((await act('')).meta.sin_leer, sinLeerAntes + 1, 'Leandro ve la de Jorbi como sin leer')
+    const all = await api('/actividad/leer', { body: { todas: true } })
+    assert.equal(all.body.sin_leer, 0)
+    assert.equal(all.body.visto_hasta, base + 1)
+    for (const body of [{}, { hasta_id: 1, todas: true }, { todas: false }, { hasta_id: -1 }, { hasta_id: 1.5 }, { otra: 1 }])
+      assert.equal((await api('/actividad/leer', { body })).status, 400, JSON.stringify(body))
+  })
+
+  it('el aviso sobrevive a que borren el cliente (queda sin enlace útil, pero el texto está) y no cuenta tareas de otros ámbitos', async () => {
+    const base = await ultimo()
+    const c = (await api('/clientes', { body: { nombre: 'Actividad Efímero' } })).body.id
+    await apiD(`/clientes/${c}`, { method: 'DELETE' })
+    const ev = await nuevos(base)
+    assert.equal(ev.length, 1)
+    assert.equal(ev[0].cliente_id, c)
+    assert.equal(ev[0].texto, 'Leandro añadió un cliente nuevo: Actividad Efímero')
+  })
+
+  it('permisos: lectura puede listar, solo escritura mueve el cursor; sin llave 401', async () => {
+    const ro = newKey('Leandro', 'solo-lectura-actividad', 'read')
+    assert.equal((await api('/actividad', { key: ro })).status, 200)
+    assert.equal((await api('/actividad/leer', { key: ro, body: { todas: true } })).status, 403)
+    assert.equal((await api('/actividad', { key: null })).status, 401)
+  })
+
+  it('MCP: hayai_actividad_listar y hayai_actividad_marcar_leida, mismo resultado que REST', async () => {
+    const rpc = (name: string, args: unknown, key = KEY) =>
+      http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } } })
+    const m = JSON.parse((await rpc('hayai_actividad_listar', { per_page: 3 })).body.result.content[0].text)
+    const rest = await act('?per_page=3')
+    assert.deepEqual(m, rest)
+    const r = JSON.parse((await rpc('hayai_actividad_marcar_leida', { todas: true })).body.result.content[0].text)
+    assert.equal(r.sin_leer, 0)
+    const bad = (await rpc('hayai_actividad_listar', { tipo: 'nada' })).body.result
+    assert.equal(bad.isError, true)
+  })
+})
+
+describe('Actividad en vivo (web: sesión + SSE)', () => {
+  type Sess = { cookie: string; user: string }
+  const sessions: Record<string, Sess> = {}
+  const login = async (name: string, pin: string) => {
+    const r = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, pin }) })
+    assert.equal(r.status, 200, `login ${name}`)
+    return r.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+  }
+  const web = (who: string, path: string, o: { method?: string; body?: unknown } = {}) => http(`${ROOT}/api${path}`, { headers: { cookie: sessions[who].cookie }, ...o })
+
+  /** Abre el stream y devuelve utilidades para esperar eventos concretos. */
+  async function stream(who: string, headers: Record<string, string> = {}, query = '') {
+    const ac = new AbortController()
+    const res = await fetch(`${ROOT}/api/events${query}`, { headers: { cookie: sessions[who].cookie, ...headers }, signal: ac.signal })
+    const events: any[] = []
+    const ids: string[] = []
+    let raw = ''
+    const reader = res.body!.getReader()
+    const dec = new TextDecoder()
+    void (async () => {
+      try {
+        for (;;) {
+          const { value, done } = await reader.read()
+          if (done) return
+          raw += dec.decode(value, { stream: true })
+          let i: number
+          while ((i = raw.indexOf('\n\n')) >= 0) {
+            const block = raw.slice(0, i)
+            raw = raw.slice(i + 2)
+            const data = block.split('\n').find((l) => l.startsWith('data: '))
+            if (data) {
+              events.push(JSON.parse(data.slice(6)))
+              ids.push(block.split('\n').find((l) => l.startsWith('id: '))!.slice(4))
+            }
+          }
+        }
+      } catch {
+        /* abortado */
+      }
+    })()
+    const waitFor = async (pred: (e: any) => boolean, ms = 4000) => {
+      const t0 = Date.now()
+      while (Date.now() - t0 < ms) {
+        const e = events.find(pred)
+        if (e) return e
+        await new Promise((r) => setTimeout(r, 25))
+      }
+      throw new Error(`no llegó el evento a tiempo; llegaron: ${JSON.stringify(events.map((e) => e.texto))}`)
+    }
+    return { res, events, ids, waitFor, close: () => ac.abort() }
+  }
+
+  before(async () => {
+    sessions.Jorbi = { cookie: await login('Jorbi', '482913'), user: 'Jorbi' } // PIN que dejó la suite de llaves
+    sessions.Elis = { cookie: await login('Elis', '713904'), user: 'Elis' } // PIN que dejó la suite del CRM web
+  })
+
+  it('exige sesión; cabeceras de stream sin caché ni transformación', async () => {
+    assert.equal((await http(`${ROOT}/api/events`).catch((e) => e)).status, 401)
+    const s = await stream('Jorbi')
+    assert.equal(s.res.status, 200)
+    assert.match(s.res.headers.get('content-type')!, /^text\/event-stream/)
+    assert.match(s.res.headers.get('cache-control')!, /no-cache/)
+    assert.match(s.res.headers.get('cache-control')!, /no-transform/)
+    s.close()
+  })
+
+  it('lo que otro socio hace por API llega en vivo a las pestañas abiertas, con propia=false; lo propio llega con propia=true', async () => {
+    const jorbi = await stream('Jorbi')
+    const elis = await stream('Elis')
+    await new Promise((r) => setTimeout(r, 150)) // que ambas queden suscritas
+    const c = await api('/clientes', { body: { nombre: 'En Vivo SA' } }) // Leandro, por llave
+    const a = await jorbi.waitFor((e) => e.sujeto === 'En Vivo SA')
+    const b = await elis.waitFor((e) => e.sujeto === 'En Vivo SA')
+    assert.equal(a.texto, 'Leandro añadió un cliente nuevo: En Vivo SA')
+    assert.equal(a.propia, false)
+    assert.equal(b.propia, false)
+    assert.equal(a.cliente_id, c.body.id)
+    assert.equal(a.id, b.id)
+    // Jorbi crea algo por la web: a él le llega propia=true (la UI no le muestra popup) y a Elis propia=false
+    const p = await web('Jorbi', '/prospects', { body: { name: 'Prospecto En Vivo', avatar: 'nova', project: { name: 'Web', icon: 'box', owner: 'Elis' } } })
+    assert.equal(p.status, 201)
+    const own = await jorbi.waitFor((e) => e.sujeto === 'Prospecto En Vivo')
+    const other = await elis.waitFor((e) => e.sujeto === 'Prospecto En Vivo')
+    assert.equal(own.propia, true)
+    assert.equal(other.propia, false)
+    assert.equal(other.texto, 'Jorbi añadió un posible cliente: Prospecto En Vivo')
+    assert.equal(other.actor.nombre, 'Jorbi')
+    assert.equal(jorbi.events.filter((e) => e.sujeto === 'Prospecto En Vivo').length, 1, 'un solo evento por el alta completa')
+    // tarea nueva y completada por la web
+    const t = await web('Elis', '/tasks', { body: { projectId: p.body.project.id, title: 'Visitar en vivo' } })
+    await jorbi.waitFor((e) => e.tipo === 'tarea_nueva' && e.sujeto === 'Visitar en vivo' && e.propia === false)
+    await web('Elis', `/tasks/${t.body.id}`, { method: 'PATCH', body: { done: true } })
+    const done = await jorbi.waitFor((e) => e.tipo === 'tarea_completada' && e.sujeto === 'Visitar en vivo')
+    assert.equal(done.texto, 'Elis completó la tarea «Visitar en vivo» de Web')
+    await web('Elis', `/tasks/${t.body.id}`, { method: 'PATCH', body: { done: true } }) // repetir no avisa de nuevo
+    await new Promise((r) => setTimeout(r, 200))
+    assert.equal(jorbi.events.filter((e) => e.tipo === 'tarea_completada' && e.sujeto === 'Visitar en vivo').length, 1)
+    jorbi.close()
+    elis.close()
+  })
+
+  it('al reconectar con Last-Event-ID se reenvía lo perdido (y solo eso)', async () => {
+    const first = await stream('Jorbi')
+    await new Promise((r) => setTimeout(r, 100))
+    await api('/clientes', { body: { nombre: 'Antes de caer' } })
+    const e1 = await first.waitFor((e) => e.sujeto === 'Antes de caer')
+    first.close() // se "cae" la pestaña
+    await api('/clientes', { body: { nombre: 'Mientras estaba caída 1' } })
+    await api('/clientes', { body: { nombre: 'Mientras estaba caída 2' } })
+    const back = await stream('Jorbi', { 'last-event-id': String(e1.id) })
+    await back.waitFor((e) => e.sujeto === 'Mientras estaba caída 2')
+    assert.deepEqual(back.events.map((e) => e.sujeto).filter((s) => s.startsWith('M') || s === 'Antes de caer'), ['Mientras estaba caída 1', 'Mientras estaba caída 2'])
+    assert.ok(back.events.every((e) => e.id > e1.id))
+    back.close()
+    // también por ?desde_id= (para clientes que no pueden poner cabeceras)
+    const q = await stream('Jorbi', {}, `?desde_id=${e1.id}`)
+    await q.waitFor((e) => e.sujeto === 'Mientras estaba caída 2')
+    q.close()
+  })
+
+  it('las rutas web de la lista y el visto hasta usan el mismo servicio que la API', async () => {
+    const list = await web('Jorbi', '/activity?per_page=3')
+    assert.equal(list.status, 200, JSON.stringify(list.body))
+    assert.equal(list.body.data.length, 3)
+    assert.ok(typeof list.body.meta.sin_leer === 'number' && typeof list.body.meta.ultimo_id === 'number')
+    const ok = await web('Jorbi', '/activity/read', { body: { todas: true } })
+    assert.equal(ok.body.sin_leer, 0)
+    assert.equal((await web('Jorbi', '/activity/read', { body: {} })).status, 400)
+    assert.equal((await web('Jorbi', '/activity?desde_id=0&orden=asc&per_page=1')).body.data.length, 1)
+    assert.equal((await http(`${ROOT}/api/activity`)).status, 401)
   })
 })

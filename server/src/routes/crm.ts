@@ -8,6 +8,8 @@ import { applyClientPatch, fichaShape } from '../crm.ts'
 import { pool, tx } from '../db.ts'
 import { exec } from '../services/common.ts'
 import { notificacionesLeer, notificacionesListar, pipelineResumen } from '../services/alertas.ts'
+import { openStream } from '../events.ts'
+import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { sendToTrash } from '../trash.ts'
@@ -35,9 +37,9 @@ const FICHA_KEYS: Record<string, string> = {
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
-const fromQuery = (req: Request) => {
+const fromQuery = (req: Request, nums: string[] = []) => {
   const o: Record<string, unknown> = { ...req.query }
-  for (const k of ['page', 'per_page', 'limite']) if (typeof o[k] === 'string') o[k] = Number(o[k])
+  for (const k of ['page', 'per_page', 'limite', ...nums]) if (typeof o[k] === 'string') o[k] = Number(o[k])
   return o
 }
 
@@ -88,3 +90,12 @@ crmRouter.get('/search', async (req, res) => {
 crmRouter.get('/pipeline', async (_req, res) => {
   res.json(await exec(pipelineResumen, _req.user!, {}))
 })
+
+// Actividad del equipo: lista, "visto hasta" y el stream en vivo (SSE) que alimenta el popup y la campana.
+crmRouter.get('/activity', async (req, res) => {
+  res.json(await exec(actividadListar, req.user!, fromQuery(req, ['desde_id'])))
+})
+crmRouter.post('/activity/read', async (req, res) => {
+  res.json(await exec(actividadLeer, req.user!, isObject(req.body) ? req.body : {}))
+})
+crmRouter.get('/events', openStream)

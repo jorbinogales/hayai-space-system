@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { recordActivity } from '../activity.ts'
 import { pool, tx } from '../db.ts'
 import { expandCharge, insertCharges, insertItems, loadClients, repeatMonths } from '../routes/clients.ts'
 import { applyClientPatch, COLD_DAYS, daysBetween, fichaShape, isOpenStage, OPEN_STAGES, STAGE_PROB, STAGES, type ClientPatch } from '../crm.ts'
@@ -195,6 +196,7 @@ export const clienteCrear = op(
         )
       }
       await insertCharges(c, cid, actor.id, charges)
+      await recordActivity(c, { kind: posible ? 'posible_nuevo' : 'cliente_nuevo', actorId: actor.id, subject: b.nombre, clientId: cid, via: actor.via })
       return cid
     })
     return clienteDetalle(clientId)

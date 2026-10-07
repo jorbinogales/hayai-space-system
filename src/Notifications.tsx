@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Blobvatar } from './blob'
 import { dismissToast, markActivitySeen, markAlerts, settleSeen, unreadTotal, useLive, type Activity, type Alert } from './live'
 import { go } from './nav'
+import { openFeed, type FeedTipo } from './feedData'
 import { ago } from './time'
 import { openChangelog } from './updates'
 import { Icon } from './ui'
@@ -22,13 +23,21 @@ function Said({ e }: { e: Activity }) {
 const openActivity = (e: Activity) =>
   e.tipo === 'version_nueva'
     ? openChangelog(e.sujeto)
-    : e.tipo === 'tarea_nueva' || e.tipo === 'tarea_completada'
-      ? go({ screen: 'tareas' })
-      : go({ screen: 'clientes', clientId: e.cliente_id })
+    : e.tipo === 'feed_nuevo'
+      ? openFeed({ filters: { estado: 'nuevo', ...(e.detalle ? { tipo: e.detalle as FeedTipo } : {}) } })
+      : e.tipo === 'tarea_nueva' || e.tipo === 'tarea_completada'
+        ? go({ screen: 'tareas' })
+        : go({ screen: 'clientes', clientId: e.cliente_id })
 
-const openAlert = (a: Alert) => (a.tipo === 'actualizacion' ? openChangelog(a.version ?? null) : go({ screen: 'clientes', clientId: a.cliente_id }))
+const openAlert = (a: Alert) =>
+  a.tipo === 'actualizacion'
+    ? openChangelog(a.version ?? null)
+    : a.tipo === 'feed'
+      ? // uno solo: su tarjeta; varios del mismo origen: el feed filtrado por ese tipo y esa fuente
+        openFeed(a.feed?.item_id ? { itemId: a.feed.item_id } : { filters: { estado: 'nuevo', tipo: a.feed?.tipo as FeedTipo, fuente: a.feed?.fuente } })
+      : go({ screen: 'clientes', clientId: a.cliente_id })
 
-const ALERT_ICON = { cuota_vencida: 'wallet', seguimiento: 'calendar', actualizacion: 'code' } as const
+const ALERT_ICON = { cuota_vencida: 'wallet', seguimiento: 'calendar', actualizacion: 'code', feed: 'radar' } as const
 
 type Tab = 'alertas' | 'equipo'
 

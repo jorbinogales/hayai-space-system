@@ -1861,6 +1861,7 @@ fieldset > .seg { margin-bottom: 12px; }
 @media (max-width: 640px) { .upd-banner { flex-wrap: wrap; } .upd-text { flex-basis: calc(100% - 30px); } }
 @media (prefers-reduced-motion: reduce) { .upd-banner { animation-duration: 0.01ms; } }
 .notif-ico.actualizacion { background: rgba(239, 157, 37, 0.28); color: #ffd27a; }
+.notif-ico.feed { background: rgba(120, 190, 200, 0.18); color: #a6dbe2; }
 .notif-cta { margin: 2px 12px 8px 58px; min-height: 44px; padding: 0 16px; border: 0; border-radius: 999px; background: var(--amber); color: var(--night); font: 700 0.82rem / 1 var(--sans); cursor: pointer; }
 .notif-cta:focus-visible { outline: 2px solid #ffd27a; outline-offset: 2px; }
 

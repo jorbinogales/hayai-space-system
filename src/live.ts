@@ -7,8 +7,9 @@ import { loadClients } from './store'
 import { loadProjects } from './projectData'
 import { loadTasks } from './taskData'
 import { noteVersion } from './updates'
+import { notifyFeed } from './feedData'
 
-export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta' | 'acuerdo_nuevo' | 'sistema_caido' | 'sistema_recuperado' | 'version_nueva'
+export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta' | 'acuerdo_nuevo' | 'sistema_caido' | 'sistema_recuperado' | 'version_nueva' | 'feed_nuevo'
 export interface Activity {
   id: number
   tipo: ActivityKind
@@ -24,7 +25,7 @@ export interface Activity {
 }
 export interface Alert {
   clave: string
-  tipo: 'cuota_vencida' | 'seguimiento' | 'actualizacion'
+  tipo: 'cuota_vencida' | 'seguimiento' | 'actualizacion' | 'feed'
   fecha: string
   dias: number
   titulo: string
@@ -36,6 +37,8 @@ export interface Alert {
   leida: boolean
   /** solo en 'actualizacion': la versión anunciada */
   version?: string
+  /** solo en 'feed': qué llegó (tipo del ítem y fuente), cuántos van juntos y, si es uno solo, su id */
+  feed?: { tipo: string; fuente: string; cantidad: number; item_id: string | null }
 }
 export interface Toast {
   key: number
@@ -120,6 +123,7 @@ function pushToast(event: Activity) {
 /** Que lista hay que recargar para que la pantalla de este socio refleje lo que hizo el otro. */
 function reloadFor(e: Activity) {
   if (e.tipo === 'version_nueva') return // no cambia ningún dato de la pantalla
+  if (e.tipo === 'feed_nuevo') return void notifyFeed() // el feed del Hub se vuelve a pedir; lo demás no cambia
   window.clearTimeout(refreshTimer)
   refreshTimer = window.setTimeout(() => {
     if (e.tipo === 'cliente_nuevo' || e.tipo === 'lead_meta') void loadClients().catch(() => {})
@@ -139,6 +143,8 @@ function receive(e: Activity) {
     noteVersion(e.sujeto)
     void refreshAlerts().catch(() => {})
   }
+  // Algo nuevo en el feed de oportunidades: su alerta de la campana se trae del servidor.
+  if (e.tipo === 'feed_nuevo') void refreshAlerts().catch(() => {})
   set({
     activity: [e, ...state.activity].sort((a, b) => b.id - a.id).slice(0, MAX_ACTIVITY),
     activityUnread: state.activityUnread + (e.propia ? 0 : 1),

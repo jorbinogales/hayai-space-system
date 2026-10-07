@@ -16,7 +16,7 @@ async function seenOf(userId: string): Promise<number> {
 
 /** Lo posterior al "visto hasta" y hecho por OTRO socio: lo propio nunca cuenta como sin leer. */
 async function unread(userId: string, seen: number): Promise<number> {
-  return (await pool.query('SELECT count(*)::int AS n FROM activity WHERE id > $1 AND actor_id <> $2', [seen, userId])).rows[0].n
+  return (await pool.query('SELECT count(*)::int AS n FROM activity WHERE id > $1 AND (actor_id <> $2 OR kind = \'lead_meta\')', [seen, userId])).rows[0].n
 }
 
 export const actividadListar = op(
@@ -45,7 +45,7 @@ export const actividadListar = op(
       unread(actor.id, seen),
     ])
     return paged(
-      rows.rows.map((r) => ({ ...activityOut(r, actor.id), leida: Number(r.id) <= seen || r.actor_id === actor.id })),
+      rows.rows.map((r) => ({ ...activityOut(r, actor.id), leida: Number(r.id) <= seen || (r.actor_id === actor.id && r.kind !== 'lead_meta') })),
       total.rows[0].n,
       i.page,
       i.per_page,

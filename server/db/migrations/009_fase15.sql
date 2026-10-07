@@ -179,13 +179,14 @@ CREATE TABLE meta_leads (
   campaign_name text,
   status        text NOT NULL DEFAULT 'recibido' CHECK (status IN ('recibido', 'procesado', 'duplicado', 'error')),
   attempts      smallint NOT NULL DEFAULT 0,
+  next_attempt_at timestamptz NOT NULL DEFAULT now(),  -- reintento con espera creciente si Graph falla
   error         text,
   client_id     uuid REFERENCES clients (id) ON DELETE SET NULL,
   raw           jsonb,                            -- respuesta de Graph, para depurar
   received_at   timestamptz NOT NULL DEFAULT now(),
   processed_at  timestamptz
 );
-CREATE INDEX meta_leads_pending_idx ON meta_leads (received_at) WHERE status IN ('recibido', 'error');
+CREATE INDEX meta_leads_pending_idx ON meta_leads (next_attempt_at) WHERE status IN ('recibido', 'error');
 CREATE INDEX meta_leads_campaign_idx ON meta_leads (campaign_id) WHERE campaign_id IS NOT NULL;
 
 -- =====================================================================================================================
@@ -193,7 +194,7 @@ CREATE INDEX meta_leads_campaign_idx ON meta_leads (campaign_id) WHERE campaign_
 -- =====================================================================================================================
 ALTER TABLE activity DROP CONSTRAINT activity_kind_check;
 ALTER TABLE activity ADD CONSTRAINT activity_kind_check CHECK (kind IN
-  ('cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido'));
+  ('cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido', 'lead_meta'));
 
 -- =====================================================================================================================
 -- 7) Papelera: tambien guarda propuestas, hitos e items de checklist sueltos.

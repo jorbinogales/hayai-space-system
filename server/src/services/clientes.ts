@@ -7,6 +7,7 @@ import { moneyLabel, patchPayment } from '../payments.ts'
 import { HttpError, id, isoDate, money, text } from '../util.ts'
 import { archivadosParam, AVATAR_SEEDS, dayISO, filters, op, pageShape, paged, projectStateOut, r2, todayISO } from './common.ts'
 import { interaccionOut } from './interacciones.ts'
+import { propuestasPor } from './propuestas.ts'
 
 type Loaded = Awaited<ReturnType<typeof loadClients>>[number]
 type Move = Loaded['movements'][number]
@@ -84,14 +85,15 @@ function resumen(c: Loaded) {
 export async function clienteDetalle(clientId: string) {
   const c = (await loadClients(pool, [clientId]))[0]
   if (!c) throw new HttpError(404, 'Cliente no encontrado')
-  const [{ rows }, recientes, total] = await Promise.all([
-    pool.query('SELECT id, name, status FROM projects WHERE client_id = $1 ORDER BY created_at, id', [clientId]),
+  const [{ rows }, recientes, total, propuestas] = await Promise.all([
+    pool.query('SELECT id, name, status, description, due_date FROM projects WHERE client_id = $1 ORDER BY created_at, id', [clientId]),
     pool.query(
       `SELECT i.id, i.client_id, i.kind, i.occurred_at, i.summary, i.meta, u.name AS author
        FROM interactions i JOIN users u ON u.id = i.created_by WHERE i.client_id = $1 ORDER BY i.occurred_at DESC, i.id LIMIT 10`,
       [clientId],
     ),
     pool.query('SELECT count(*)::int AS n FROM interactions WHERE client_id = $1', [clientId]),
+    propuestasPor('WHERE p.client_id = $1', [clientId]),
   ])
   return {
     ...resumen(c),
@@ -111,7 +113,10 @@ export async function clienteDetalle(clientId: string) {
       estado: m.status,
       serie: serie(m),
     })),
-    proyectos: rows.map((p) => ({ id: p.id, nombre: p.name, estado: projectStateOut(p.status) })),
+    proyectos: rows.map((p) => ({ id: p.id, nombre: p.name, descripcion: p.description as string | null, estado: projectStateOut(p.status), entrega: p.due_date as string | null })),
+    // La propuesta que cuenta (borrador, presentada o aceptada) con sus items y totales; el historial completo es /clientes/:id/propuestas.
+    propuesta_vigente: propuestas.find((p) => p.vigente) ?? null,
+    propuestas_total: propuestas.length,
   }
 }
 

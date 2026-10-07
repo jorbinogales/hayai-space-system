@@ -4,10 +4,12 @@
 // y cualquier campo que no este en la tabla se rechaza con 400.
 import { Router, type Request } from 'express'
 import { z } from 'zod'
-import { applyClientPatch, fichaShape } from '../crm.ts'
+import { applyClientPatch, fichaShape, transitionShape } from '../crm.ts'
 import { pool, tx } from '../db.ts'
 import { exec } from '../services/common.ts'
-import { notificacionesLeer, notificacionesListar, pipelineResumen } from '../services/alertas.ts'
+import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResumen } from '../services/alertas.ts'
+import { checklistActualizar, checklistAgregar, checklistOrdenar, hitoActualizar, hitoCrear, hitosOrdenar, proyectoVer } from '../services/proyectos.ts'
+import { ofertaActualizar, ofertaCrear, ofertaDesactivar, ofertasListar, propuestaActualizar, propuestaCrear, propuestasListar, propuestaVer } from '../services/propuestas.ts'
 import { openStream } from '../events.ts'
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
@@ -34,6 +36,11 @@ const FICHA_KEYS: Record<string, string> = {
   lostReason: 'motivo_perdida',
   nextAction: 'proxima_accion',
   nextActionDate: 'proxima_accion_fecha',
+  socials: 'redes', // [{ red, url }]
+  implementationDate: 'fecha_implementacion',
+  visitDate: 'fecha_visita',
+  visitSummary: 'resumen_visita',
+  collectionPlan: 'esquema_cobro', // { inicio_cobro, meses, unicos_cobrados }
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -54,7 +61,7 @@ crmRouter.patch('/clients/:id/ficha', async (req, res) => {
     mapped[to] = v
   }
   const patch = parse(
-    z.strictObject(fichaShape).refine((v) => Object.values(v).some((x) => x !== undefined), 'Envía al menos un campo a modificar'),
+    z.strictObject({ ...fichaShape, ...transitionShape }).refine((v) => Object.values(v).some((x) => x !== undefined), 'Envía al menos un campo a modificar'),
     mapped,
   )
   await tx((c) => applyClientPatch(c, req.user!.id, clientId, patch))
@@ -89,6 +96,69 @@ crmRouter.get('/search', async (req, res) => {
 })
 crmRouter.get('/pipeline', async (_req, res) => {
   res.json(await exec(pipelineResumen, _req.user!, {}))
+})
+crmRouter.get('/pipeline/stages', async (req, res) => {
+  res.json(await exec(pipelineEtapas, req.user!, {}))
+})
+
+// Propuestas y catalogo de ofertas. La web usa las mismas llaves que la API (cuerpos en español): es el mismo servicio.
+const body = (req: Request) => (isObject(req.body) ? req.body : {})
+crmRouter.get('/clients/:id/proposals', async (req, res) => {
+  res.json(await exec(propuestasListar, req.user!, { cliente_id: req.params.id }))
+})
+crmRouter.post('/clients/:id/proposals', async (req, res) => {
+  const p = await exec(propuestaCrear, req.user!, { ...body(req), cliente_id: req.params.id })
+  res.status(201).json({ proposal: p, client: (await loadClients(pool, [p.cliente_id]))[0] })
+})
+crmRouter.get('/proposals/:id', async (req, res) => {
+  res.json(await exec(propuestaVer, req.user!, { id: req.params.id }))
+})
+crmRouter.patch('/proposals/:id', async (req, res) => {
+  const p = await exec(propuestaActualizar, req.user!, { ...body(req), id: req.params.id })
+  res.json({ proposal: p, client: (await loadClients(pool, [p.cliente_id]))[0] })
+})
+crmRouter.get('/offerings', async (req, res) => {
+  res.json(await exec(ofertasListar, req.user!, fromQuery(req)))
+})
+crmRouter.post('/offerings', async (req, res) => {
+  res.status(201).json(await exec(ofertaCrear, req.user!, body(req)))
+})
+crmRouter.patch('/offerings/:id', async (req, res) => {
+  res.json(await exec(ofertaActualizar, req.user!, { ...body(req), id: req.params.id }))
+})
+crmRouter.delete('/offerings/:id', async (req, res) => {
+  res.json(await exec(ofertaDesactivar, req.user!, { id: req.params.id })) // desactiva; no destruye
+})
+
+// Detalle del proyecto: hitos (roadmap) y checklist de accionables. Mismos servicios que /api/v1.
+crmRouter.get('/projects/:id/detail', async (req, res) => {
+  res.json(await exec(proyectoVer, req.user!, { id: req.params.id }))
+})
+crmRouter.post('/projects/:id/milestones', async (req, res) => {
+  res.status(201).json(await exec(hitoCrear, req.user!, { ...body(req), proyecto_id: req.params.id }))
+})
+crmRouter.post('/projects/:id/milestones/order', async (req, res) => {
+  res.json(await exec(hitosOrdenar, req.user!, { ...body(req), proyecto_id: req.params.id }))
+})
+crmRouter.patch('/milestones/:id', async (req, res) => {
+  res.json(await exec(hitoActualizar, req.user!, { ...body(req), id: req.params.id }))
+})
+crmRouter.delete('/milestones/:id', async (req, res) => {
+  await sendToTrash('hito', idParam(req.params.id), req.user!.id)
+  res.status(204).end()
+})
+crmRouter.post('/projects/:id/checklist', async (req, res) => {
+  res.status(201).json(await exec(checklistAgregar, req.user!, { ...body(req), proyecto_id: req.params.id }))
+})
+crmRouter.post('/projects/:id/checklist/order', async (req, res) => {
+  res.json(await exec(checklistOrdenar, req.user!, { ...body(req), proyecto_id: req.params.id }))
+})
+crmRouter.patch('/checklist/:id', async (req, res) => {
+  res.json(await exec(checklistActualizar, req.user!, { ...body(req), id: req.params.id }))
+})
+crmRouter.delete('/checklist/:id', async (req, res) => {
+  await sendToTrash('checklist_item', idParam(req.params.id), req.user!.id)
+  res.status(204).end()
 })
 
 // Actividad del equipo: lista, "visto hasta" y el stream en vivo (SSE) que alimenta el popup y la campana.

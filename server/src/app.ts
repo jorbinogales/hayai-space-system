@@ -13,6 +13,7 @@ import { trashRouter } from './routes/trash.ts'
 import { usersRouter } from './routes/users.ts'
 import { mcpRouter } from './mcp/index.ts'
 import { v1Router } from './v1/index.ts'
+import { metaRouter } from './meta.ts'
 import { HttpError } from './util.ts'
 
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS'])
@@ -51,6 +52,8 @@ export function createApp() {
   // Integraciones (X-API-Key, sin cookies ni CSRF): van antes de /api, que exige sesion de la web.
   app.use('/api/v1', v1Router)
   app.use('/mcp', mcpRouter)
+  // Webhook de Meta (firma HMAC sobre el cuerpo crudo; apagado por META_LEADS_ENABLED). Antes de /api: no usa sesion ni CSRF.
+  app.use('/api/webhooks/meta', metaRouter)
 
   const api = express.Router()
   api.use((_req, res, next) => {

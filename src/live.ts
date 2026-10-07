@@ -7,7 +7,7 @@ import { loadClients } from './store'
 import { loadProjects } from './projectData'
 import { loadTasks } from './taskData'
 
-export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido'
+export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta'
 export interface Activity {
   id: number
   tipo: ActivityKind
@@ -117,7 +117,7 @@ function pushToast(event: Activity) {
 function reloadFor(e: Activity) {
   window.clearTimeout(refreshTimer)
   refreshTimer = window.setTimeout(() => {
-    if (e.tipo === 'cliente_nuevo') void loadClients().catch(() => {})
+    if (e.tipo === 'cliente_nuevo' || e.tipo === 'lead_meta') void loadClients().catch(() => {})
     else if (e.tipo === 'cobro_cobrado') void loadClients().catch(() => {})
     // Un cambio de etapa puede crear la tarea de visita, el proyecto o los cobros de la venta: se recarga todo lo que toca.
     else if (e.tipo === 'posible_nuevo' || e.tipo === 'cambio_etapa' || e.tipo === 'cliente_ganado' || e.tipo === 'cliente_perdido')

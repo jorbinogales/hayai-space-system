@@ -4,13 +4,14 @@ import express, { Router, type NextFunction, type Request, type Response } from 
 import { exec, type Op } from '../services/common.ts'
 import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoActualizar, pagoRegistrar, pagosListar } from '../services/clientes.ts'
 import { finanzasResumen } from '../services/finanzas.ts'
-import { notificacionesLeer, notificacionesListar, pipelineResumen } from '../services/alertas.ts'
+import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResumen } from '../services/alertas.ts'
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
-import { clienteEliminar, gastoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
+import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
 import { gastoActualizar, gastoRegistrar, gastosListar, gastoVer } from '../services/gastos.ts'
-import { proyectoActualizar, proyectoCrear, proyectosListar, proyectoVer } from '../services/proyectos.ts'
+import { checklistActualizar, checklistAgregar, checklistOrdenar, hitoActualizar, hitoCrear, hitosOrdenar, proyectoActualizar, proyectoCrear, proyectosListar, proyectoVer } from '../services/proyectos.ts'
+import { ofertaActualizar, ofertaCrear, ofertaDesactivar, ofertasListar, propuestaActualizar, propuestaCrear, propuestasListar, propuestaVer } from '../services/propuestas.ts'
 import { tareaActualizar, tareaCrear, tareasListar, tareaVer } from '../services/tareas.ts'
 import { HttpError } from '../util.ts'
 import { apiKeyAuth, keyRateLimit, requireScope, SCOPE_LABEL, type Scope } from './apiKey.ts'
@@ -103,6 +104,16 @@ route('post', '/clientes/:cliente_id/interacciones', interaccionRegistrar, 201)
 route('patch', '/interacciones/:id', interaccionActualizar)
 route('delete', '/interacciones/:id', interaccionEliminar)
 
+// Propuestas comerciales (versionadas, con mensualidad base + extras) y el catalogo de ofertas de HAYAI.
+route('get', '/clientes/:cliente_id/propuestas', propuestasListar)
+route('post', '/clientes/:cliente_id/propuestas', propuestaCrear, 201)
+route('get', '/propuestas/:id', propuestaVer)
+route('patch', '/propuestas/:id', propuestaActualizar)
+route('get', '/ofertas', ofertasListar)
+route('post', '/ofertas', ofertaCrear, 201)
+route('patch', '/ofertas/:id', ofertaActualizar)
+route('delete', '/ofertas/:id', ofertaDesactivar) // desactiva (no destruye): las propuestas que la usan conservan su texto y precio
+
 route('get', '/pagos', pagosListar)
 route('patch', '/pagos/:id', pagoActualizar)
 route('delete', '/pagos/:id', pagoEliminar)
@@ -112,6 +123,15 @@ route('get', '/proyectos/:id', proyectoVer)
 route('post', '/proyectos', proyectoCrear, 201)
 route('patch', '/proyectos/:id', proyectoActualizar)
 route('delete', '/proyectos/:id', proyectoEliminar)
+// Hitos (roadmap) y checklist de accionables del proyecto.
+route('post', '/proyectos/:proyecto_id/hitos', hitoCrear, 201)
+route('post', '/proyectos/:proyecto_id/hitos/orden', hitosOrdenar)
+route('patch', '/hitos/:id', hitoActualizar)
+route('delete', '/hitos/:id', hitoEliminar)
+route('post', '/proyectos/:proyecto_id/checklist', checklistAgregar, 201)
+route('post', '/proyectos/:proyecto_id/checklist/orden', checklistOrdenar)
+route('patch', '/checklist/:id', checklistActualizar)
+route('delete', '/checklist/:id', checklistEliminar)
 
 route('get', '/gastos', gastosListar)
 route('get', '/gastos/:id', gastoVer)
@@ -122,6 +142,7 @@ route('delete', '/gastos/:id', gastoEliminar)
 route('get', '/finanzas/resumen', finanzasResumen)
 
 route('get', '/pipeline', pipelineResumen)
+route('get', '/pipeline/etapas', pipelineEtapas)
 route('get', '/notificaciones', notificacionesListar)
 route('post', '/notificaciones/leer', notificacionesLeer) // marca como leídas las alertas de ESTE socio (el dueño de la llave)
 route('get', '/actividad', actividadListar) // lo que hacen los demás socios; desde_id + orden=asc para consultar solo lo nuevo

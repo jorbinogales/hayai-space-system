@@ -422,6 +422,7 @@ describe('datos', () => {
       due: '2026-05-01',
       archived: false,
       clientArchived: false,
+      description: null,
     })
     const noDue = await call('/projects', { cookie, body: { name: 'Sin fecha', icon: 'code', clientId, owner: 'Elis', status: 'planeacion', due: null } })
     assert.equal(noDue.status, 201)
@@ -478,7 +479,7 @@ describe('datos', () => {
   it('tareas: crear, listar, marcar/desmarcar (done_at coherente), borrar, 404', async () => {
     const t = await call('/tasks', { cookie, body: { projectId, title: 'Diseñar home' } })
     assert.equal(t.status, 201, JSON.stringify(t.body))
-    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Diseñar home', done: false, due: null, owner: 'Elis', hidden: false })
+    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Diseñar home', done: false, due: null, owner: 'Elis', hidden: false, milestoneId: null })
     assert.equal(t.body.projectId, projectId)
     assert.deepEqual((await call('/tasks', { cookie })).body, [t.body])
 
@@ -674,10 +675,10 @@ describe('datos', () => {
     const { client, project, task } = r.body
     assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, archived: false, ...CRM, stage: 'prospecto', probability: 10, stageChangedAt: '<ts>', items: [], movements: [] })
     assert.deepEqual(shape(project), {
-      id: '<uuid>', name: 'Web Futuro', icon: 'globe', owner: 'Leandro', client: 'Futuro SA', clientId: '<uuid>', status: 'planeacion', due: '2020-03-01', archived: false, clientArchived: false,
+      id: '<uuid>', name: 'Web Futuro', icon: 'globe', owner: 'Leandro', client: 'Futuro SA', clientId: '<uuid>', status: 'planeacion', due: '2020-03-01', archived: false, clientArchived: false, description: null,
     })
     assert.equal(project.clientId, client.id)
-    assert.deepEqual(shape(task), { id: '<uuid>', projectId: '<uuid>', title: 'Visita a Futuro SA', done: false, due: '2020-02-10', owner: 'Elis', hidden: false })
+    assert.deepEqual(shape(task), { id: '<uuid>', projectId: '<uuid>', title: 'Visita a Futuro SA', done: false, due: '2020-02-10', owner: 'Elis', hidden: false, milestoneId: null })
     assert.equal(task.projectId, project.id)
     const { rows } = await admin.query('SELECT created_by FROM clients WHERE id = $1', [client.id])
     assert.equal(rows[0].created_by, (await call('/auth/me', { cookie })).body.id)
@@ -740,7 +741,7 @@ describe('datos', () => {
   it('tareas con fecha: due en POST/PATCH/GET, null la borra, PATCH vacío => 400', async () => {
     const t = await call('/tasks', { cookie, body: { projectId, title: 'Con fecha', due: '2019-05-05' } })
     assert.equal(t.status, 201, JSON.stringify(t.body))
-    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Con fecha', done: false, due: '2019-05-05', owner: 'Elis', hidden: false })
+    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Con fecha', done: false, due: '2019-05-05', owner: 'Elis', hidden: false, milestoneId: null })
     assert.deepEqual((await call('/tasks', { cookie })).body.find((x: any) => x.id === t.body.id), t.body)
     const nul = await call('/tasks', { cookie, body: { projectId, title: 'Sin fecha', due: null } })
     assert.equal(nul.body.due, null)
@@ -780,7 +781,7 @@ describe('datos', () => {
     assert.deepEqual(multi.body, {
       ...p.body, name: 'Renombrado', icon: 'chart', status: 'entrega', owner: 'Jorbi', client: 'Otro cliente', clientId: other.body.id, due: '2019-01-01',
     })
-    assert.deepEqual(Object.keys(multi.body), ['id', 'name', 'icon', 'owner', 'client', 'clientId', 'status', 'due', 'archived', 'clientArchived'])
+    assert.deepEqual(Object.keys(multi.body), ['id', 'name', 'description', 'icon', 'owner', 'client', 'clientId', 'status', 'due', 'archived', 'clientArchived'])
     assert.deepEqual((await call('/projects', { cookie })).body.find((x: any) => x.id === p.body.id), multi.body) // GET igual
     const nul = await patch({ due: null })
     assert.equal(nul.body.due, null)

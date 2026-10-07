@@ -60,7 +60,7 @@ export const buscar = op(
             const w = where("concat_ws(' ', p.name, c.name)", null, hideOf('p.archived_at IS NULL AND c.archived_at IS NULL', '(p.archived_at IS NOT NULL OR c.archived_at IS NOT NULL)'))
             return pool.query(
               `SELECT p.id, p.name, p.status, p.client_id, c.name AS client, (p.archived_at IS NOT NULL OR c.archived_at IS NOT NULL) AS archived
-               FROM projects p JOIN clients c ON c.id = p.client_id WHERE ${w.sql} ORDER BY ${first('p.name')}, p.name, p.id LIMIT ${i.limite}`,
+               FROM projects p LEFT JOIN clients c ON c.id = p.client_id WHERE ${w.sql} ORDER BY ${first('p.name')}, p.name, p.id LIMIT ${i.limite}`,
               w.args,
             )
           })()
@@ -70,7 +70,7 @@ export const buscar = op(
             const w = where("concat_ws(' ', t.title, p.name, c.name)", null, hideOf('p.archived_at IS NULL AND c.archived_at IS NULL', '(p.archived_at IS NOT NULL OR c.archived_at IS NOT NULL)'))
             return pool.query(
               `SELECT t.id, t.title, t.done, t.due_date, t.project_id, p.name AS project
-               FROM tasks t JOIN projects p ON p.id = t.project_id JOIN clients c ON c.id = p.client_id
+               FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN clients c ON c.id = p.client_id
                WHERE ${w.sql} ORDER BY ${first('t.title')}, t.done, t.due_date NULLS LAST, t.id LIMIT ${i.limite}`,
               w.args,
             )
@@ -92,8 +92,8 @@ export const buscar = op(
       proyectos: (proyectos?.rows ?? []).map((r) => ({
         id: r.id as string,
         nombre: r.name as string,
-        cliente: r.client as string,
-        cliente_id: r.client_id as string,
+        cliente: r.client as string | null,
+        cliente_id: r.client_id as string | null,
         estado: projectStateOut(r.status),
         archivado: r.archived as boolean,
       })),

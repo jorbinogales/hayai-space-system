@@ -179,3 +179,15 @@ export const pipelineResumen = op(z.strictObject({}), async () => {
     dias_frio: COLD_DAYS,
   }
 })
+
+/** Las etapas del pipeline con su probabilidad (viven en la tabla pipeline_stages): para pintar y validar sin adivinar. */
+export const pipelineEtapas = op(z.strictObject({}), async () => ({
+  data: (await loadStages(pool)).map((s) => ({
+    etapa: s.key,
+    nombre: s.label,
+    posicion: s.position,
+    probabilidad: s.probability,
+    tipo: s.kind,
+    activa: s.active,
+  })),
+}))

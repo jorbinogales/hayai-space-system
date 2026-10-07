@@ -24,8 +24,10 @@ export const exec = <S extends AnyObject, R>(o: Op<S, R>, actor: Actor, raw: unk
 export const AVATAR_SEEDS = ['nova', 'orion', 'lyra', 'vega', 'atlas', 'luna', 'kepler', 'sirio', 'rigel', 'titan', 'cygnus', 'pulsar']
 export const CATEGORIES = ['Herramientas', 'Infraestructura', 'Operación', 'Marketing', 'Equipos', 'Otros'] as const
 
+export const projectIcon = z.enum(['globe', 'phone', 'chart', 'cart', 'palette', 'box', 'code'], 'Icono inválido')
+
 // En la BD "Por visitar" es 'planeacion'; la API v1 lo llama 'visita' (como el SPEC).
-export const PROJECT_STATES = ['activo', 'entrega', 'visita'] as const
+export const PROJECT_STATES = ['activo', 'entrega', 'visita', 'pausado', 'completado'] as const
 export const projectStateOut = (s: string) => (s === 'planeacion' ? 'visita' : s)
 export const projectStateIn = (s: string) => (s === 'visita' ? 'planeacion' : s)
 

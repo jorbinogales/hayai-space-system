@@ -4,7 +4,7 @@
 // avisos de algo que no paso, ni algo que pasa sin aviso.
 import type { Pool, PoolClient } from 'pg'
 
-export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido'] as const
+export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido', 'lead_meta'] as const
 export type ActivityKind = (typeof KINDS)[number]
 
 export const CHANNEL = 'activity'
@@ -55,6 +55,8 @@ export function activityText(kind: ActivityKind, actor: string, subject: string,
       return `${actor} ganó a ${subject}: ya es cliente`
     case 'cliente_perdido':
       return `${actor} marcó como perdido a ${subject}${detail ? ` (${detail})` : ''}`
+    case 'lead_meta':
+      return `Llegó un posible cliente de Meta Ads: ${subject}` // lo trae el sistema, no un socio: no nombra a nadie
   }
 }
 
@@ -65,7 +67,8 @@ export const activityOut = (r: any, viewerId?: string) => ({
   tipo: r.kind as ActivityKind,
   texto: activityText(r.kind, r.actor_name, r.subject, r.detail),
   actor: { id: r.actor_id as string, nombre: r.actor_name as string, avatar: r.actor_avatar as string },
-  propia: viewerId !== undefined && r.actor_id === viewerId,
+  // Un lead de Meta lo trae el sistema (el socio del actor es solo su responsable): le avisa a TODOS, también a el.
+  propia: r.kind !== 'lead_meta' && viewerId !== undefined && r.actor_id === viewerId,
   sujeto: r.subject as string,
   detalle: (r.detail ?? null) as string | null,
   cliente_id: (r.client_id ?? null) as string | null,

@@ -1,6 +1,7 @@
 import { createApp } from './app.ts'
 import { pool } from './db.ts'
 import { startEvents, stopEvents } from './events.ts'
+import { startMetaWorker, stopMetaWorker } from './meta.ts'
 import { seedIfEmpty } from './seed.ts'
 
 const port = Number(process.env.PORT ?? 3001)
@@ -14,9 +15,12 @@ try {
 
 await startEvents().catch((e) => console.error('events: no arrancó (la web seguirá consultando):', (e as Error).message))
 
+startMetaWorker() // solo hace algo con META_LEADS_ENABLED=true: reintenta los leads que Graph no entrego
+
 const server = createApp().listen(port, () => console.log(`HAYAI API en http://localhost:${port}`))
 
 const stop = () => {
+  stopMetaWorker()
   stopEvents() // cierra los streams abiertos; si no, server.close() espera a que cada pestaña se desconecte
   server.close()
   pool.end().finally(() => process.exit(0))

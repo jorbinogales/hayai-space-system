@@ -28,6 +28,12 @@ services:
       NODE_ENV: production
       TRUST_PROXY: "1" # Caddy va delante: asi el limite por IP ve la IP real
       PORT: "3001"
+      # Leads de Meta Ads (webhook): apagado hasta tener las credenciales. Ver README, "Meta Lead Ads".
+      META_LEADS_ENABLED: ${META_LEADS_ENABLED:-false}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
+      META_PAGE_TOKEN: ${META_PAGE_TOKEN:-}
+      META_LEADS_OWNER: ${META_LEADS_OWNER:-Elis,Jorbi,Leandro}
     depends_on:
       db:
         condition: service_healthy

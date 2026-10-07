@@ -106,6 +106,29 @@ Todo lo que hace la web existe igual en la API y el MCP (los tres llaman a los m
 - **Alertas** (se derivan al consultar, no hay tareas programadas): `cuota_vencida` = cuota pendiente con fecha anterior a hoy (hora de Caracas) de un cliente activo y no archivado; `seguimiento` = `proxima_accion_fecha` de hoy o anterior en un cliente no archivado ni perdido. La lectura es por socio y la clave es determinista (`cuota:<id>`, `seguimiento:<cliente>:<fecha>`): pagar la cuota la quita, y reprogramar el seguimiento la vuelve a mostrar. Finanzas y los clientes traen `vencido`/`cuotas_vencidas`/`monto_vencido`; `por_cobrar` no cambia (el vencido sigue dentro).
 - **Búsqueda**: sin acentos ni mayúsculas, por palabras (todas deben aparecer), y por dígitos del teléfono. Busca en nombre, teléfono, email, contacto, dirección, etiquetas y notas de clientes, y en nombres de proyectos y tareas.
 
+## Propuestas, proyectos con hitos y checklist (fase 1.5)
+
+- **Propuestas** (`GET`/`POST /clientes/:id/propuestas`, `GET`/`PATCH /propuestas/:id`; MCP `hayai_propuestas_listar`, `hayai_propuesta_crear`, `hayai_propuesta_ver`, `hayai_propuesta_actualizar`): solo de posibles clientes. Cada propuesta es una **versión** (`version` 1, 2…); crear una nueva reemplaza a la vigente. Los ítems llevan `tipo`: exactamente una `mensualidad` (la base) más `extra_mensual` y `extra_unico` opcionales, con `cantidad` y `precio_unitario`, y pueden salir del catálogo (`oferta_id`). `totales` = `{ mensual, unico }`. El `valor_estimado` del cliente es siempre la mensualidad de la propuesta vigente (y el pipeline pondera esa mensualidad). Pasar a `propuesta_presentada` exige una propuesta y la marca presentada; no hay endpoint de estado aparte: se rechaza con `perdido` o con una versión nueva.
+- **Ganar**: `etapa: "ganado"` con `fecha_implementacion`; con propuesta vigente exige además `esquema_cobro { inicio_cobro, meses (2–36, por defecto 12), unicos_cobrados }`, y genera las mensualidades y los pagos únicos (los únicos cobrados entran como la inicial). La propuesta queda `aceptada`. Sin propuesta no se admite `esquema_cobro`.
+- **Catálogo de ofertas** (`GET`/`POST /ofertas`, `PATCH`/`DELETE /ofertas/:id`; `hayai_ofertas_*`): sembrado con las ofertas base; `DELETE` solo desactiva, las propuestas ya armadas conservan texto y precio. `GET /pipeline/etapas` (`hayai_pipeline_etapas`) lista las 7 etapas con su probabilidad.
+- **Visitas**: `fecha_visita` al mover a `visita_agendada` crea la tarea de la visita (con su proyecto interno) y reprogramar no duplica; `resumen_visita` con `visita_realizada` queda en la bitácora como una visita.
+- **Redes**: `redes: [{ red, url }]` en la ficha (una por red, máx. 8; `@usuario` se normaliza a la URL https; `[]` las quita).
+- **Proyectos** pueden no tener cliente (`cliente_id: null`, internos de la agencia), llevan `descripcion` y los estados `pendiente`, `en_curso`, `pausado`, `completado`. `GET /proyectos?sin_cliente=true` los filtra.
+- **Hitos** (`POST /proyectos/:id/hitos`, `POST .../hitos/orden`, `PATCH`/`DELETE /hitos/:id`) y **checklist** (`POST /proyectos/:id/checklist`, `POST .../checklist/orden`, `PATCH`/`DELETE /checklist/:id`): el reordenamiento es todo o nada (la lista debe traer todos los ids, sin repetir). Las tareas se cuelgan de un hito con `hito_id` (mismo proyecto; filtro `GET /tareas?hito_id=`). Borrar un hito o un ítem va a la papelera; restaurar un hito vuelve a colgar sus tareas. MCP: `hayai_hito_*`, `hayai_hitos_ordenar`, `hayai_checklist_*`.
+
+## Meta Lead Ads (ingesta automática de leads)
+
+APAGADO por defecto: con `META_LEADS_ENABLED` distinto de `true`, las rutas responden 404 y no se crea nada. Cuando Meta avisa de un lead, el servidor pide el detalle a la Graph API, crea un **posible cliente** (`origen: meta_ads`, etiqueta `meta ads`, etapa `prospecto`) y avisa al equipo («Llegó un posible cliente de Meta Ads: …»; llega como no leído a todos los socios). **No** crea proyecto ni tarea.
+
+Requisitos para encenderlo:
+
+1. Una **app de Meta** con el producto Webhooks y el campo `leadgen` de la Página suscrito.
+2. Un **token de Página** con el permiso `leads_retrieval` (requiere revisión de Meta; hasta entonces solo funciona con roles de la app).
+3. Un **endpoint público HTTPS**: `https://space.hayai.com.ve/api/webhooks/meta` (el `GET` responde el desafío de verificación; el `POST` exige la firma `X-Hub-Signature-256`).
+4. Variables en el servidor: `META_LEADS_ENABLED=true`, `META_APP_SECRET`, `META_VERIFY_TOKEN` (texto que tú eliges y pegas en Meta), `META_PAGE_TOKEN`, `META_LEADS_OWNER` (por defecto `Elis,Jorbi,Leandro`; suma a quien quieras) y, opcional, `META_GRAPH_VERSION` (por defecto `v21.0`).
+
+Comportamiento: la firma se valida sobre el cuerpo crudo (401 si falla); es **idempotente** por `leadgen_id` (Meta puede reintentar sin duplicar); si Graph falla el lead queda en `error` y se reintenta con espera creciente (hasta 6 intentos); un lead con el mismo teléfono o email que un cliente existente **no crea otro**: se anota en la bitácora del existente; un teléfono o email inválido no rompe el alta, queda en las notas. El **responsable** se reparte de forma equitativa entre los nombres de `META_LEADS_OWNER` (el que menos leads de Meta lleva).
+
 ## Papelera y archivo
 
 - **Papelera**: borrar (desde la web, la API o el MCP) no destruye. La fila y todo lo que cuelga de ella (un cliente se lleva sus cobros, proyectos, tareas, gastos e interacciones) se guardan en la tabla `trash` y se restauran con los mismos ids. Se vacía sola a los 30 días. Desde la web: menú de la cuenta → **Papelera y archivo** (restaurar, o eliminar definitivamente). Restaurar un proyecto cuyo cliente sigue borrado da 409: restaura primero el cliente. La inicial no se borra como un cobro: se edita desde sus ítems.

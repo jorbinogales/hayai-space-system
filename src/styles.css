@@ -1901,8 +1901,6 @@ fieldset > .seg { margin-bottom: 12px; }
 .ver-field small.is-bad { color: #ff9b84; }
 .ver-form .ver-field input.is-bad { border-color: #ff9b84; }
 .ver-add { justify-self: start; min-height: 44px; padding: 0; border: 0; background: none; color: #ffd27a; font: 600 0.8rem / 1 var(--sans); cursor: pointer; }
-.ver-by { margin: 0; font-size: 0.78rem; color: rgba(244, 235, 221, 0.6); }
-.ver-by b { color: #f4ebdd; font-weight: 600; }
 .ver-err { margin: 0; font-size: 0.82rem; color: #ff9b84; }
 .ver-form .primary:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
 .ver :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }

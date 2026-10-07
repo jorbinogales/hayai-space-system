@@ -4,7 +4,7 @@ import { exec } from '../services/common.ts'
 import { comprobanteArchivo, comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
 import { pagoActualizar } from '../services/clientes.ts'
 import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
-import { feedConvertir, feedListar, feedMarcar, feedPublicar } from '../services/feed.ts'
+import { feedConvertir, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 
 import { versionesListar, versionPublicar, versionVer } from '../services/versiones.ts'
@@ -57,6 +57,7 @@ hubRouter.delete('/receptores/:id', async (req, res) => void res.json(await exec
 
 // Feed de oportunidades (lo que encontraron las máquinas y los agentes). La web publica con fuente "manual" o la que mande la pantalla.
 hubRouter.get('/feed', async (req, res) => void res.json(await exec(feedListar, req.user!, query(req))))
+hubRouter.get('/feed/:id', async (req, res) => void res.json(await exec(feedVer, req.user!, { id: req.params.id })))
 hubRouter.post('/feed', async (req, res) => {
   const out = (await exec(feedPublicar, req.user!, body(req))) as { creado?: boolean; creados?: number }
   res.status(out.creado ?? out.creados ? 201 : 200).json(out)

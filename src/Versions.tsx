@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from './api'
-import { useSession } from './session'
 import { fmtDate, todayISO } from './store'
 import { closeChangelog, isNewer, useFormGuard, useUpdates } from './updates'
 import { DraftBar } from './UpdateUI'
@@ -69,7 +68,6 @@ function Entry({ r, focus }: { r: Release; focus: boolean }) {
 }
 
 function PublishForm({ current, onDone }: { current: string | null; onDone: () => void }) {
-  const me = useSession()
   const suggested = current ? nextPatch(current) : '1.0.0'
   const [version, setVersion] = useState(suggested)
   const [title, setTitle] = useState('')
@@ -142,9 +140,6 @@ function PublishForm({ current, onDone }: { current: string | null; onDone: () =
           + Agregar otro cambio
         </button>
       </div>
-      <p className="ver-by">
-        Se firma como <b>{me?.name ?? 'tu usuario'}</b>
-      </p>
       {error && (
         <p className="ver-err" role="alert">
           {error}

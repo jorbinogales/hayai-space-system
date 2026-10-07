@@ -12,6 +12,8 @@ export interface Item {
 }
 export interface Movement {
   id: string
+  /** version del registro: se manda como If-Match al editar (evita pisar lo que otro guardo) */
+  updatedAt?: string
   /** YYYY-MM-DD */
   date: string
   concept: string
@@ -26,6 +28,8 @@ export interface Movement {
 export const moveLabel = (m: { concept: string; series?: { index: number; total: number } | null }) => (m.series ? `${m.concept} ${m.series.index}/${m.series.total}` : m.concept)
 export interface Client {
   id: string
+  /** version del registro: se manda como If-Match al editar */
+  updatedAt?: string
   name: string
   /** posible cliente: aun no firmo (puede no tener inicial ni cobros) */
   prospect?: boolean
@@ -48,6 +52,9 @@ export const useClients = () => {
   const all = clients.use()
   return useMemo(() => all.filter((c) => !c.archived), [all])
 }
+/** Lectura puntual (fuera de React) de un cliente o de uno de sus movimientos: para comparar con lo recien recargado. */
+export const clientNow = (id: string) => clients.get().find((c) => c.id === id)
+export const movementNow = (id: string) => clients.get().flatMap((c) => c.movements).find((m) => m.id === id)
 export const loadClients = async () => clients.set(await api.get<Client[]>('/clients'))
 export const resetClients = () => clients.set([])
 
@@ -92,8 +99,8 @@ export async function addClient(d: Draft): Promise<Client> {
 /** Reemplaza en la lista el cliente que devuelve el servidor tras una edicion. */
 const put = (c: Client) => clients.update((cur) => cur.map((x) => (x.id === c.id ? c : x)))
 
-export async function updateClient(id: string, d: { name: string; avatar: string }): Promise<Client> {
-  const c = await api.patch<Client>(`/clients/${id}`, d)
+export async function updateClient(id: string, d: { name: string; avatar: string }, ifMatch?: string): Promise<Client> {
+  const c = await api.patch<Client>(`/clients/${id}`, d, { ifMatch })
   put(c)
   return c
 }
@@ -149,8 +156,8 @@ export async function addPayment(clientId: string, d: PaymentDraft): Promise<Cli
   put(c)
   return c
 }
-export async function updatePayment(id: string, d: Partial<Pick<PaymentDraft, 'date' | 'amount' | 'concept' | 'status'>>): Promise<Client> {
-  const c = await api.patch<Client>(`/payments/${id}`, d)
+export async function updatePayment(id: string, d: Partial<Pick<PaymentDraft, 'date' | 'amount' | 'concept' | 'status'>>, ifMatch?: string): Promise<Client> {
+  const c = await api.patch<Client>(`/payments/${id}`, d, { ifMatch })
   put(c)
   return c
 }

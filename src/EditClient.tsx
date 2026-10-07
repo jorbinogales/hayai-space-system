@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './ui'
 import { AvatarPicker } from './blob'
-import { addPayment, archiveClient, deletePayment, money, moveLabel, removeClient, saveInitial, todayISO, updateClient, updatePayment, useAllClients, type Movement } from './store'
+import { DraftBar } from './UpdateUI'
+import { saveGuarded, show, useFormGuard } from './updates'
+import { addPayment, archiveClient, deletePayment, money, moveLabel, removeClient, saveInitial, todayISO, updateClient, updatePayment, useAllClients, loadClients, movementNow, clientNow, type Movement } from './store'
 
 /** Cuota o cobro editable: fecha, concepto, monto y estado se guardan al salir del campo o al pulsar; borrar es inmediato. */
 function PayRow({ m, onError }: { m: Movement; onError: (s: string) => void }) {
@@ -10,6 +12,31 @@ function PayRow({ m, onError }: { m: Movement; onError: (s: string) => void }) {
   const [concept, setConcept] = useState(m.concept)
   const [amount, setAmount] = useState(String(m.amount))
   const [busy, setBusy] = useState(false)
+  // la marca que se vio al abrir/guardar la fila: si otro socio la cambió mientras tanto, se avisa en vez de pisarla
+  const base = useRef(m.updatedAt)
+
+  const save = async (d: Parameters<typeof updatePayment>[1], mine: Record<string, unknown>) => {
+    const r = await saveGuarded({
+      title: 'Alguien cambió esta cuota mientras la editabas',
+      base: base.current,
+      save: (ifMatch) => updatePayment(m.id, d, ifMatch),
+      fresh: async () => {
+        await loadClients()
+        const f = movementNow(m.id)
+        return { stamp: f?.updatedAt, values: { date: f?.date, concept: f?.concept, amount: f?.amount, status: f?.status } }
+      },
+      mine,
+      labels: { date: 'Fecha', concept: 'Concepto', amount: 'Monto', status: 'Estado' },
+    })
+    if (r.kind === 'saved') {
+      base.current = r.value.movements.find((x) => x.id === m.id)?.updatedAt ?? base.current
+    } else {
+      base.current = r.stamp
+      setDate(String(r.values.date ?? m.date))
+      setConcept(String(r.values.concept ?? m.concept))
+      setAmount(String(r.values.amount ?? m.amount))
+    }
+  }
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true)
@@ -30,7 +57,7 @@ function PayRow({ m, onError }: { m: Movement; onError: (s: string) => void }) {
     const n = Number(amount)
     if (date === m.date && concept.trim() === m.concept && n === m.amount) return
     if (!date || !concept.trim() || !(n > 0)) return void onError('Cada cuota necesita fecha, concepto y un monto mayor a 0.')
-    void run(() => updatePayment(m.id, { date, concept: concept.trim(), amount: n }))
+    void run(() => save({ date, concept: concept.trim(), amount: n }, { date, concept: concept.trim(), amount: n, status: m.status }))
   }
   const paid = m.status === 'cobrado'
 
@@ -39,7 +66,7 @@ function PayRow({ m, onError }: { m: Movement; onError: (s: string) => void }) {
       <input aria-label="Fecha de la cuota" type="date" value={date} onChange={(e) => setDate(e.target.value)} onBlur={commit} />
       <input aria-label="Concepto de la cuota" value={concept} onChange={(e) => setConcept(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()} />
       <input aria-label="Monto de la cuota" type="number" min="0" step="0.01" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()} />
-      <button type="button" className={`state ${paid ? 'paid' : 'due'}`} aria-pressed={paid} title={paid ? 'Marcar como pendiente' : 'Marcar como cobrada'} onClick={() => void run(() => updatePayment(m.id, { status: paid ? 'pendiente' : 'cobrado' }))}>
+      <button type="button" className={`state ${paid ? 'paid' : 'due'}`} aria-pressed={paid} title={paid ? 'Marcar como pendiente' : 'Marcar como cobrada'} onClick={() => void run(() => save({ status: paid ? 'pendiente' : 'cobrado' }, { date, concept, amount: Number(amount), status: paid ? 'pendiente' : 'cobrado' }))}>
         {paid ? 'Cobrada' : m.date < todayISO() ? 'Vencida' : 'Pendiente'}
       </button>
       <button type="button" className="rm" aria-label={`Eliminar ${moveLabel(m)}`} onClick={() => void run(() => deletePayment(m.id))}>
@@ -62,6 +89,19 @@ export default function EditClient({ clientId, onClose }: { clientId: string; on
   const [msg, setMsg] = useState('')
   const [saved, setSaved] = useState('')
   const [busy, setBusy] = useState(false)
+  // la marca del cliente que se vio al abrir (o al guardar): se manda como If-Match para no pisar a otro socio
+  const base = useRef(client?.updatedAt)
+  const guard = useFormGuard({
+    id: `cliente:${clientId}`,
+    label: `Cliente · ${client?.name ?? ''}`,
+    values: { name, avatar },
+    initial: { name: client?.name ?? '', avatar: client?.avatar ?? '' },
+    labels: { name: 'nombre', avatar: 'icono' },
+    apply: (v) => {
+      setName(v.name)
+      setAvatar(v.avatar)
+    },
+  })
 
   const close = useRef(onClose)
   close.current = onClose
@@ -81,8 +121,8 @@ export default function EditClient({ clientId, onClose }: { clientId: string; on
     setBusy(true)
     setMsg('')
     try {
-      await fn()
-      flash(ok)
+      const said = await fn()
+      flash(typeof said === 'string' ? said : ok)
     } catch (e) {
       setMsg(e instanceof Error ? e.message : 'No se pudo guardar.')
     } finally {
@@ -92,7 +132,30 @@ export default function EditClient({ clientId, onClose }: { clientId: string; on
 
   const saveData = () => {
     if (!name.trim()) return setMsg('El cliente necesita un nombre.')
-    void wrap(() => updateClient(client.id, { name: name.trim(), avatar }), 'Datos guardados')
+    void wrap(async () => {
+      const mine = { name: name.trim(), avatar }
+      const r = await saveGuarded({
+        title: 'Alguien cambió este cliente mientras lo editabas',
+        base: base.current,
+        save: (ifMatch) => updateClient(client.id, mine, ifMatch),
+        fresh: async () => {
+          await loadClients()
+          const f = clientNow(client.id)
+          return { stamp: f?.updatedAt, values: { name: f?.name, avatar: f?.avatar } }
+        },
+        mine,
+        labels: { name: 'Nombre' },
+      })
+      guard.saved()
+      if (r.kind === 'saved') {
+        base.current = r.value.updatedAt
+        return
+      }
+      base.current = r.stamp
+      setName(show(r.values.name) === '—' ? '' : String(r.values.name))
+      setAvatar(String(r.values.avatar ?? ''))
+      return 'Se quedó la versión guardada'
+    }, 'Datos guardados')
   }
   const saveIni = () => {
     const its: { concept: string; amount: number }[] = []
@@ -144,6 +207,7 @@ export default function EditClient({ clientId, onClose }: { clientId: string; on
           </button>
         </header>
 
+        <DraftBar guard={guard} />
         <div className="sheet-body">
           <fieldset>
             <legend>Datos</legend>

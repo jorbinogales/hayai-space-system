@@ -1,7 +1,9 @@
 import { Blobvatar } from './blob'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Notifications } from './Notifications'
 import { Search } from './SearchPalette'
+import { ClockBlock } from './TopInfo'
+import { openChangelog } from './updates'
 
 const PATHS = {
   search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14ZM20 20l-3.5-3.5',
@@ -41,19 +43,8 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   )
 }
 
-function useClock() {
-  const [now, setNow] = useState(() => new Date())
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 15000)
-    return () => clearInterval(id)
-  }, [])
-  return now
-}
-
 export function Topbar({ user, onLogout, onProfile, onIntegrations, onVault }: { user?: { name: string; avatar: string }; onLogout?: () => void; onProfile?: () => void; onIntegrations?: () => void; onVault?: () => void }) {
-  const now = useClock()
   const [menu, setMenu] = useState(false)
-  const weekday = now.toLocaleDateString('es', { weekday: 'long' })
   return (
     <header className="topbar">
       <div className="mark">
@@ -105,6 +96,15 @@ export function Topbar({ user, onLogout, onProfile, onIntegrations, onVault }: {
                 >
                   Papelera y archivo
                 </button>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setMenu(false)
+                    openChangelog()
+                  }}
+                >
+                  Historial de versiones
+                </button>
                 <button role="menuitem" onClick={onLogout}>
                   Cerrar sesión
                 </button>
@@ -112,11 +112,7 @@ export function Topbar({ user, onLogout, onProfile, onIntegrations, onVault }: {
             )}
           </div>
         )}
-        <time className="clock" dateTime={now.toISOString()}>
-          <span className="cap">{weekday}</span>
-          <span>{now.toLocaleDateString('es', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
-          <span>{now.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', hour12: false })}</span>
-        </time>
+        <ClockBlock />
       </div>
     </header>
   )

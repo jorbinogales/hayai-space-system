@@ -4,6 +4,8 @@ import { createList } from './cache'
 
 export interface Task {
   id: string
+  /** version del registro (la tarea se completa sin If-Match: marcar hecho es explicito y no pisa texto) */
+  updatedAt?: string
   projectId: string
   title: string
   done: boolean

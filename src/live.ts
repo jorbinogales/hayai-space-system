@@ -6,6 +6,7 @@ import { api } from './api'
 import { loadClients } from './store'
 import { loadProjects } from './projectData'
 import { loadTasks } from './taskData'
+import { noteVersion } from './updates'
 
 export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta' | 'acuerdo_nuevo' | 'sistema_caido' | 'sistema_recuperado' | 'version_nueva'
 export interface Activity {
@@ -23,15 +24,18 @@ export interface Activity {
 }
 export interface Alert {
   clave: string
-  tipo: 'cuota_vencida' | 'seguimiento'
+  tipo: 'cuota_vencida' | 'seguimiento' | 'actualizacion'
   fecha: string
   dias: number
   titulo: string
   detalle: string
-  cliente_id: string
-  cliente: string
+  /** null en la alerta de actualización (no es de un cliente) */
+  cliente_id: string | null
+  cliente: string | null
   monto: number | null
   leida: boolean
+  /** solo en 'actualizacion': la versión anunciada */
+  version?: string
 }
 export interface Toast {
   key: number
@@ -115,6 +119,7 @@ function pushToast(event: Activity) {
 // ---------- recibir un aviso ----------
 /** Que lista hay que recargar para que la pantalla de este socio refleje lo que hizo el otro. */
 function reloadFor(e: Activity) {
+  if (e.tipo === 'version_nueva') return // no cambia ningún dato de la pantalla
   window.clearTimeout(refreshTimer)
   refreshTimer = window.setTimeout(() => {
     if (e.tipo === 'cliente_nuevo' || e.tipo === 'lead_meta') void loadClients().catch(() => {})
@@ -129,6 +134,11 @@ function reloadFor(e: Activity) {
 function receive(e: Activity) {
   if (state.activity.some((a) => a.id === e.id)) return // el stream y el sondeo pueden traer el mismo
   lastId = Math.max(lastId, e.id)
+  // Una versión nueva publicada: el banner aparece al instante y la alerta de la campana se trae del servidor.
+  if (e.tipo === 'version_nueva') {
+    noteVersion(e.sujeto)
+    void refreshAlerts().catch(() => {})
+  }
   set({
     activity: [e, ...state.activity].sort((a, b) => b.id - a.id).slice(0, MAX_ACTIVITY),
     activityUnread: state.activityUnread + (e.propia ? 0 : 1),

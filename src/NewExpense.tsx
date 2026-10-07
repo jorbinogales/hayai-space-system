@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { Icon } from './ui'
 import { todayISO, useClients } from './store'
 import { useProjects } from './projectData'
+import { DraftBar } from './UpdateUI'
+import { useFormGuard } from './updates'
 import { addExpense, EXPENSE_CATEGORIES, SCOPE_LABEL, type Expense, type ExpenseScope } from './expenseData'
 
 const SCOPES: ExpenseScope[] = ['general', 'cliente', 'proyecto']
@@ -20,6 +22,22 @@ export default function NewExpense({ onClose, onCreate }: { onClose: () => void;
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const first = useRef<HTMLInputElement>(null)
+  const start = useRef({ concept: '', amount: '', date: todayISO(), category: EXPENSE_CATEGORIES[0] as string, scope: 'general' as ExpenseScope, ref: '' })
+  const guard = useFormGuard({
+    id: 'gasto:nuevo',
+    label: 'Nuevo gasto',
+    values: { concept, amount, date, category: category as string, scope, ref },
+    initial: start.current,
+    labels: { concept: 'concepto', amount: 'monto', date: 'fecha', category: 'categoría', scope: 'a quién se imputa', ref: 'cliente o proyecto' },
+    apply: (v) => {
+      setConcept(v.concept)
+      setAmount(v.amount)
+      setDate(v.date)
+      setCategory(v.category as typeof category)
+      setScope(v.scope)
+      setRef(v.ref)
+    },
+  })
 
   const close = useRef(onClose)
   close.current = onClose
@@ -38,7 +56,9 @@ export default function NewExpense({ onClose, onCreate }: { onClose: () => void;
     if (scope !== 'general' && !ref) return setError(scope === 'cliente' ? 'Elige el cliente al que se imputa.' : 'Elige el proyecto al que se imputa.')
     setBusy(true)
     try {
-      onCreate(await addExpense({ concept, amount: Number(amount), date, category, scope, refId: scope === 'general' ? undefined : ref }))
+      const x = await addExpense({ concept, amount: Number(amount), date, category, scope, refId: scope === 'general' ? undefined : ref })
+      guard.saved()
+      onCreate(x)
     } catch (err) {
       setBusy(false)
       setError(err instanceof Error ? err.message : 'No se pudo guardar el gasto.')
@@ -57,6 +77,7 @@ export default function NewExpense({ onClose, onCreate }: { onClose: () => void;
           </button>
         </header>
 
+        <DraftBar guard={guard} />
         <div className="sheet-body">
           <label className="field">
             <span>Concepto</span>

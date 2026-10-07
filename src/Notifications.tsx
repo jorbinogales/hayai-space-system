@@ -3,6 +3,7 @@ import { Blobvatar } from './blob'
 import { dismissToast, markActivitySeen, markAlerts, settleSeen, unreadTotal, useLive, type Activity, type Alert } from './live'
 import { go } from './nav'
 import { ago } from './time'
+import { openChangelog } from './updates'
 import { Icon } from './ui'
 
 /** "Leandro añadió…" con el nombre del socio en negrita (el servidor siempre empieza el texto por el nombre). */
@@ -19,9 +20,15 @@ function Said({ e }: { e: Activity }) {
 }
 
 const openActivity = (e: Activity) =>
-  e.tipo === 'tarea_nueva' || e.tipo === 'tarea_completada' ? go({ screen: 'tareas' }) : go({ screen: 'clientes', clientId: e.cliente_id })
+  e.tipo === 'version_nueva'
+    ? openChangelog(e.sujeto)
+    : e.tipo === 'tarea_nueva' || e.tipo === 'tarea_completada'
+      ? go({ screen: 'tareas' })
+      : go({ screen: 'clientes', clientId: e.cliente_id })
 
-const openAlert = (a: Alert) => go({ screen: 'clientes', clientId: a.cliente_id })
+const openAlert = (a: Alert) => (a.tipo === 'actualizacion' ? openChangelog(a.version ?? null) : go({ screen: 'clientes', clientId: a.cliente_id }))
+
+const ALERT_ICON = { cuota_vencida: 'wallet', seguimiento: 'calendar', actualizacion: 'code' } as const
 
 type Tab = 'alertas' | 'equipo'
 
@@ -116,7 +123,7 @@ export function Notifications() {
                             }}
                           >
                             <span className={`notif-ico ${a.tipo}`} aria-hidden="true">
-                              <Icon name={a.tipo === 'cuota_vencida' ? 'wallet' : 'calendar'} size={16} />
+                              <Icon name={ALERT_ICON[a.tipo]} size={16} />
                             </span>
                             <span className="notif-body">
                               <span className="notif-text">{a.titulo}</span>
@@ -124,6 +131,18 @@ export function Notifications() {
                             </span>
                             {!a.leida && <span className="notif-dot" aria-label="Sin leer" />}
                           </button>
+                          {a.tipo === 'actualizacion' && (
+                            <button
+                              className="notif-cta"
+                              onClick={() => {
+                                if (!a.leida) void markAlerts([a.clave]).catch(() => {})
+                                setOpen(false)
+                                openAlert(a)
+                              }}
+                            >
+                              Ver cambios
+                            </button>
+                          )}
                         </li>
                       ))}
                     </ul>

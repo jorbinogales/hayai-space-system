@@ -10,6 +10,8 @@ export const STATUS_LABEL: Record<ProjectStatus, string> = { activo: 'Activo', e
 
 export interface Project {
   id: string
+  /** version del registro: se manda como If-Match al editar */
+  updatedAt?: string
   name: string
   /** icono representativo del proyecto */
   icon: IconName
@@ -35,6 +37,8 @@ export const useProjects = () => {
   const all = projects.use()
   return useMemo(() => all.filter((p) => !p.archived && !p.clientArchived), [all])
 }
+/** Lectura puntual (fuera de React) de un proyecto: para comparar con lo recien recargado. */
+export const projectNow = (id: string) => projects.get().find((p) => p.id === id)
 export const loadProjects = async () => projects.set(await api.get<Project[]>('/projects'))
 export const resetProjects = () => projects.set([])
 
@@ -55,8 +59,8 @@ export async function addProject(d: ProjectDraft): Promise<Project> {
 
 export type ProjectPatch = Partial<Omit<ProjectDraft, 'due'>> & { due?: string | null }
 /** Edita un proyecto (nombre, icono, cliente, responsable, estado, fecha de entrega). */
-export async function updateProject(id: string, d: ProjectPatch): Promise<Project> {
-  const p = await api.patch<Project>(`/projects/${id}`, d)
+export async function updateProject(id: string, d: ProjectPatch, ifMatch?: string): Promise<Project> {
+  const p = await api.patch<Project>(`/projects/${id}`, d, { ifMatch })
   projects.update((cur) => cur.map((x) => (x.id === id ? p : x)))
   return p
 }

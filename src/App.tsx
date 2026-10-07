@@ -17,6 +17,9 @@ import { logout, me, type Session } from './auth'
 import { loadAll, resetAll } from './data'
 import { SessionProvider } from './session'
 import { startLive, stopLive } from './live'
+import { clearAllDrafts, setDraftOwner, startUpdates, stopUpdates } from './updates'
+import { UpdateHost } from './UpdateUI'
+import Versions from './Versions'
 
 export type Screen = 'home' | 'clientes' | 'proyectos' | 'gastos' | 'finanzas' | 'tareas'
 const fromHash = (): Screen => {
@@ -59,6 +62,14 @@ export default function App() {
     if (!session) return
     startLive()
     return stopLive
+  }, [session])
+
+  // con sesion: vigilancia de version (banner «Recargar página») y borradores de formularios de este socio
+  useEffect(() => {
+    if (!session) return
+    setDraftOwner(session.id)
+    startUpdates()
+    return stopUpdates
   }, [session])
 
   // sesion vencida o revocada en el servidor: vuelve al acceso
@@ -104,6 +115,7 @@ export default function App() {
           onVault={() => setVault(true)}
           onLogout={() => {
             void logout()
+            clearAllDrafts() // un navegador compartido no debe conservar lo que escribió este socio
             resetAll()
             setProfile(false)
             setIntegrations(false)
@@ -117,6 +129,8 @@ export default function App() {
       {session && profile && <Profile user={session} onClose={() => setProfile(false)} />}
       {session && integrations && <Integrations onClose={() => setIntegrations(false)} />}
       {session && vault && <Vault onClose={() => setVault(false)} />}
+      {session && <Versions />}
+      {session && <UpdateHost />}
       {session === undefined && <div className="boot-wait" aria-hidden="true" />}
       {session === null && (
         <Boot

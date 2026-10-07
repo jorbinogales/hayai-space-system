@@ -13,6 +13,7 @@ export const proyectoEliminar = eliminar('proyecto')
 export const pagoEliminar = eliminar('pago')
 export const gastoEliminar = eliminar('gasto')
 export const tareaEliminar = eliminar('tarea')
+export const interaccionEliminar = eliminar('interaccion')
 
 export const papeleraListar = op(z.strictObject({ ...pageShape }), async (_a, i) => {
   const all = await listTrash()

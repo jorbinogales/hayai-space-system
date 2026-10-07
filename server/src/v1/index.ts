@@ -4,7 +4,10 @@ import express, { Router, type NextFunction, type Request, type Response } from 
 import { exec, type Op } from '../services/common.ts'
 import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoActualizar, pagoRegistrar, pagosListar } from '../services/clientes.ts'
 import { finanzasResumen } from '../services/finanzas.ts'
-import { clienteEliminar, gastoEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
+import { notificacionesLeer, notificacionesListar, pipelineResumen } from '../services/alertas.ts'
+import { buscar } from '../services/buscar.ts'
+import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
+import { clienteEliminar, gastoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
 import { gastoActualizar, gastoRegistrar, gastosListar, gastoVer } from '../services/gastos.ts'
 import { proyectoActualizar, proyectoCrear, proyectosListar, proyectoVer } from '../services/proyectos.ts'
 import { tareaActualizar, tareaCrear, tareasListar, tareaVer } from '../services/tareas.ts'
@@ -50,7 +53,7 @@ const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
 /** Query string -> entrada: page y per_page llegan como texto y el esquema espera numeros. */
 const fromQuery = (req: Request) => {
   const o: Record<string, unknown> = { ...req.query }
-  for (const k of ['page', 'per_page']) if (typeof o[k] === 'string') o[k] = Number(o[k])
+  for (const k of ['page', 'per_page', 'limite']) if (typeof o[k] === 'string') o[k] = Number(o[k])
   return { ...o, ...req.params }
 }
 /** Cuerpo JSON + parametros de la ruta (los de la ruta mandan: el :id de la URL no se puede pisar desde el cuerpo). */
@@ -93,6 +96,12 @@ route('patch', '/clientes/:id', clienteActualizar)
 route('post', '/clientes/:cliente_id/pagos', pagoRegistrar, 201)
 route('delete', '/clientes/:id', clienteEliminar)
 
+// Bitácora del cliente. Las entradas de tipo "etapa" las escribe solo el sistema: aquí no se crean, editan ni borran.
+route('get', '/clientes/:cliente_id/interacciones', interaccionesListar)
+route('post', '/clientes/:cliente_id/interacciones', interaccionRegistrar, 201)
+route('patch', '/interacciones/:id', interaccionActualizar)
+route('delete', '/interacciones/:id', interaccionEliminar)
+
 route('get', '/pagos', pagosListar)
 route('patch', '/pagos/:id', pagoActualizar)
 route('delete', '/pagos/:id', pagoEliminar)
@@ -110,6 +119,11 @@ route('patch', '/gastos/:id', gastoActualizar)
 route('delete', '/gastos/:id', gastoEliminar)
 
 route('get', '/finanzas/resumen', finanzasResumen)
+
+route('get', '/pipeline', pipelineResumen)
+route('get', '/notificaciones', notificacionesListar)
+route('post', '/notificaciones/leer', notificacionesLeer) // marca como leídas las alertas de ESTE socio (el dueño de la llave)
+route('get', '/buscar', buscar)
 
 route('get', '/tareas', tareasListar)
 route('get', '/tareas/:id', tareaVer)

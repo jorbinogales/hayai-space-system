@@ -549,8 +549,13 @@ describe('finanzas', () => {
     assert.equal(b.por_cobrar, 70)
     assert.equal(b.por_cobrar_total, 70)
     assert.equal(b.gastos_generales, 28.5)
-    assert.deepEqual(b.clientes[0], { id: karelys, nombre: 'Karelys R', recaudado: 230, gastos: 15.5, por_cobrar: 70, utilidad: 214.5 })
-    assert.deepEqual(b.clientes[1], { id: posible, nombre: 'Posible SA', recaudado: 0, gastos: 0, por_cobrar: 0, utilidad: 0 })
+    // vencido = pendiente con fecha anterior a hoy; sigue contando dentro de por_cobrar (nunca se resta ni se duplica)
+    const vencido = sum(pays.filter((p) => p.s === 'pendiente' && p.d < b.hoy).map((p) => p.a))
+    assert.ok(vencido >= 10 && vencido <= 70)
+    assert.equal(b.vencido, vencido)
+    assert.equal(b.vencido_total, vencido)
+    assert.deepEqual(b.clientes[0], { id: karelys, nombre: 'Karelys R', recaudado: 230, gastos: 15.5, por_cobrar: 70, vencido, utilidad: 214.5 })
+    assert.deepEqual(b.clientes[1], { id: posible, nombre: 'Posible SA', recaudado: 0, gastos: 0, por_cobrar: 0, vencido: 0, utilidad: 0 })
   })
 
   for (const periodo of ['mes', 'anio'] as const) {
@@ -635,11 +640,13 @@ describe('MCP', () => {
     for (const s of spec) assert.ok(names.includes(s), s)
     for (const s of ['hayai_pagos_listar', 'hayai_pago_registrar', 'hayai_pago_marcar_cobrado']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
-    assert.equal(names.length, 20) // lectura + escritura
+    for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar'])
+      assert.ok(names.includes(s), s)
+    assert.equal(names.length, 27) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 25)
-    assert.equal(full.filter((t: any) => /eliminar/.test(t.name) && t.annotations.destructiveHint === true).length, 5)
+    assert.equal(full.length, 33)
+    assert.equal(full.filter((t: any) => /eliminar/.test(t.name) && t.annotations.destructiveHint === true).length, 6)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
     assert.equal(r.body.result.tools.find((t: any) => t.name === 'hayai_finanzas_resumen').annotations.readOnlyHint, true)
@@ -997,5 +1004,739 @@ describe('llaves y papelera desde la web', () => {
     assert.equal(a.body.archived, true)
     assert.equal((await web('/clients')).body.find((x: any) => x.id === cl.body.id).archived, true, 'la web recibe la lista completa con la marca')
     assert.equal((await web(`/clients/${cl.body.id}/unarchive`, { body: {} })).body.archived, false)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// CRM fase 1: ficha, pipeline, bitácora, alertas, búsqueda. Van al final: crean sus propios clientes y no tocan las cifras
+// que verifican las suites de arriba.
+// ---------------------------------------------------------------------------------------------------------------------
+const sumOf = (xs: number[]) => Math.round(xs.reduce((s, x) => s + x, 0) * 100) / 100
+const isoDay = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10)
+const mkPosible = async (nombre: string, extra: Record<string, unknown> = {}) => {
+  const r = await api('/clientes', { body: { nombre, estado: 'posible', ...extra } })
+  assert.equal(r.status, 201, JSON.stringify(r.body))
+  return r.body as any
+}
+
+describe('CRM: ficha del cliente', () => {
+  let id = ''
+
+  it('POST /clientes con la ficha completa: se guarda y vuelve en el detalle (email en minúscula, etiquetas normalizadas)', async () => {
+    const r = await api('/clientes', {
+      body: {
+        nombre: 'Panadería La Estrella',
+        telefono: '0414-1234567',
+        email: 'Dueno@LaEstrella.com',
+        contacto_nombre: 'María Pérez',
+        contacto_cargo: 'Dueña',
+        direccion: 'Av. Lara, Barquisimeto',
+        notas: 'Prefiere WhatsApp en la mañana',
+        etiquetas: ['Panadería', ' VIP ', 'panadería', 'Zona  Este'],
+        origen: 'meta_ads',
+      },
+    })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    id = r.body.id
+    const d = (await api(`/clientes/${id}`)).body
+    assert.equal(d.telefono, '0414-1234567')
+    assert.equal(d.email, 'dueno@laestrella.com')
+    assert.equal(d.contacto_nombre, 'María Pérez')
+    assert.equal(d.contacto_cargo, 'Dueña')
+    assert.equal(d.direccion, 'Av. Lara, Barquisimeto')
+    assert.equal(d.notas, 'Prefiere WhatsApp en la mañana')
+    assert.deepEqual(d.etiquetas, ['panadería', 'vip', 'zona este'])
+    assert.equal(d.origen, 'meta_ads')
+    assert.equal(d.estado, 'activo')
+    assert.equal(d.etapa, null, 'un cliente de entrada directa no tiene etapa de pipeline')
+    assert.deepEqual(d.interacciones, { total: 0, recientes: [] })
+  })
+
+  it('PATCH parcial: lo no enviado no cambia; null borra; etiquetas [] las quita', async () => {
+    const a = await api(`/clientes/${id}`, { method: 'PATCH', body: { telefono: '+58 414 000 1111', notas: null } })
+    assert.equal(a.status, 200, JSON.stringify(a.body))
+    assert.equal(a.body.telefono, '+58 414 000 1111')
+    assert.equal(a.body.notas, null)
+    assert.equal(a.body.email, 'dueno@laestrella.com')
+    assert.equal(a.body.origen, 'meta_ads')
+    const b = await api(`/clientes/${id}`, { method: 'PATCH', body: { etiquetas: [] } })
+    assert.deepEqual(b.body.etiquetas, [])
+    const c = await api(`/clientes/${id}`, { method: 'PATCH', body: { email: null, contacto_nombre: null, contacto_cargo: null, direccion: null, origen: null, telefono: null } })
+    assert.equal(c.status, 200)
+    for (const k of ['email', 'contacto_nombre', 'contacto_cargo', 'direccion', 'origen', 'telefono']) assert.equal(c.body[k], null, k)
+  })
+
+  it('validaciones: email, teléfono, origen, etiquetas y claves desconocidas => 400 y no cambian nada', async () => {
+    const bad: Record<string, unknown>[] = [
+      { email: 'sin-arroba' },
+      { email: 'a@b' },
+      { email: 'con espacio@x.com' },
+      { telefono: 'abc' },
+      { telefono: '12' },
+      { origen: 'tiktok' },
+      { etiquetas: Array.from({ length: 11 }, (_, i) => `t${i}`) },
+      { etiquetas: ['x'.repeat(31)] },
+      { etiquetas: [''] },
+      { notas: '' },
+      { notas: 'x'.repeat(4001) },
+      { proxima_accion_fecha: '2026-13-01' },
+      { campo_inventado: 1 },
+    ]
+    for (const body of bad) {
+      const r = await api(`/clientes/${id}`, { method: 'PATCH', body })
+      assert.equal(r.status, 400, JSON.stringify(body) + ' => ' + JSON.stringify(r.body))
+    }
+    const meta = await api(`/clientes/${id}`, { method: 'PATCH', body: { origen: 'meta_ads' } })
+    assert.equal(meta.status, 200, 'meta_ads es un origen válido')
+    assert.equal((await api(`/clientes/${id}`, { method: 'PATCH', body: {} })).status, 400)
+  })
+
+  it('la BD también lo exige (CHECK): email malo y etapa incoherente se rechazan aunque se salte la API', async () => {
+    await assert.rejects(admin.query("UPDATE clients SET email = 'basura' WHERE id = $1", [id]), /clients_email_ck/)
+    await assert.rejects(admin.query("UPDATE clients SET pipeline_stage = 'nuevo' WHERE id = $1", [id]), /clients_stage_/)
+    await assert.rejects(admin.query("UPDATE clients SET next_action_date = '2026-01-01' WHERE id = $1", [id]), /clients_next_ck/)
+  })
+
+  it('próxima acción: la fecha exige acción; borrar la acción se lleva la fecha; la ven el resumen y el listado', async () => {
+    assert.equal((await api(`/clientes/${id}`, { method: 'PATCH', body: { proxima_accion_fecha: isoDay(3) } })).status, 400)
+    const a = await api(`/clientes/${id}`, { method: 'PATCH', body: { proxima_accion: 'Llevar muestra', proxima_accion_fecha: isoDay(3) } })
+    assert.equal(a.status, 200)
+    assert.equal(a.body.proxima_accion, 'Llevar muestra')
+    assert.equal(a.body.proxima_accion_fecha, isoDay(3))
+    assert.equal(a.body.seguimiento_vencido, false)
+    const l = (await api('/clientes?per_page=100')).body.data.find((x: any) => x.id === id)
+    assert.equal(l.proxima_accion, 'Llevar muestra')
+    const b = await api(`/clientes/${id}`, { method: 'PATCH', body: { proxima_accion: null } })
+    assert.equal(b.body.proxima_accion, null)
+    assert.equal(b.body.proxima_accion_fecha, null)
+  })
+
+  it('un cliente con ficha e interacciones va a la papelera con todo y vuelve igual', async () => {
+    await api(`/clientes/${id}`, { method: 'PATCH', body: { telefono: '0412-9990000', etiquetas: ['vip'], notas: 'Nota' } })
+    const i = await api(`/clientes/${id}/interacciones`, { body: { tipo: 'llamada', resumen: 'Llamada de prueba' } })
+    assert.equal(i.status, 201, JSON.stringify(i.body))
+    const del = await apiD(`/clientes/${id}`, { method: 'DELETE' })
+    assert.equal(del.status, 200, JSON.stringify(del.body))
+    assert.match(del.body.resumen, /1 interacción|1 interacciones/)
+    assert.equal((await api(`/clientes/${id}`)).status, 404)
+    const item = (await apiD('/papelera')).body.data.find((x: any) => x.nombre === 'Panadería La Estrella')
+    assert.equal((await apiD(`/papelera/${item.id}/restaurar`, { method: 'POST', body: {} })).status, 200)
+    const d = (await api(`/clientes/${id}`)).body
+    assert.deepEqual(d.etiquetas, ['vip'], 'text[] sobrevive a la papelera')
+    assert.equal(d.telefono, '0412-9990000')
+    assert.equal(d.interacciones.total, 1)
+    assert.equal(d.interacciones.recientes[0].resumen, 'Llamada de prueba')
+  })
+})
+
+describe('CRM: pipeline', () => {
+  it('un posible nuevo entra en "nuevo" con 10 %; se puede crear en otra etapa abierta, no en ganado/perdido', async () => {
+    const a = await mkPosible('Pipe A')
+    assert.equal(a.estado, 'posible')
+    assert.equal(a.etapa, 'nuevo')
+    assert.equal(a.probabilidad, 10)
+    assert.equal(a.valor_ponderado, null, 'sin valor estimado no hay ponderado (null, no 0)')
+    const b = await mkPosible('Pipe B', { etapa: 'propuesta', valor_estimado: 1000 })
+    assert.equal(b.etapa, 'propuesta')
+    assert.equal(b.probabilidad, 50)
+    assert.equal(b.valor_ponderado, 500)
+    for (const etapa of ['ganado', 'perdido'])
+      assert.equal((await api('/clientes', { body: { nombre: 'Pipe X', estado: 'posible', etapa } })).status, 400, etapa)
+    assert.equal((await api('/clientes', { body: { nombre: 'Pipe Y', etapa: 'nuevo' } })).status, 400, 'pipeline sin estado posible')
+    assert.equal((await api('/clientes', { body: { nombre: 'Pipe Z', valor_estimado: 5 } })).status, 400)
+  })
+
+  it('transiciones: cada cambio de etapa deja una entrada automática en la bitácora; mismo valor no duplica', async () => {
+    const p = await mkPosible('Pipe C', { valor_estimado: 2000 })
+    const move = (body: unknown) => api(`/clientes/${p.id}`, { method: 'PATCH', body })
+    const c1 = await move({ etapa: 'contactado' })
+    assert.equal(c1.status, 200, JSON.stringify(c1.body))
+    assert.equal(c1.body.etapa, 'contactado')
+    assert.equal(c1.body.probabilidad, 10, 'cambiar de etapa abierta no pisa la probabilidad que ya había')
+    const c2 = await move({ etapa: 'negociacion', probabilidad: 80 })
+    assert.equal(c2.body.probabilidad, 80)
+    assert.equal(c2.body.valor_ponderado, 1600)
+    await move({ etapa: 'negociacion' }) // sin cambio
+    const feed = (await api(`/clientes/${p.id}/interacciones?tipo=etapa`)).body.data
+    assert.deepEqual(feed.map((e: any) => e.cambio.a).sort(), ['contactado', 'negociacion'])
+    assert.ok(feed.every((e: any) => e.automatica === true && e.tipo === 'etapa'))
+    assert.equal(feed.find((e: any) => e.cambio.a === 'negociacion').cambio.de, 'contactado')
+    assert.equal(feed[0].registrada_por, 'Leandro')
+  })
+
+  it('ganar: probabilidad 100, pasa a cliente activo; perder: exige motivo, probabilidad 0; reabrir devuelve la probabilidad de la etapa', async () => {
+    const w = await mkPosible('Pipe Gana', { valor_estimado: 800 })
+    const won = await api(`/clientes/${w.id}`, { method: 'PATCH', body: { etapa: 'ganado' } })
+    assert.equal(won.status, 200, JSON.stringify(won.body))
+    assert.equal(won.body.estado, 'activo')
+    assert.equal(won.body.etapa, 'ganado')
+    assert.equal(won.body.probabilidad, 100)
+    assert.equal((await api(`/clientes/${w.id}`, { method: 'PATCH', body: { etapa: 'ganado' } })).status, 409, 'ya es cliente')
+    assert.equal((await api(`/clientes/${w.id}`, { method: 'PATCH', body: { etapa: 'perdido', motivo_perdida: 'x' } })).status, 409)
+
+    const l = await mkPosible('Pipe Pierde', { valor_estimado: 800, etapa: 'negociacion', probabilidad: 90 })
+    assert.equal((await api(`/clientes/${l.id}`, { method: 'PATCH', body: { etapa: 'perdido' } })).status, 400, 'sin motivo')
+    assert.equal((await api(`/clientes/${l.id}`, { method: 'PATCH', body: { etapa: 'perdido', motivo_perdida: 'Precio', probabilidad: 30 } })).status, 400, 'perdido es 0')
+    const lost = await api(`/clientes/${l.id}`, { method: 'PATCH', body: { etapa: 'perdido', motivo_perdida: 'Precio' } })
+    assert.equal(lost.status, 200, JSON.stringify(lost.body))
+    assert.equal(lost.body.probabilidad, 0)
+    assert.equal(lost.body.valor_ponderado, 0)
+    assert.equal(lost.body.motivo_perdida, 'Precio')
+    assert.equal(lost.body.estado, 'posible')
+    const entry = (await api(`/clientes/${l.id}/interacciones?tipo=etapa`)).body.data.find((e: any) => e.cambio.a === 'perdido')
+    assert.equal(entry.cambio.motivo, 'Precio')
+    // el motivo solo existe en "perdido"
+    assert.equal((await api(`/clientes/${w.id}`, { method: 'PATCH', body: { motivo_perdida: 'x' } })).status, 400)
+    // reabrir
+    const re = await api(`/clientes/${l.id}`, { method: 'PATCH', body: { etapa: 'contactado' } })
+    assert.equal(re.status, 200, JSON.stringify(re.body))
+    assert.equal(re.body.etapa, 'contactado')
+    assert.equal(re.body.probabilidad, 25)
+    assert.equal(re.body.motivo_perdida, null)
+  })
+
+  it('estado "activo" sobre un posible = ganado; "posible" sobre un cliente = nuevo; estado y etapa contradictorios => 400', async () => {
+    const p = await mkPosible('Pipe Estado')
+    assert.equal((await api(`/clientes/${p.id}`, { method: 'PATCH', body: { estado: 'activo', etapa: 'nuevo' } })).status, 400)
+    const a = await api(`/clientes/${p.id}`, { method: 'PATCH', body: { estado: 'activo' } })
+    assert.equal(a.body.etapa, 'ganado')
+    assert.equal(a.body.probabilidad, 100)
+    const old = (await api('/clientes', { body: { nombre: 'Pipe Viejo' } })).body
+    assert.equal(old.etapa, null)
+    const b = await api(`/clientes/${old.id}`, { method: 'PATCH', body: { estado: 'posible' } })
+    assert.equal(b.body.etapa, 'nuevo')
+    assert.equal(b.body.probabilidad, 10)
+  })
+
+  it('los datos de pipeline no se editan en un cliente (400); POST /clientes/:id/convertir no existe en v1, el cierre va por PATCH', async () => {
+    const c = (await api('/clientes', { body: { nombre: 'Pipe Cliente' } })).body
+    for (const body of [{ valor_estimado: 100 }, { probabilidad: 50 }, { cierre_previsto: isoDay(10) }])
+      assert.equal((await api(`/clientes/${c.id}`, { method: 'PATCH', body })).status, 400, JSON.stringify(body))
+  })
+
+  it('valor estimado y cierre previsto: se guardan, null los borra; monto inválido => 400', async () => {
+    const p = await mkPosible('Pipe Valor')
+    const a = await api(`/clientes/${p.id}`, { method: 'PATCH', body: { valor_estimado: 1234.5, cierre_previsto: isoDay(20) } })
+    assert.equal(a.body.valor_estimado, 1234.5)
+    assert.equal(a.body.cierre_previsto, isoDay(20))
+    const b = await api(`/clientes/${p.id}`, { method: 'PATCH', body: { valor_estimado: null, cierre_previsto: null } })
+    assert.equal(b.body.valor_estimado, null)
+    assert.equal(b.body.cierre_previsto, null)
+    for (const v of [0, -5, 10.123]) assert.equal((await api(`/clientes/${p.id}`, { method: 'PATCH', body: { valor_estimado: v } })).status, 400, String(v))
+    assert.equal((await api(`/clientes/${p.id}`, { method: 'PATCH', body: { probabilidad: 101 } })).status, 400)
+    assert.equal((await api(`/clientes/${p.id}`, { method: 'PATCH', body: { probabilidad: 5.5 } })).status, 400)
+  })
+
+  it('GET /pipeline: totales y ponderados por etapa, ganados/perdidos aparte, fríos con 14 días', async () => {
+    const before = (await api('/pipeline')).body
+    assert.equal(before.dias_frio, 14)
+    assert.deepEqual(before.etapas.map((e: any) => e.etapa), ['nuevo', 'contactado', 'propuesta', 'negociacion'])
+    const prop = before.etapas.find((e: any) => e.etapa === 'propuesta')
+    const a = await mkPosible('Pipe Resumen A', { etapa: 'propuesta', valor_estimado: 1000 }) // 50 % => 500
+    const b = await mkPosible('Pipe Resumen B', { etapa: 'propuesta', valor_estimado: 333.33, probabilidad: 33 }) // 109.9989 => 110
+    await mkPosible('Pipe Resumen C', { etapa: 'propuesta' }) // sin valor
+    const after = (await api('/pipeline')).body
+    const p2 = after.etapas.find((e: any) => e.etapa === 'propuesta')
+    assert.equal(p2.cantidad, prop.cantidad + 3)
+    assert.equal(p2.valor_total, sumOf([prop.valor_total, 1000, 333.33]))
+    assert.equal(p2.valor_ponderado, sumOf([prop.valor_ponderado, 500, 110]))
+    assert.equal(p2.sin_valor, prop.sin_valor + 1)
+    assert.equal(after.abiertos.cantidad, after.etapas.reduce((s: number, e: any) => s + e.cantidad, 0))
+    assert.equal(after.abiertos.valor_total, sumOf(after.etapas.map((e: any) => e.valor_total)))
+    const perd = await mkPosible('Pipe Resumen Perdido', { valor_estimado: 70 })
+    await api(`/clientes/${perd.id}`, { method: 'PATCH', body: { etapa: 'perdido', motivo_perdida: 'Precio' } })
+    const fin = (await api('/pipeline')).body
+    assert.ok(fin.ganados.cantidad >= 1)
+    assert.equal(fin.perdidos.cantidad, 1)
+    assert.equal(fin.perdidos.valor_total, 70)
+    assert.equal(fin.abiertos.cantidad, after.abiertos.cantidad, 'perdidos no cuentan como abiertos')
+
+    // frío: más de 14 días sin una llamada/visita/WhatsApp/nota reales (las entradas de etapa no cuentan)
+    assert.ok(!after.frios.some((f: any) => f.id === a.id), 'recién creado no está frío')
+    await admin.query("UPDATE clients SET created_at = now() - interval '20 days' WHERE id = $1", [a.id])
+    const frio = (await api('/pipeline')).body.frios.find((f: any) => f.id === a.id)
+    assert.ok(frio && frio.dias_sin_contacto >= 20)
+    assert.equal((await api(`/clientes/${a.id}`)).body.frio, true)
+    await api(`/clientes/${a.id}/interacciones`, { body: { tipo: 'llamada', resumen: 'Lo llamé' } })
+    assert.ok(!(await api('/pipeline')).body.frios.some((f: any) => f.id === a.id), 'una interacción real lo calienta')
+    assert.equal((await api(`/clientes/${a.id}`)).body.frio, false)
+    // cambiar de etapa NO calienta
+    await admin.query("UPDATE clients SET created_at = now() - interval '30 days' WHERE id = $1", [b.id])
+    await api(`/clientes/${b.id}`, { method: 'PATCH', body: { etapa: 'negociacion' } })
+    assert.ok((await api('/pipeline')).body.frios.some((f: any) => f.id === b.id))
+  })
+
+  it('filtro etapa en /clientes y validación', async () => {
+    const r = await api('/clientes?etapa=propuesta&per_page=100')
+    assert.equal(r.status, 200)
+    assert.ok(r.body.data.length >= 3 && r.body.data.every((c: any) => c.etapa === 'propuesta'))
+    assert.equal((await api('/clientes?etapa=nada')).status, 400)
+  })
+})
+
+describe('CRM: bitácora', () => {
+  let cid = ''
+  let first = ''
+
+  before(async () => {
+    cid = (await api('/clientes', { body: { nombre: 'Bitácora SA' } })).body.id
+  })
+
+  it('registrar los cuatro tipos; fecha opcional (solo día = mediodía de Caracas; con hora y zona exacta); lista por fecha descendente', async () => {
+    const n = await api(`/clientes/${cid}/interacciones`, { body: { tipo: 'nota', resumen: '  Le interesa el sistema de pedidos  ' } })
+    assert.equal(n.status, 201, JSON.stringify(n.body))
+    first = n.body.id
+    assert.equal(n.body.resumen, 'Le interesa el sistema de pedidos')
+    assert.equal(n.body.tipo, 'nota')
+    assert.equal(n.body.automatica, false)
+    assert.equal(n.body.cambio, null)
+    assert.equal(n.body.registrada_por, 'Leandro')
+    assert.equal(n.body.cliente_id, cid)
+    const v = await api(`/clientes/${cid}/interacciones`, { body: { tipo: 'visita', resumen: 'Visita al local', fecha: '2026-01-10' } })
+    assert.equal(v.body.fecha, '2026-01-10T16:00:00.000Z', '12:00 en Caracas (UTC-4)')
+    const w = await api(`/clientes/${cid}/interacciones`, { body: { tipo: 'whatsapp', resumen: 'Mandé el catálogo', fecha: '2026-02-01T09:30:00-04:00' } })
+    assert.equal(w.body.fecha, '2026-02-01T13:30:00.000Z')
+    const l = await api(`/clientes/${cid}/interacciones`, { body: { tipo: 'llamada', resumen: 'Llamada de seguimiento', fecha: '2026-03-01' } })
+    assert.equal(l.status, 201)
+    const feed = (await api(`/clientes/${cid}/interacciones`)).body
+    assert.deepEqual(feed.data.map((e: any) => e.tipo), ['nota', 'llamada', 'whatsapp', 'visita'])
+    assert.equal(feed.meta.total, 4)
+    assert.deepEqual((await api(`/clientes/${cid}/interacciones?tipo=whatsapp`)).body.data.map((e: any) => e.resumen), ['Mandé el catálogo'])
+    const page = (await api(`/clientes/${cid}/interacciones?per_page=2&page=2`)).body
+    assert.deepEqual(page.data.map((e: any) => e.tipo), ['whatsapp', 'visita'])
+  })
+
+  it('un cliente no puede escribir tipo "etapa" (el historial del pipeline no se falsifica) ni crear entradas inventadas', async () => {
+    const r = await api(`/clientes/${cid}/interacciones`, { body: { tipo: 'etapa', resumen: 'Nuevo → Ganado' } })
+    assert.equal(r.status, 400)
+    assert.match(r.body.error.message, /etapa/)
+    assert.equal((await api(`/clientes/${cid}/interacciones`, { body: { tipo: 'nota', resumen: 'x', meta: { a: 'ganado' } } })).status, 400)
+    assert.equal((await api(`/interacciones/${first}`, { method: 'PATCH', body: { tipo: 'etapa' } })).status, 400)
+    const { rows } = await admin.query("SELECT count(*)::int AS n FROM interactions WHERE client_id = $1 AND kind = 'etapa'", [cid])
+    assert.equal(rows[0].n, 0)
+  })
+
+  it('validaciones: resumen vacío/largo, tipo, fecha futura o mal formada, cliente inexistente => 400/404', async () => {
+    const post = (body: unknown, c = cid) => api(`/clientes/${c}/interacciones`, { body })
+    assert.equal((await post({ tipo: 'nota', resumen: '   ' })).status, 400)
+    assert.equal((await post({ tipo: 'nota', resumen: 'x'.repeat(2001) })).status, 400)
+    assert.equal((await post({ tipo: 'correo', resumen: 'x' })).status, 400)
+    assert.equal((await post({ resumen: 'x' })).status, 400)
+    assert.equal((await post({ tipo: 'nota', resumen: 'x', fecha: isoDay(2) })).status, 400, 'día futuro')
+    assert.equal((await post({ tipo: 'nota', resumen: 'x', fecha: new Date(Date.now() + 3_600_000).toISOString() })).status, 400, 'hora futura')
+    assert.equal((await post({ tipo: 'nota', resumen: 'x', fecha: '10/01/2026' })).status, 400)
+    assert.equal((await post({ tipo: 'nota', resumen: 'x' }, NOPE)).status, 404)
+    assert.equal((await api(`/clientes/${NOPE}/interacciones`)).status, 404)
+    assert.equal((await api('/interacciones/no-es-uuid', { method: 'PATCH', body: { resumen: 'x' } })).status, 400)
+    assert.equal((await api(`/interacciones/${NOPE}`, { method: 'PATCH', body: { resumen: 'x' } })).status, 404)
+  })
+
+  it('editar: parcial (tipo, resumen, fecha); PATCH vacío => 400', async () => {
+    const r = await api(`/interacciones/${first}`, { method: 'PATCH', body: { tipo: 'llamada', resumen: 'Corregido' } })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.tipo, 'llamada')
+    assert.equal(r.body.resumen, 'Corregido')
+    const f = await api(`/interacciones/${first}`, { method: 'PATCH', body: { fecha: '2026-03-02' } })
+    assert.equal(f.body.fecha, '2026-03-02T16:00:00.000Z')
+    assert.equal(f.body.resumen, 'Corregido')
+    assert.equal((await api(`/interacciones/${first}`, { method: 'PATCH', body: {} })).status, 400)
+  })
+
+  it('las entradas automáticas de etapa no se editan ni se borran (409) y desde la bitácora se ven marcadas', async () => {
+    const p = await mkPosible('Bitácora Etapa')
+    await api(`/clientes/${p.id}`, { method: 'PATCH', body: { etapa: 'contactado' } })
+    const e = (await api(`/clientes/${p.id}/interacciones?tipo=etapa`)).body.data[0]
+    assert.equal(e.automatica, true)
+    assert.equal(e.resumen, 'Nuevo → Contactado')
+    assert.equal((await api(`/interacciones/${e.id}`, { method: 'PATCH', body: { resumen: 'Mentira' } })).status, 409)
+    assert.equal((await apiD(`/interacciones/${e.id}`, { method: 'DELETE' })).status, 409)
+    assert.equal((await api(`/clientes/${p.id}/interacciones?tipo=etapa`)).body.data.length, 1)
+  })
+
+  it('borrar va a la papelera (exige permiso de borrado) y restaurar la devuelve con su fecha', async () => {
+    assert.equal((await api(`/interacciones/${first}`, { method: 'DELETE' })).status, 403, 'la llave sin borrado no puede')
+    const del = await apiD(`/interacciones/${first}`, { method: 'DELETE' })
+    assert.equal(del.status, 200, JSON.stringify(del.body))
+    assert.equal(del.body.entidad, 'interaccion')
+    assert.equal((await api(`/clientes/${cid}/interacciones`)).body.meta.total, 3)
+    const item = (await apiD('/papelera')).body.data.find((x: any) => x.id === del.body.papelera_id)
+    assert.ok(item)
+    assert.equal(item.tipo, 'interaccion')
+    assert.equal((await apiD(`/papelera/${item.id}/restaurar`, { method: 'POST', body: {} })).status, 200)
+    const back = (await api(`/clientes/${cid}/interacciones`)).body
+    assert.equal(back.meta.total, 4)
+    assert.equal(back.data[0].id, first)
+    assert.equal(back.data[0].fecha, '2026-03-02T16:00:00.000Z')
+  })
+
+  it('restaurar una interacción cuyo cliente ya no existe => 409; el detalle del cliente trae las 10 recientes', async () => {
+    const c2 = (await api('/clientes', { body: { nombre: 'Bitácora Huérfana' } })).body.id
+    const i = (await api(`/clientes/${c2}/interacciones`, { body: { tipo: 'nota', resumen: 'Suelta' } })).body
+    const del = await apiD(`/interacciones/${i.id}`, { method: 'DELETE' })
+    await apiD(`/clientes/${c2}`, { method: 'DELETE' })
+    const item = (await apiD('/papelera')).body.data.find((x: any) => x.tipo === 'interaccion' && x.id === del.body.papelera_id)
+    assert.equal((await apiD(`/papelera/${item.id}/restaurar`, { method: 'POST', body: {} })).status, 409)
+    for (let k = 0; k < 12; k++) await api(`/clientes/${cid}/interacciones`, { body: { tipo: 'nota', resumen: `Nota ${k}`, fecha: '2026-03-03' } })
+    const d = (await api(`/clientes/${cid}`)).body
+    assert.equal(d.interacciones.total, 16)
+    assert.equal(d.interacciones.recientes.length, 10)
+  })
+})
+
+describe('CRM: alertas (campana)', () => {
+  const alertas = async (q = '', key = KEY) => (await api(`/notificaciones${q}`, { key })).body
+  let overdueClient = ''
+  let seguimientoClient = ''
+
+  it('una cuota vencida alerta una vez; la vencida sigue dentro de por_cobrar; pagarla quita la alerta', async () => {
+    const base = await alertas('?per_page=100')
+    const cl = await api('/clientes', {
+      body: { nombre: 'Alerta Cuotas', cobros: [{ fecha: '2020-01-01', monto: 40, concepto: 'Mensualidad' }, { fecha: isoDay(30), monto: 60, concepto: 'Futura' }] },
+    })
+    overdueClient = cl.body.id
+    assert.equal(cl.body.por_cobrar, 100)
+    assert.equal(cl.body.cuotas_vencidas, 1)
+    assert.equal(cl.body.monto_vencido, 40)
+    const a = await alertas('?per_page=100')
+    assert.equal(a.meta.total_alertas, base.meta.total_alertas + 1)
+    assert.equal(a.meta.sin_leer, base.meta.sin_leer + 1)
+    const mine = a.data.filter((x: any) => x.cliente_id === overdueClient)
+    assert.equal(mine.length, 1, 'la cuota futura no alerta')
+    assert.equal(mine[0].tipo, 'cuota_vencida')
+    assert.match(mine[0].clave, /^cuota:/)
+    assert.equal(mine[0].monto, 40)
+    assert.equal(mine[0].leida, false)
+    assert.ok(mine[0].dias > 365)
+    assert.match(mine[0].titulo, /Alerta Cuotas/)
+    // Finanzas ve lo mismo
+    const f = (await api('/finanzas/resumen?periodo=todo')).body
+    const fila = f.clientes.find((x: any) => x.id === overdueClient)
+    assert.equal(fila.vencido, 40)
+    assert.equal(fila.por_cobrar, 100)
+    // pagos?vencido=true
+    const pv = await api(`/pagos?cliente_id=${overdueClient}&vencido=true`)
+    assert.equal(pv.status, 200, JSON.stringify(pv.body))
+    assert.deepEqual(pv.body.data.map((p: any) => p.concepto), ['Mensualidad'])
+    assert.equal((await api(`/pagos?cliente_id=${overdueClient}&vencido=false`)).body.data.every((p: any) => p.concepto !== 'Mensualidad' || p.estado === 'cobrado'), true)
+    assert.equal((await api('/pagos?vencido=quizas')).status, 400)
+    // cobrarla la quita
+    await api(`/pagos/${pv.body.data[0].id}`, { method: 'PATCH', body: { estado: 'cobrado' } })
+    const z = await alertas('?per_page=100')
+    assert.equal(z.meta.total_alertas, base.meta.total_alertas)
+    assert.ok(!z.data.some((x: any) => x.cliente_id === overdueClient))
+  })
+
+  it('un posible cliente, uno archivado o uno en la papelera no generan alertas de cuota', async () => {
+    const p = await mkPosible('Alerta Posible')
+    const base = (await alertas()).meta.total_alertas
+    await api(`/clientes/${p.id}/pagos`, { body: { fecha: '2020-02-01', monto: 10, concepto: 'Vieja' } })
+    assert.equal((await alertas()).meta.total_alertas, base, 'posible')
+    const c = (await api('/clientes', { body: { nombre: 'Alerta Archivo', cobros: [{ fecha: '2020-02-01', monto: 10, concepto: 'Vieja' }] } })).body.id
+    assert.equal((await alertas()).meta.total_alertas, base + 1)
+    await api(`/clientes/${c}`, { method: 'PATCH', body: { archivado: true } })
+    assert.equal((await alertas()).meta.total_alertas, base, 'archivado')
+    await api(`/clientes/${c}`, { method: 'PATCH', body: { archivado: false } })
+    assert.equal((await alertas()).meta.total_alertas, base + 1)
+    await apiD(`/clientes/${c}`, { method: 'DELETE' })
+    assert.equal((await alertas()).meta.total_alertas, base, 'papelera')
+  })
+
+  it('seguimiento: aparece el día de la fecha (no antes), se reprograma con otra clave y se apaga en "perdido"', async () => {
+    const base = (await alertas()).meta.total_alertas
+    const p = await mkPosible('Alerta Seguimiento', { proxima_accion: 'Llamar a María', proxima_accion_fecha: isoDay(2) })
+    seguimientoClient = p.id
+    assert.equal((await alertas()).meta.total_alertas, base, 'todavía no toca')
+    await api(`/clientes/${p.id}`, { method: 'PATCH', body: { proxima_accion_fecha: isoDay(0) } })
+    const hoy = await alertas('?tipo=seguimiento&per_page=100')
+    const a = hoy.data.find((x: any) => x.cliente_id === p.id)
+    assert.ok(a)
+    assert.equal(a.clave, `seguimiento:${p.id}:${isoDay(0)}`)
+    assert.equal(a.detalle, 'Hoy')
+    assert.equal(a.dias, 0)
+    assert.equal(a.titulo, 'Alerta Seguimiento: Llamar a María')
+    await api(`/clientes/${p.id}`, { method: 'PATCH', body: { proxima_accion_fecha: isoDay(-3) } })
+    const atrasado = (await alertas('?tipo=seguimiento&per_page=100')).data.find((x: any) => x.cliente_id === p.id)
+    assert.equal(atrasado.detalle, 'Atrasado 3 días')
+    assert.equal((await api(`/clientes/${p.id}`)).body.seguimiento_vencido, true)
+    // perdido => ya no hay nada que seguir
+    await api(`/clientes/${p.id}`, { method: 'PATCH', body: { etapa: 'perdido', motivo_perdida: 'Sin presupuesto' } })
+    assert.ok(!(await alertas('?per_page=100')).data.some((x: any) => x.cliente_id === p.id))
+  })
+
+  it('marcar leídas: por clave o todas; una clave inventada no deja nada; cada socio marca las suyas', async () => {
+    const p = await mkPosible('Alerta Lectura', { proxima_accion: 'Visitar', proxima_accion_fecha: isoDay(-1) })
+    const all = await alertas('?per_page=100')
+    const mia = all.data.find((x: any) => x.cliente_id === p.id)
+    const sinLeer0 = all.meta.sin_leer
+    const r = await api('/notificaciones/leer', { body: { claves: [mia.clave, `cuota:${NOPE}`, `seguimiento:${NOPE}:2020-01-01`] } })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.marcadas, 1, 'solo la que existe')
+    assert.equal(r.body.sin_leer, sinLeer0 - 1)
+    const { rows } = await admin.query("SELECT count(*)::int AS n FROM notification_reads WHERE key LIKE $1", [`%${NOPE}%`])
+    assert.equal(rows[0].n, 0)
+    assert.equal((await alertas('?per_page=100')).data.find((x: any) => x.cliente_id === p.id).leida, true)
+    assert.ok(!(await alertas('?estado=sin_leer&per_page=100')).data.some((x: any) => x.cliente_id === p.id))
+    // otro socio la sigue viendo sin leer
+    const theirs = (await alertas('?per_page=100', KEY_J)).data.find((x: any) => x.cliente_id === p.id)
+    assert.equal(theirs.leida, false)
+    // reprogramar la vuelve a sacar sin leer (clave nueva)
+    await api(`/clientes/${p.id}`, { method: 'PATCH', body: { proxima_accion_fecha: isoDay(-2) } })
+    assert.equal((await alertas('?per_page=100')).data.find((x: any) => x.cliente_id === p.id).leida, false)
+    // todas
+    const t = await api('/notificaciones/leer', { body: { todas: true } })
+    assert.equal(t.body.sin_leer, 0)
+    assert.equal((await alertas('?estado=sin_leer')).data.length, 0)
+    assert.equal((await alertas('', KEY_J)).meta.sin_leer > 0, true, 'lo de Jorbi sigue intacto')
+  })
+
+  it('validaciones de /notificaciones/leer y de los filtros', async () => {
+    for (const body of [{}, { claves: [] }, { claves: ['hola'] }, { todas: false }, { claves: [`cuota:${NOPE}`], todas: true }, { otra: 1 }])
+      assert.equal((await api('/notificaciones/leer', { body })).status, 400, JSON.stringify(body))
+    assert.equal((await api('/notificaciones?estado=ninguna')).status, 400)
+    assert.equal((await api('/notificaciones?tipo=otro')).status, 400)
+  })
+
+  it('el seguimiento vencido cuenta en /pipeline y las alertas de cuota no se duplican al paginar', async () => {
+    assert.ok((await api('/pipeline')).body.seguimientos_vencidos >= 0)
+    const a = await alertas('?per_page=100')
+    const keys = a.data.map((x: any) => x.clave)
+    assert.equal(new Set(keys).size, keys.length)
+    const p1 = (await alertas('?per_page=1&page=1')).data[0]
+    assert.equal(p1.clave, keys[0], 'el orden es estable: lo más viejo primero')
+    assert.ok(a.data.findIndex((x: any) => x.tipo === 'seguimiento') > a.data.findLastIndex((x: any) => x.tipo === 'cuota_vencida'), 'cuotas antes que seguimientos')
+    assert.ok(overdueClient && seguimientoClient)
+  })
+})
+
+describe('CRM: búsqueda global', () => {
+  const buscar = (q: string, extra = '') => api(`/buscar?q=${encodeURIComponent(q)}${extra}`)
+  let cid = ''
+  let pid = ''
+
+  before(async () => {
+    cid = (await api('/clientes', { body: { nombre: 'Charcutería Doña Ñoña', telefono: '0414-5550123', email: 'nona@charcu.com', etiquetas: ['Embutidos'], notas: 'Quiere sistema de inventario' } })).body.id
+    pid = (await api('/proyectos', { body: { nombre: 'Sistema de pedidos', cliente_id: cid } })).body.id
+    await api('/tareas', { body: { titulo: 'Instalar báscula conectada', proyecto_id: pid } })
+  })
+
+  it('encuentra por nombre sin importar acentos, mayúsculas ni la ñ; devuelve clientes, proyectos y tareas', async () => {
+    for (const q of ['charcuteria', 'CHARCUTERÍA', 'dona nona', 'doña ñoña']) {
+      const r = await buscar(q)
+      assert.equal(r.status, 200, JSON.stringify(r.body))
+      assert.ok(r.body.clientes.some((c: any) => c.id === cid), q)
+    }
+    const r = await buscar('sistema')
+    assert.ok(r.body.proyectos.some((p: any) => p.id === pid && p.cliente_id === cid))
+    assert.ok(r.body.clientes.some((c: any) => c.id === cid), 'las notas también se buscan')
+    const t = await buscar('bascula')
+    assert.equal(t.body.tareas.length, 1)
+    assert.deepEqual(Object.keys(t.body.tareas[0]).sort(), ['estado', 'id', 'proyecto', 'proyecto_id', 'titulo', 'vence'])
+    assert.equal(t.body.total, t.body.clientes.length + t.body.proyectos.length + t.body.tareas.length)
+  })
+
+  it('varias palabras (todas deben estar), teléfono por dígitos, email y etiqueta', async () => {
+    assert.ok((await buscar('doña charcu')).body.clientes.some((c: any) => c.id === cid))
+    assert.ok(!(await buscar('doña zapatería')).body.clientes.some((c: any) => c.id === cid))
+    for (const q of ['0414-5550123', '0414 555', '555 0123', '5550123']) assert.ok((await buscar(q)).body.clientes.some((c: any) => c.id === cid), q)
+    assert.ok((await buscar('nona@charcu.com')).body.clientes.some((c: any) => c.id === cid))
+    const e = (await buscar('embutidos')).body.clientes.find((c: any) => c.id === cid)
+    assert.deepEqual(e.etiquetas, ['embutidos'])
+    assert.equal(e.telefono, '0414-5550123')
+    assert.equal(e.estado, 'activo')
+  })
+
+  it('filtro por tipo, límite, archivados y validaciones', async () => {
+    const solo = await buscar('sistema', '&tipo=proyecto')
+    assert.equal(solo.body.clientes.length, 0)
+    assert.equal(solo.body.tareas.length, 0)
+    assert.ok(solo.body.proyectos.length >= 1)
+    assert.ok((await buscar('Pipe', '&limite=2')).body.clientes.length <= 2)
+    await api(`/clientes/${cid}`, { method: 'PATCH', body: { archivado: true } })
+    assert.ok(!(await buscar('charcuteria')).body.clientes.some((c: any) => c.id === cid), 'archivados fuera por defecto')
+    assert.ok(!(await buscar('sistema')).body.proyectos.some((p: any) => p.id === pid))
+    const con = await buscar('charcuteria', '&archivados=incluir')
+    assert.equal(con.body.clientes.find((c: any) => c.id === cid)?.archivado, true)
+    const solos = await buscar('charcuteria', '&archivados=solo')
+    assert.ok(solos.body.clientes.some((c: any) => c.id === cid))
+    await api(`/clientes/${cid}`, { method: 'PATCH', body: { archivado: false } })
+    for (const q of ['', 'a', encodeURIComponent('x'.repeat(81))]) assert.equal((await api(`/buscar?q=${q}`)).status, 400, q)
+    assert.equal((await api('/buscar')).status, 400)
+    assert.equal((await buscar('sistema', '&tipo=otro')).status, 400)
+    assert.equal((await buscar('sistema', '&limite=0')).status, 400)
+    assert.equal((await buscar('sistema', '&limite=26')).status, 400)
+  })
+
+  it('lo escrito va como parámetro, nunca como SQL (comillas, % y _ no rompen ni comodinean)', async () => {
+    for (const q of ["'; DROP TABLE clients; --", '%%', '__', '\\\\', '""']) {
+      const r = await buscar(q)
+      assert.equal(r.status, 200, q + JSON.stringify(r.body))
+    }
+    assert.equal((await buscar('%%')).body.total, 0, '% no es comodín')
+    assert.equal((await admin.query('SELECT count(*)::int AS n FROM clients')).rows[0].n > 0, true)
+  })
+
+  it('el orden pone primero el nombre que empieza por lo escrito', async () => {
+    const a = (await api('/clientes', { body: { nombre: 'Zeta Ordenada' } })).body.id
+    const b = (await api('/clientes', { body: { nombre: 'Aaa Ordenada', notas: 'zeta' } })).body.id
+    const r = (await buscar('zeta')).body.clientes.map((c: any) => c.id)
+    assert.ok(r.indexOf(a) < r.indexOf(b))
+  })
+})
+
+describe('CRM: permisos y MCP', () => {
+  let n = 0
+  const rpc = (method: string, params: unknown = {}, key: string = KEY) =>
+    http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: ++n, method, params } })
+  const tool = async (name: string, args: unknown = {}, key: string = KEY) => {
+    const r = await rpc('tools/call', { name, arguments: args }, key)
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    return r.body
+  }
+  const data = (b: any) => JSON.parse(b.result.content[0].text)
+  let KEY_R = ''
+  let cid = ''
+
+  before(() => {
+    KEY_R = newKey('Leandro', 'solo-lectura-crm', 'read')
+  })
+
+  it('REST: una llave de solo lectura lee bitácora, alertas, pipeline y búsqueda, pero no escribe ni marca leídas', async () => {
+    cid = (await api('/clientes', { body: { nombre: 'Permisos CRM' } })).body.id
+    const r = (p: string, o: Opts = {}) => api(p, { key: KEY_R, ...o })
+    for (const p of [`/clientes/${cid}/interacciones`, '/notificaciones', '/pipeline', '/buscar?q=permisos']) assert.equal((await r(p)).status, 200, p)
+    assert.equal((await r(`/clientes/${cid}/interacciones`, { body: { tipo: 'nota', resumen: 'x' } })).status, 403)
+    assert.equal((await r('/notificaciones/leer', { body: { todas: true } })).status, 403)
+    assert.equal((await r(`/clientes/${cid}`, { method: 'PATCH', body: { telefono: '0414-0000000' } })).status, 403)
+    assert.equal((await r('/interacciones/' + NOPE, { method: 'DELETE' })).status, 403)
+    assert.equal((await api('/pipeline', { key: null })).status, 401)
+    assert.equal((await api('/buscar?q=permisos', { key: null })).status, 401)
+  })
+
+  it('MCP: las herramientas nuevas existen según el permiso (lectura 6, escritura +3, borrado +1)', async () => {
+    const names = async (key: string) => (await rpc('tools/list', {}, key)).body.result.tools.map((t: any) => t.name) as string[]
+    const ro = await names(KEY_R)
+    for (const t of ['hayai_interacciones_listar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_buscar']) assert.ok(ro.includes(t), t)
+    for (const t of ['hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_notificaciones_marcar_leidas', 'hayai_interaccion_eliminar']) assert.ok(!ro.includes(t), t)
+    const rw = await names(KEY)
+    for (const t of ['hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_notificaciones_marcar_leidas']) assert.ok(rw.includes(t), t)
+    assert.ok(!rw.includes('hayai_interaccion_eliminar'))
+    assert.ok((await names(KEY_D)).includes('hayai_interaccion_eliminar'))
+    const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
+    const reg = full.find((t: any) => t.name === 'hayai_interaccion_registrar')
+    assert.deepEqual([...reg.inputSchema.required].sort(), ['cliente_id', 'resumen', 'tipo'])
+    assert.deepEqual(reg.inputSchema.properties.tipo.enum, ['llamada', 'visita', 'whatsapp', 'nota'], 'etapa no se ofrece al agente')
+  })
+
+  it('MCP: ficha, pipeline y bitácora de punta a punta; los errores de negocio llegan como isError', async () => {
+    const created = data(await tool('hayai_cliente_crear', { nombre: 'MCP Prospecto', estado: 'posible', telefono: '0412-1112233', etiquetas: ['mcp'], origen: 'meta_ads', valor_estimado: 500, proxima_accion: 'Enviar propuesta', proxima_accion_fecha: isoDay(-1) }))
+    assert.equal(created.etapa, 'nuevo')
+    assert.equal(created.origen, 'meta_ads')
+    assert.equal(created.seguimiento_vencido, true)
+    const upd = data(await tool('hayai_cliente_actualizar', { id: created.id, etapa: 'propuesta' }))
+    assert.equal(upd.etapa, 'propuesta')
+    assert.equal(upd.probabilidad, 10)
+    const i = data(await tool('hayai_interaccion_registrar', { cliente_id: created.id, tipo: 'whatsapp', resumen: 'Mandé la propuesta' }, KEY_J))
+    assert.equal(i.registrada_por, 'Jorbi')
+    const list = data(await tool('hayai_interacciones_listar', { cliente_id: created.id }))
+    assert.deepEqual(list.data.map((e: any) => e.tipo).sort(), ['etapa', 'whatsapp'])
+    const etapa = await tool('hayai_interaccion_registrar', { cliente_id: created.id, tipo: 'etapa', resumen: 'x' })
+    assert.equal(etapa.result.isError, true)
+    const perdido = await tool('hayai_cliente_actualizar', { id: created.id, etapa: 'perdido' })
+    assert.equal(perdido.result.isError, true)
+    assert.match(perdido.result.content[0].text, /motivo_perdida/)
+    const rest = (await api('/pipeline')).body
+    assert.deepEqual(data(await tool('hayai_pipeline_resumen')), rest)
+    const found = data(await tool('hayai_buscar', { q: 'mcp prospecto' }))
+    assert.ok(found.clientes.some((c: any) => c.id === created.id))
+    const al = data(await tool('hayai_notificaciones_listar', { tipo: 'seguimiento' }))
+    const mine = al.data.find((a: any) => a.cliente_id === created.id)
+    assert.ok(mine)
+    const read = data(await tool('hayai_notificaciones_marcar_leidas', { claves: [mine.clave] }))
+    assert.equal(read.marcadas, 1)
+    const del = await tool('hayai_interaccion_eliminar', { id: i.id }, KEY_D)
+    assert.notEqual(del.result.isError, true, JSON.stringify(del))
+  })
+})
+
+describe('CRM: web (sesión)', () => {
+  const PIN = '713904'
+  let cookie = ''
+  const web = (path: string, o: { method?: string; body?: unknown } = {}) => http(`${ROOT}/api${path}`, { headers: { cookie }, ...o })
+
+  before(async () => {
+    const login = await fetch(`${ROOT}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Elis', pin: '000000' }),
+    })
+    cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    assert.equal((await web('/auth/change-pin', { body: { currentPin: '000000', newPin: PIN } })).status, 200)
+  })
+
+  it('exige sesión en todas las rutas nuevas', async () => {
+    for (const p of ['/notifications', '/search?q=ab', '/pipeline', `/clients/${NOPE}/interactions`]) assert.equal((await http(`${ROOT}/api${p}`)).status, 401, p)
+    assert.equal((await http(`${ROOT}/api/notifications/read`, { body: { todas: true } })).status, 401)
+  })
+
+  it('PATCH /clients/:id/ficha: traduce camelCase, devuelve el cliente de la lista, rechaza campos desconocidos y vacíos', async () => {
+    const p = (await web('/prospects', { body: { name: 'Web CRM', avatar: 'nova', project: { name: 'Web', icon: 'box', owner: 'Elis' } } })).body.client
+    assert.equal(p.stage, 'nuevo')
+    const r = await web(`/clients/${p.id}/ficha`, {
+      method: 'PATCH',
+      body: { phone: '0414-7778899', email: 'WEB@crm.com', contactName: 'Ana', tags: ['Nuevo', 'nuevo'], source: 'meta_ads', stage: 'contactado', estValue: 900, probability: 30, expectedClose: isoDay(15), nextAction: 'Llamar', nextActionDate: isoDay(1) },
+    })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.phone, '0414-7778899')
+    assert.equal(r.body.email, 'web@crm.com')
+    assert.deepEqual(r.body.tags, ['nuevo'])
+    assert.equal(r.body.stage, 'contactado')
+    assert.equal(r.body.estValue, 900)
+    assert.equal(r.body.probability, 30)
+    assert.equal(r.body.nextActionDate, isoDay(1))
+    assert.equal(r.body.lastContactAt, null, 'el cambio de etapa no cuenta como contacto')
+    assert.deepEqual((await web('/clients')).body.find((c: any) => c.id === p.id), r.body, 'la lista trae lo mismo')
+    assert.equal((await web(`/clients/${p.id}/ficha`, { method: 'PATCH', body: { telefono: '1' } })).status, 400, 'llaves en español no valen en la web')
+    assert.equal((await web(`/clients/${p.id}/ficha`, { method: 'PATCH', body: { name: 'Otro' } })).status, 400, 'el nombre va por PATCH /clients/:id')
+    assert.equal((await web(`/clients/${p.id}/ficha`, { method: 'PATCH', body: {} })).status, 400)
+    assert.equal((await web(`/clients/${p.id}/ficha`, { method: 'PATCH', body: { stage: 'perdido' } })).status, 400)
+    const lost = await web(`/clients/${p.id}/ficha`, { method: 'PATCH', body: { stage: 'perdido', lostReason: 'Eligió a otro' } })
+    assert.equal(lost.body.stage, 'perdido')
+    assert.equal(lost.body.probability, 0)
+    assert.equal(lost.body.lostReason, 'Eligió a otro')
+    assert.equal((await web(`/clients/${NOPE}/ficha`, { method: 'PATCH', body: { notes: 'x' } })).status, 404)
+  })
+
+  it('PATCH /clients/:id sigue siendo solo nombre y avatar (estricto): la ficha no se cuela por ahí', async () => {
+    const c = (await web('/clients', { body: { name: 'Estricto', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] } })).body
+    assert.equal((await web(`/clients/${c.id}`, { method: 'PATCH', body: { name: 'Estricto 2', phone: '0414' } })).status, 400)
+    assert.equal((await web(`/clients/${c.id}`, { method: 'PATCH', body: { name: 'Estricto 2' } })).body.name, 'Estricto 2')
+  })
+
+  it('bitácora, alertas, búsqueda y pipeline desde la web usan los mismos servicios que la API', async () => {
+    const c = (await web('/clients', { body: { name: 'Web Bitácora', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [{ date: '2020-01-01', amount: 15, concept: 'Vieja' }] } })).body
+    const i = await web(`/clients/${c.id}/interactions`, { body: { tipo: 'visita', resumen: 'Pasé por el local' } })
+    assert.equal(i.status, 201, JSON.stringify(i.body))
+    assert.equal(i.body.registrada_por, 'Elis')
+    assert.equal((await web(`/clients/${c.id}/interactions`, { body: { tipo: 'etapa', resumen: 'x' } })).status, 400)
+    assert.equal((await web(`/interactions/${i.body.id}`, { method: 'PATCH', body: { resumen: 'Pasé dos veces' } })).body.resumen, 'Pasé dos veces')
+    assert.equal((await web(`/clients/${c.id}/interactions`)).body.meta.total, 1)
+    assert.equal((await web(`/clients`)).body.find((x: any) => x.id === c.id).lastContactAt !== null, true)
+
+    const al = await web('/notifications?per_page=100')
+    const a = al.body.data.find((x: any) => x.cliente_id === c.id)
+    assert.equal(a.tipo, 'cuota_vencida')
+    const read = await web('/notifications/read', { body: { claves: [a.clave] } })
+    assert.equal(read.body.marcadas, 1)
+    assert.equal((await web('/notifications?per_page=100')).body.data.find((x: any) => x.cliente_id === c.id).leida, true)
+
+    assert.ok((await web('/search?q=web%20bitacora')).body.clientes.some((x: any) => x.id === c.id))
+    assert.equal((await web('/search?q=w')).status, 400)
+    assert.equal((await web('/pipeline')).body.dias_frio, 14)
+
+    assert.equal((await web(`/interactions/${i.body.id}`, { method: 'DELETE' })).status, 204)
+    const item = (await web('/trash')).body.find((t: any) => t.kind === 'interaccion' || t.entity === 'interaccion')
+    assert.ok(item, 'aparece en la papelera con su propio tipo')
+    assert.equal((await web(`/trash/${item.id}/restore`, { body: {} })).status, 200)
+    assert.equal((await web(`/clients/${c.id}/interactions`)).body.meta.total, 1)
   })
 })

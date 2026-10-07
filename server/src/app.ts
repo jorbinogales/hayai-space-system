@@ -8,6 +8,7 @@ import { expensesRouter } from './routes/expenses.ts'
 import { keysRouter } from './routes/keys.ts'
 import { projectsRouter } from './routes/projects.ts'
 import { tasksRouter } from './routes/tasks.ts'
+import { crmRouter } from './routes/crm.ts'
 import { trashRouter } from './routes/trash.ts'
 import { usersRouter } from './routes/users.ts'
 import { mcpRouter } from './mcp/index.ts'
@@ -69,6 +70,7 @@ export function createApp() {
   api.use('/tasks', tasksRouter)
   api.use('/keys', keysRouter)
   api.use('/trash', trashRouter)
+  api.use(crmRouter)
   api.use((_req, _res) => {
     throw new HttpError(404, 'No encontrado')
   })

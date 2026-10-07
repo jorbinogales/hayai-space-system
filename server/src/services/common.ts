@@ -32,9 +32,12 @@ export const projectStateIn = (s: string) => (s === 'visita' ? 'planeacion' : s)
 // ---------- fechas y dinero ----------
 export const TZ = process.env.APP_TZ ?? 'America/Caracas'
 
+/** Un instante como AAAA-MM-DD en la zona horaria del negocio. */
+export const dayISO = (d: Date) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d)
+
 /** Hoy como AAAA-MM-DD en la zona horaria del negocio (el servidor corre en UTC; sin esto "este mes" cambia a las 8 pm). */
-export const todayISO = () =>
-  new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+export const todayISO = () => dayISO(new Date())
 
 export const r2 = (n: number) => Math.round(n * 100) / 100
 export const cents = (n: number) => Math.round(n * 100)

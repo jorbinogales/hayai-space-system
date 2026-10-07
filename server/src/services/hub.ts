@@ -8,6 +8,7 @@ import { pool, tx } from '../db.ts'
 import { userByName } from '../socios.ts'
 import { HttpError, id, isoDate, text } from '../util.ts'
 import { op, pageShape, paged, r2, TZ, todayISO } from './common.ts'
+import { feedResumen } from './feed.ts'
 import { sistemasListar } from './sistemas.ts'
 
 // ---------- equipo (astronautas) ----------
@@ -176,13 +177,14 @@ async function pulso() {
 }
 
 export const hubVer = op(z.strictObject({}), async (actor) => {
-  const [pulsoData, equipoData, abiertos, conteo, sistemas, bitacora] = await Promise.all([
+  const [pulsoData, equipoData, abiertos, conteo, sistemas, bitacora, feed] = await Promise.all([
     pulso(),
     equipo(),
     pool.query(`${A_SELECT} WHERE a.status = 'abierto' ORDER BY a.meeting_date DESC, a.created_at DESC, a.id LIMIT 12`),
     pool.query(`SELECT status, count(*)::int AS n FROM agreements GROUP BY status`),
     sistemasListar.run(actor, { activos: true, page: 1, per_page: 100 }),
     pool.query(`${ACTIVITY_SELECT} WHERE ${INTERNAL_ACTIVITY_SQL} ORDER BY a.id DESC LIMIT 15`),
+    feedResumen(),
   ])
   const acuerdosPor = { abierto: 0, cumplido: 0, descartado: 0 } as Record<string, number>
   for (const c of conteo.rows) acuerdosPor[c.status] = c.n
@@ -192,6 +194,8 @@ export const hubVer = op(z.strictObject({}), async (actor) => {
     bitacora: bitacora.rows.map((r) => activityOut(r, actor.id)),
     acuerdos: { abiertos: abiertos.rows.map(acuerdoOut), por_estado: acuerdosPor },
     sistemas: { data: sistemas.data, resumen: (sistemas.meta as unknown as { por_estado: Record<string, number> }).por_estado },
+    // Feed de oportunidades: solo el contador (el feed completo y sus filtros salen de GET /feed).
+    feed,
     // Las fuentes de analítica (GA4, Cloudflare, Meta Graph) se conectan después; el módulo completo vive en el planeta Marketing.
     analytics: { disponible: false, planeta: 'marketing' as const, resumen: null },
   }

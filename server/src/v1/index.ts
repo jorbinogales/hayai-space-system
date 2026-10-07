@@ -11,6 +11,7 @@ import { finanzasResumen } from '../services/finanzas.ts'
 import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResumen } from '../services/alertas.ts'
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
+import { feedConvertir, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
 import { gastoActualizar, gastoRegistrar, gastosListar, gastoVer } from '../services/gastos.ts'
@@ -83,11 +84,12 @@ const SCOPE_OF = { get: 'read', post: 'write', patch: 'write', delete: 'delete' 
 
 // Cada ruta exige el permiso de su método (GET lee, POST/PATCH escriben, DELETE borra) ANTES de ejecutar nada.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function route(method: 'get' | 'post' | 'patch' | 'delete', path: string, o: Op<any, any>, status = 200) {
+function route(method: 'get' | 'post' | 'patch' | 'delete', path: string, o: Op<any, any>, status: number | ((out: any) => number) = 200) {
   const input = method === 'get' || method === 'delete' ? fromQuery : fromBody
   v1Router[method](path, async (req, res) => {
     requireScope(req, SCOPE_OF[method])
-    res.status(status).json(await exec(o, req.user!, input(req)))
+    const out = await exec(o, req.user!, input(req))
+    res.status(typeof status === 'function' ? status(out) : status).json(out)
   })
 }
 
@@ -182,6 +184,13 @@ route('post', '/sistemas', sistemaCrear, 201)
 route('patch', '/sistemas/:id', sistemaActualizar)
 route('post', '/sistemas/:id/verificar', sistemaVerificar)
 route('get', '/marketing/embudo', marketingEmbudo)
+// Feed de oportunidades: lo que las máquinas y los agentes ENCONTRARON (la bitácora es lo que el equipo HIZO).
+// POST /feed: 201 si se creó; 200 si esa (fuente, clave_externa) ya existía (idempotente: reintentar es seguro). En lote (items): 201 si se creó alguno.
+route('get', '/feed', feedListar)
+route('get', '/feed/:id', feedVer)
+route('post', '/feed', feedPublicar, (o) => ((o.creado ?? o.creados) ? 201 : 200))
+route('patch', '/feed/:id/estado', feedMarcar)
+route('post', '/feed/:id/convertir', feedConvertir)
 
 route('get', '/pipeline', pipelineResumen)
 route('get', '/pipeline/etapas', pipelineEtapas)

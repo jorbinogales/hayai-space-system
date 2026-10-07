@@ -12,6 +12,7 @@ import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoActual
 import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResumen } from '../services/alertas.ts'
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
+import { feedConvertir, feedListar, feedMarcar, feedPublicar } from '../services/feed.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
 import { comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
@@ -72,7 +73,7 @@ const TOOLS: Tool[] = [
   { name: 'hayai_interaccion_registrar', op: interaccionRegistrar, scope: 'write', description: 'Anota una interacción en la bitácora de un cliente. tipo: llamada | visita | whatsapp | nota ("etapa" lo escribe solo el sistema y se rechaza). resumen: qué pasó. fecha opcional (AAAA-MM-DD o con hora y zona; por defecto ahora; no puede ser futura: lo que viene va en proxima_accion).' },
   { name: 'hayai_interaccion_actualizar', op: interaccionActualizar, scope: 'write', description: 'Corrige el tipo, el resumen o la fecha de una interacción. Las de etapa (automáticas) no se editan.' },
   { name: 'hayai_pipeline_resumen', op: pipelineResumen, scope: 'read', description: 'Resumen del pipeline de ventas: por etapa abierta (prospecto, visita_agendada, visita_realizada, propuesta_en_armado, propuesta_presentada) cantidad, valor_total y valor_ponderado (valor x probabilidad); abiertos, ganados y perdidos; frios (posibles clientes sin contacto real hace más de 14 días) y seguimientos_vencidos.' },
-  { name: 'hayai_notificaciones_listar', op: notificacionesListar, scope: 'read', description: 'Alertas vigentes del socio dueño de la llave: cuotas vencidas y seguimientos de hoy o atrasados (se derivan al consultar: pagar o reprogramar las quita). estado: todas | sin_leer; tipo: cuota_vencida | seguimiento. meta.sin_leer es lo que muestra la campana.' },
+  { name: 'hayai_notificaciones_listar', op: notificacionesListar, scope: 'read', description: 'Alertas vigentes del socio dueño de la llave: cuotas vencidas y seguimientos de hoy o atrasados (se derivan al consultar: pagar o reprogramar las quita). estado: todas | sin_leer; tipo: cuota_vencida | seguimiento | actualizacion | feed (ítems nuevos del feed de oportunidades). meta.sin_leer es lo que muestra la campana.' },
   { name: 'hayai_notificaciones_marcar_leidas', op: notificacionesLeer, scope: 'write', description: 'Marca alertas como leídas para el socio dueño de la llave: claves (las de hayai_notificaciones_listar) o todas=true.' },
   { name: 'hayai_actividad_listar', op: actividadListar, scope: 'read', description: 'Actividad del equipo: clientes nuevos, posibles clientes nuevos, tareas nuevas, tareas completadas, cobros cobrados, cambios de etapa, clientes ganados y perdidos, con el texto ya redactado ("Leandro añadió la tarea «X» en Y") y el socio que lo hizo. Lo más reciente primero. Para consultar solo lo nuevo desde la última vez: orden=asc y desde_id=<meta.ultimo_id que guardaste>. meta.sin_leer cuenta lo de otros socios posterior al "visto hasta" del dueño de la llave.' },
   { name: 'hayai_actividad_marcar_leida', op: actividadLeer, scope: 'write', description: 'Mueve el "visto hasta" de la actividad del dueño de la llave: hasta_id (nunca retrocede) o todas=true.' },
@@ -103,6 +104,11 @@ const TOOLS: Tool[] = [
   { name: 'hayai_sistema_actualizar', op: sistemaActualizar, scope: 'write', description: 'Edita un sistema (campos de hayai_sistema_crear; null borra un dato; activo=false lo oculta). Cambiar una URL reinicia su semáforo.' },
   { name: 'hayai_sistema_verificar', op: sistemaVerificar, scope: 'write', description: 'Verifica un sistema ahora (GET a su URL; 2xx/3xx = arriba). Un fallo se confirma con un segundo intento antes de declararlo caído.' },
   { name: 'hayai_marketing_embudo', op: marketingEmbudo, scope: 'read', description: 'Embudo del planeta Marketing: posibles clientes por etapa abierta con su valor mensual y ponderado, cierres (ganados, perdidos y tasa) de los últimos dias (7-365, def. 90), cohorte por origen y los leads de Meta Ads de 30 días.' },
+  // Feed de oportunidades: lo que las máquinas y los agentes ENCONTRARON (la bitácora es lo que el equipo HIZO). Mismo servicio que POST /api/v1/feed.
+  { name: 'hayai_feed_listar', op: feedListar, scope: 'read', description: 'Feed de oportunidades del planeta HAYAI (paginado, lo más reciente primero): ideas del radar, prospectos del cazador, negocios de las video-auditorías, alertas de competencia, noticias y propuestas manuales. Filtros: tipo (idea | prospecto | alerta | noticia | oportunidad | proyecto), estado (nuevo | revisado | descartado | convertido), fuente (p. ej. radar-hayai, cazador-summit, video-auditorias, espia-pos, leads-tibios, demo-first, muse-elis, manual) y q (busca en título y resumen). Cada ítem trae datos (JSON libre: negocio, fugas, guion, URLs, métricas). meta.nuevos es el contador del hub; meta trae también los conteos por estado, por tipo y por fuente. Úsalo antes de publicar para no repetir lo que ya está.' },
+  { name: 'hayai_feed_publicar', op: feedPublicar, scope: 'write', description: 'Publica en el feed de oportunidades. Un ítem: titulo (máx. 160), tipo, fuente (origen lógico en minúsculas: radar-hayai, cazador-summit, video-auditorias, espia-pos, leads-tibios, demo-first, muse-<socio>, manual), resumen opcional, datos opcional (objeto JSON libre: negocio, fugas, guion, urls, metricas, origen, telefono, email) y fecha opcional del hallazgo (no futura). clave_externa hace la publicación idempotente: la misma (fuente, clave_externa) no se duplica (devuelve el ítem existente con creado=false), así que reintentar es seguro; úsala siempre que la fuente tenga un id propio. Varios a la vez: items=[{…}] (hasta 50; una siembra de 20 negocios es una sola llamada). Quién publica se toma de la llave. Alerta, noticia y prospecto avisan en la campana (agrupados: un lote es un solo aviso).' },
+  { name: 'hayai_feed_marcar', op: feedMarcar, scope: 'write', description: 'Cambia el estado de un ítem del feed: nuevo | revisado | descartado (motivo opcional y corto, solo al descartar). Un ítem ya convertido no cambia. "convertido" no se marca a mano: se logra con hayai_feed_convertir.' },
+  { name: 'hayai_feed_convertir', op: feedConvertir, scope: 'write', description: 'Convierte un ítem del feed en algo real, una sola vez: a=posible_cliente (crea el posible cliente en "prospecto" pre-llenando nombre, origen, teléfono, correo y notas con lo que traiga el ítem: fugas, guion, enlaces; deja una nota en su bitácora), a=tarea (titulo y vence opcionales; proyecto_id opcional: sin él va al proyecto interno de HAYAI) o a=proyecto (nombre, descripcion, cliente_id y responsable opcionales). Todo lo que pases pisa lo pre-llenado. El ítem queda "convertido" y enlazado a lo creado.' },
   // Papelera: borrar nunca destruye, manda a la papelera 30 días y se puede restaurar.
   { name: 'hayai_papelera_listar', op: papeleraListar, scope: 'read', description: 'Lista lo que hay en la papelera (borrado en los últimos 30 días), con quién lo borró y hasta cuándo se puede restaurar.' },
   { name: 'hayai_papelera_restaurar', op: papeleraRestaurar, scope: 'write', description: 'Restaura algo de la papelera con su id de papelera (con todo lo que colgaba de ello). Falla si lo que lo contenía (p. ej. el cliente de un proyecto) sigue borrado: restaura eso primero.' },
@@ -129,6 +135,7 @@ const CONFLICT_AWARE = new Set([
   'hayai_pago_marcar_cobrado',
   'hayai_propuesta_actualizar',
   'hayai_acuerdo_actualizar',
+  'hayai_feed_marcar',
 ])
 const actualizadoEl = z
   .string()
@@ -136,7 +143,7 @@ const actualizadoEl = z
   .describe('Opcional. El actualizado_el que devolvió la última lectura de este registro: si cambió desde entonces, la herramienta responde conflicto en vez de sobrescribir. Vuelve a leerlo y reintenta.')
 
 const INSTRUCTIONS =
-  'HAYAI Space: sistema interno de HAYAI (clientes y posibles clientes con su pipeline de ventas y bitácora, cobros, proyectos, gastos, tareas, finanzas, alertas y búsqueda). ' +
+  'HAYAI Space: sistema interno de HAYAI (clientes y posibles clientes con su pipeline de ventas y bitácora, cobros, proyectos, gastos, tareas, finanzas, alertas, búsqueda y el feed de oportunidades que alimentan las máquinas y los agentes). ' +
   'Montos en USD como número; fechas AAAA-MM-DD; zona horaria de Caracas. ' +
   'Lo que se escriba queda atribuido al socio dueño de la llave de API. Solo ves las herramientas que los permisos de tu llave permiten (lectura, escritura, borrado). Borrar manda a la papelera 30 días: nada se pierde al instante.'
 

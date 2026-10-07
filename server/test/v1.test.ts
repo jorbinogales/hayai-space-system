@@ -724,10 +724,10 @@ describe('MCP', () => {
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 66) // lectura + escritura
+    assert.equal(names.length, 70) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 76)
+    assert.equal(full.length, 80)
     assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -3283,7 +3283,7 @@ describe('Hub central: equipo, acuerdos, bitácora interna y pulso', () => {
   it('GET /hub: pulso, astronautas, bitácora interna, acuerdos abiertos, sistemas y el hueco de analytics', async () => {
     const h = await api('/hub')
     assert.equal(h.status, 200, JSON.stringify(h.body))
-    assert.deepEqual(Object.keys(h.body).sort(), ['acuerdos', 'analytics', 'astronautas', 'bitacora', 'pulso', 'sistemas'])
+    assert.deepEqual(Object.keys(h.body).sort(), ['acuerdos', 'analytics', 'astronautas', 'bitacora', 'feed', 'pulso', 'sistemas'])
     assert.equal(h.body.astronautas.length, 3)
     assert.match(h.body.pulso.mes, /^\d{4}-\d{2}$/)
     assert.ok(h.body.pulso.gastos_generales_mes >= 12.5)
@@ -3843,5 +3843,396 @@ describe('Aviso de actualización y conflictos al guardar', () => {
     await admin.query(`UPDATE clients SET notes = 'migración' WHERE id = $1`, [c.body.id]) // como un deploy que corrige datos
     const r = await api(`/clientes/${c.body.id}`, { method: 'PATCH', body: { telefono: '+584140000000' }, headers: { 'if-match': visto } })
     assert.equal(r.status, 409)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Feed de oportunidades: lo que las máquinas y los agentes ENCONTRARON (la bitácora es lo que el equipo HIZO).
+describe('Feed de oportunidades', () => {
+  let n = 0
+  const rpc = (method: string, params: unknown = {}, key: string | null = KEY) =>
+    http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: ++n, method, params } })
+  const mcp = async (name: string, args: unknown = {}, key: string | null = KEY) => (await rpc('tools/call', { name, arguments: args }, key)).body
+  const dato = (b: any) => JSON.parse(b.result.content[0].text)
+  const espera = (ms = 15) => new Promise((r) => setTimeout(r, ms))
+  const pub = (body: unknown, key = KEY) => api('/feed', { body, key })
+  const eventos = async (desde: number, key = KEY_J) =>
+    ((await api(`/actividad?desde_id=${desde}&orden=asc&per_page=100`, { key })).body.data as any[]).filter((e) => e.tipo === 'feed_nuevo')
+  const ultimo = async () => ((await api('/actividad?per_page=1')).body.meta.ultimo_id as number) ?? 0
+  let cookie = ''
+  let KEY_R = '' // solo lectura
+  let idea = ''
+  let prospecto = ''
+
+  before(async () => {
+    KEY_R = newKey('Jorbi', 'solo-lectura-feed', 'read')
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+  })
+
+  it('publicar: quien publica sale de la llave, nace "nuevo"; la fuente se normaliza; datos de forma libre', async () => {
+    const r = await pub({
+      titulo: 'Panadería La Espiga: 3 fugas en su Instagram',
+      resumen: 'Responden tarde y no cobran los encargos por adelantado.',
+      tipo: 'prospecto',
+      fuente: 'Video-Auditorias',
+      clave_externa: 'va-001',
+      datos: { negocio: { nombre: 'Panadería La Espiga' }, fugas: ['No responde DMs', 'Sin catálogo'], guion: 'Hola, vi tu panadería…', urls: ['https://instagram.com/laespiga'] },
+      fecha: '2026-10-01',
+    })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.deepEqual([r.body.estado, r.body.tipo, r.body.fuente, r.body.publicado_por.nombre, r.body.creado, r.body.convertido, r.body.revisado_por], ['nuevo', 'prospecto', 'video-auditorias', 'Leandro', true, null, null])
+    assert.equal(r.body.datos.fugas.length, 2)
+    assert.match(r.body.fecha, /^2026-10-01T/)
+    assert.ok(r.full.actualizado_el)
+    prospecto = r.body.id
+    const idem = await pub({ titulo: 'Otro título', tipo: 'idea', fuente: 'video-auditorias', clave_externa: 'va-001' })
+    assert.equal(idem.status, 200, 'misma (fuente, clave_externa): no se duplica')
+    assert.deepEqual([idem.body.id, idem.body.creado, idem.body.titulo], [prospecto, false, 'Panadería La Espiga: 3 fugas en su Instagram'])
+    const otraFuente = await pub({ titulo: 'Misma clave, otra fuente', tipo: 'idea', fuente: 'radar-hayai', clave_externa: 'va-001' })
+    assert.equal(otraFuente.status, 201)
+    idea = otraFuente.body.id
+    assert.equal((await pub({ titulo: 'Sin clave 1', tipo: 'idea', fuente: 'manual' })).status, 201)
+    assert.equal((await pub({ titulo: 'Sin clave 1', tipo: 'idea', fuente: 'manual' })).status, 201, 'sin clave_externa no hay idempotencia')
+    assert.equal((await admin.query(`SELECT count(*)::int AS n FROM feed_items WHERE source = 'video-auditorias' AND external_key = 'va-001'`)).rows[0].n, 1)
+    // Otro socio publicando con su llave: se atribuye a él
+    assert.equal((await pub({ titulo: 'Idea de Jorbi', tipo: 'idea', fuente: 'muse-jorbi' }, KEY_J)).body.publicado_por.nombre, 'Jorbi')
+  })
+
+  it('validación: fuente, tipo, título, datos, fecha futura, campos desconocidos y lote mal armado', async () => {
+    const ok = { titulo: 'X', tipo: 'idea', fuente: 'manual' }
+    const malos: [string, unknown][] = [
+      ['fuente con espacio', { ...ok, fuente: 'radar hayai' }],
+      ['fuente vacía', { ...ok, fuente: '' }],
+      ['tipo inválido', { ...ok, tipo: 'chisme' }],
+      ['título vacío', { ...ok, titulo: '' }],
+      ['título largo', { ...ok, titulo: 'x'.repeat(161) }],
+      ['datos no objeto', { ...ok, datos: ['a'] }],
+      ['datos enormes', { ...ok, datos: { x: 'y'.repeat(70_000) } }],
+      ['fecha futura', { ...ok, fecha: '2999-01-01' }],
+      ['fecha basura', { ...ok, fecha: 'ayer' }],
+      ['campo desconocido', { ...ok, prioridad: 'alta' }],
+      ['faltan campos', { titulo: 'Solo título' }],
+      ['ítem y lista juntos', { ...ok, items: [ok] }],
+      ['lista vacía', { items: [] }],
+      ['lista de 51', { items: Array.from({ length: 51 }, () => ok) }],
+      ['ítem malo dentro del lote', { items: [ok, { ...ok, tipo: 'x' }] }],
+    ]
+    for (const [que, body] of malos) {
+      const r = await api('/feed', { body })
+      assert.equal(r.status, 400, `${que}: ${JSON.stringify(r.body)}`)
+    }
+  })
+
+  it('lote (items): una llamada, orden respetado, duplicados contados, también dentro del mismo lote', async () => {
+    const r = await pub({
+      items: [
+        { titulo: 'Lote A', tipo: 'idea', fuente: 'radar-lote', clave_externa: 'a' },
+        { titulo: 'Lote B', tipo: 'idea', fuente: 'radar-lote', clave_externa: 'b' },
+        { titulo: 'Lote A repetido', tipo: 'idea', fuente: 'radar-lote', clave_externa: 'a' },
+      ],
+    })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.deepEqual([r.body.recibidos, r.body.creados, r.body.duplicados], [3, 2, 1])
+    assert.deepEqual(r.body.data.map((x: any) => [x.titulo, x.creado]), [['Lote A', true], ['Lote B', true], ['Lote A', false]])
+    const de = await pub({ items: [{ titulo: 'Lote A', tipo: 'idea', fuente: 'radar-lote', clave_externa: 'a' }] })
+    assert.equal(de.status, 200, 'si no se creó nada, 200')
+    assert.equal(de.body.creados, 0)
+  })
+
+  it('listar: filtros por tipo, estado, fuente y texto (sin acentos), paginación y contadores globales', async () => {
+    const todo = await api('/feed?per_page=100')
+    assert.equal(todo.status, 200)
+    assert.ok(todo.body.meta.nuevos >= 6)
+    assert.equal(todo.body.meta.nuevos, todo.body.meta.por_estado.nuevo)
+    assert.ok(todo.body.meta.por_tipo.idea.total >= 4 && todo.body.meta.por_tipo.prospecto.total >= 1)
+    assert.ok(todo.body.meta.fuentes.some((f: any) => f.fuente === 'radar-lote' && f.total === 2))
+    // recientes primero
+    const fechas = todo.body.data.map((x: any) => x.fecha)
+    assert.deepEqual(fechas, [...fechas].sort().reverse())
+    assert.equal((await api('/feed?tipo=prospecto')).body.data.every((x: any) => x.tipo === 'prospecto'), true)
+    assert.equal((await api('/feed?fuente=radar-lote')).body.meta.total, 2)
+    assert.equal((await api('/feed?q=panaderia')).body.data[0].id, prospecto, 'busca sin importar acentos')
+    assert.equal((await api('/feed?q=espiga&tipo=idea')).body.data.length, 0)
+    const p1 = await api('/feed?per_page=2&page=1')
+    const p2 = await api('/feed?per_page=2&page=2')
+    assert.equal(p1.body.data.length, 2)
+    assert.ok(!p2.body.data.some((x: any) => p1.body.data.some((y: any) => y.id === x.id)))
+    // los contadores no dependen del filtro
+    assert.equal((await api('/feed?fuente=radar-lote')).body.meta.nuevos, todo.body.meta.nuevos)
+    for (const q of ['tipo=chisme', 'estado=roto', 'fuente=Con Espacio', 'per_page=0', 'raro=1']) assert.equal((await api(`/feed?${q}`)).status, 400, q)
+    assert.equal((await api(`/feed/${prospecto}`)).body.id, prospecto)
+    assert.equal((await api(`/feed/${NOPE}`)).status, 404)
+  })
+
+  it('marcar: revisado/descartado con motivo corto/vuelve a nuevo; el motivo solo al descartar; "convertido" no se marca a mano', async () => {
+    const rev = await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'revisado' } })
+    assert.equal(rev.status, 200, JSON.stringify(rev.body))
+    assert.deepEqual([rev.body.estado, rev.body.revisado_por], ['revisado', 'Leandro'])
+    assert.ok(rev.body.revisado_el)
+    const des = await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'descartado', motivo: 'Ya lo hace otro competidor' } })
+    assert.deepEqual([des.body.estado, des.body.motivo_descarte], ['descartado', 'Ya lo hace otro competidor'])
+    const nuevo = await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'nuevo' } })
+    assert.deepEqual([nuevo.body.estado, nuevo.body.motivo_descarte, nuevo.body.revisado_por, nuevo.body.revisado_el], ['nuevo', null, null, null])
+    assert.equal((await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'revisado', motivo: 'no aplica' } })).status, 400)
+    assert.equal((await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'descartado', motivo: 'x'.repeat(201) } })).status, 400)
+    assert.equal((await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'convertido' } })).status, 400)
+    assert.equal((await api(`/feed/${idea}/estado`, { method: 'PATCH', body: {} })).status, 400)
+    assert.equal((await api(`/feed/${NOPE}/estado`, { method: 'PATCH', body: { estado: 'revisado' } })).status, 404)
+  })
+
+  it('conflictos: si el ítem cambió mientras lo veías (actualizado_el / If-Match), 409 y no se pisa', async () => {
+    const visto = (await api(`/feed/${idea}`)).full.actualizado_el as string
+    await espera()
+    await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'revisado' } }) // otro socio lo revisó
+    const viejo = await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'descartado', actualizado_el: visto }, key: KEY_J })
+    assert.equal(viejo.status, 409, JSON.stringify(viejo.body))
+    assert.equal(viejo.body.error.codigo ?? viejo.body.codigo ?? 'conflicto', 'conflicto')
+    assert.equal((await api(`/feed/${idea}`)).body.estado, 'revisado')
+    const hdr = await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'descartado' }, headers: { 'if-match': visto }, key: KEY_J })
+    assert.equal(hdr.status, 409)
+    const fresco = (await api(`/feed/${idea}`)).full.actualizado_el
+    assert.equal((await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'descartado', actualizado_el: fresco }, key: KEY_J })).status, 200)
+  })
+
+  it('convertir en posible cliente: pre-llena nombre, origen, teléfono y notas con lo del ítem; queda en la bitácora; el ítem queda enlazado', async () => {
+    const it = await pub({
+      titulo: 'Charcutería El Buen Corte',
+      resumen: 'Vende por WhatsApp sin sistema de pedidos.',
+      tipo: 'prospecto',
+      fuente: 'cazador-summit',
+      clave_externa: 'cz-9',
+      datos: { negocio: { nombre: 'Charcutería El Buen Corte C.A.' }, fugas: ['Pedidos a mano'], guion: 'Buenas, le escribo por…', urls: ['https://maps.example/buencorte'], telefono: '+584141234567', origen: 'instagram', metricas: { resenas: 41 } },
+    })
+    const r = await api(`/feed/${it.body.id}/convertir`, { body: { a: 'posible_cliente' } })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual([r.body.item.estado, r.body.item.convertido.a, r.body.creado.tipo], ['convertido', 'posible_cliente', 'posible_cliente'])
+    assert.equal(r.body.item.convertido.id, r.body.creado.id)
+    const c = await api(`/clientes/${r.body.creado.id}`)
+    assert.equal(c.body.nombre, 'Charcutería El Buen Corte C.A.')
+    assert.equal(c.body.estado, 'posible')
+    assert.equal(c.body.etapa, 'prospecto')
+    assert.equal(c.body.origen, 'instagram')
+    assert.equal(c.body.telefono, '+584141234567')
+    assert.match(c.body.notas, /Pedidos a mano/)
+    assert.match(c.body.notas, /Buenas, le escribo/)
+    assert.match(c.body.notas, /cazador-summit/)
+    const bit = (await api(`/clientes/${r.body.creado.id}/interacciones`)).body.data as any[]
+    assert.ok(bit.some((x) => x.tipo === 'nota' && /feed de oportunidades \(cazador-summit\)/i.test(x.resumen)))
+    // una sola vez, y ya no cambia de estado
+    const otra = await api(`/feed/${it.body.id}/convertir`, { body: { a: 'tarea' } })
+    assert.equal(otra.status, 409)
+    assert.equal((await api(`/feed/${it.body.id}/estado`, { method: 'PATCH', body: { estado: 'nuevo' } })).status, 409)
+    assert.equal((await admin.query(`SELECT count(*)::int AS n FROM clients WHERE name = 'Charcutería El Buen Corte C.A.'`)).rows[0].n, 1)
+  })
+
+  it('convertir: lo que pasas pisa lo pre-llenado; un dato sucio del ítem (teléfono, origen) no rompe la conversión', async () => {
+    const it = await pub({ titulo: 'Repostería Dulce Hogar', tipo: 'prospecto', fuente: 'cazador-summit', datos: { telefono: 'no es un teléfono', origen: 'tiktok-ads' } })
+    const r = await api(`/feed/${it.body.id}/convertir`, { body: { a: 'posible_cliente', nombre: 'Dulce Hogar', origen: 'referido', notas: 'Me la pasó Elis', valor_estimado: 120 } })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    const c = (await api(`/clientes/${r.body.creado.id}`)).body
+    assert.deepEqual([c.nombre, c.origen, c.notas, c.valor_estimado, c.telefono], ['Dulce Hogar', 'referido', 'Me la pasó Elis', 120, null])
+    const sucio = await pub({ titulo: 'Floristería Pétalo', tipo: 'prospecto', fuente: 'cazador-summit', datos: { telefono: 'xx', origen: 'tiktok-ads' } })
+    const s = await api(`/feed/${sucio.body.id}/convertir`, { body: { a: 'posible_cliente' } })
+    assert.equal(s.status, 200, JSON.stringify(s.body))
+    const cs = (await api(`/clientes/${s.body.creado.id}`)).body
+    assert.deepEqual([cs.origen, cs.telefono], ['otro', null])
+  })
+
+  it('convertir en tarea (con proyecto o, sin él, al proyecto interno de HAYAI) y en proyecto', async () => {
+    const proy = (await api('/proyectos', { body: { nombre: 'Proyecto para tareas del feed' } })).body.id
+    const a = await pub({ titulo: 'Probar el radar de precios', tipo: 'idea', fuente: 'radar-hayai' })
+    const t1 = await api(`/feed/${a.body.id}/convertir`, { body: { a: 'tarea', proyecto_id: proy, vence: '2026-11-01' } })
+    assert.equal(t1.status, 200, JSON.stringify(t1.body))
+    const tarea = (await api(`/tareas/${t1.body.creado.id}`)).body
+    assert.deepEqual([tarea.titulo, tarea.proyecto_id, tarea.vence], ['Probar el radar de precios', proy, '2026-11-01'])
+    const b = await pub({ titulo: 'Escribir guion para la charcutería', tipo: 'oportunidad', fuente: 'manual' })
+    const t2 = await api(`/feed/${b.body.id}/convertir`, { body: { a: 'tarea', titulo: 'Guion charcutería (v1)' } })
+    assert.equal(t2.status, 200, JSON.stringify(t2.body))
+    const q = await admin.query(`SELECT t.title, p.client_id FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = $1`, [t2.body.creado.id])
+    assert.deepEqual([q.rows[0].title, q.rows[0].client_id], ['Guion charcutería (v1)', null], 'sin proyecto: cae en un proyecto interno (sin cliente)')
+    const c = await pub({ titulo: 'Mostrador POS para ferreterías', resumen: 'Nicho sin atender', tipo: 'proyecto', fuente: 'muse-elis', datos: { urls: ['https://ejemplo.com/a'] } })
+    const p = await api(`/feed/${c.body.id}/convertir`, { body: { a: 'proyecto', responsable: 'Elis' } })
+    assert.equal(p.status, 200, JSON.stringify(p.body))
+    const pv = (await api(`/proyectos/${p.body.creado.id}`)).body
+    assert.equal(pv.nombre, 'Mostrador POS para ferreterías')
+    assert.match(pv.descripcion, /Nicho sin atender/)
+    assert.equal(pv.responsable, 'Elis')
+    assert.equal((await api(`/feed/${c.body.id}`)).body.convertido.a, 'proyecto')
+  })
+
+  it('convertir que falla (proyecto que no existe, datos inválidos) deja el ítem como estaba y se puede reintentar', async () => {
+    const it = await pub({ titulo: 'Intento fallido', tipo: 'idea', fuente: 'manual' })
+    const mal = await api(`/feed/${it.body.id}/convertir`, { body: { a: 'tarea', proyecto_id: NOPE } })
+    assert.equal(mal.status, 404, JSON.stringify(mal.body))
+    const igual = (await api(`/feed/${it.body.id}`)).body
+    assert.deepEqual([igual.estado, igual.convertido], ['nuevo', null])
+    assert.equal((await api(`/feed/${it.body.id}/convertir`, { body: { a: 'posible_cliente', origen: 'paloma' } })).status, 400)
+    assert.equal((await api(`/feed/${it.body.id}/convertir`, { body: { a: 'cohete' } })).status, 400)
+    assert.equal((await api(`/feed/${NOPE}/convertir`, { body: { a: 'tarea' } })).status, 404)
+    // revisado antes de fallar: vuelve a revisado, no a nuevo
+    await api(`/feed/${it.body.id}/estado`, { method: 'PATCH', body: { estado: 'revisado' } })
+    assert.equal((await api(`/feed/${it.body.id}/convertir`, { body: { a: 'tarea', proyecto_id: NOPE } })).status, 404)
+    const rev = (await api(`/feed/${it.body.id}`)).body
+    assert.deepEqual([rev.estado, rev.revisado_por], ['revisado', 'Leandro'])
+    assert.equal((await api(`/feed/${it.body.id}/convertir`, { body: { a: 'tarea' } })).status, 200)
+  })
+
+  it('dos socios convirtiendo el mismo ítem a la vez: se crea UNA sola cosa y el otro recibe 409', async () => {
+    const it = await pub({ titulo: 'Carrera de conversión SA', tipo: 'prospecto', fuente: 'manual' })
+    const rs = await Promise.all([api(`/feed/${it.body.id}/convertir`, { body: { a: 'posible_cliente' } }), api(`/feed/${it.body.id}/convertir`, { body: { a: 'posible_cliente' }, key: KEY_J })])
+    assert.deepEqual(rs.map((r) => r.status).sort(), [200, 409])
+    assert.equal((await admin.query(`SELECT count(*)::int AS n FROM clients WHERE name = 'Carrera de conversión SA'`)).rows[0].n, 1)
+  })
+
+  it('avisos en vivo: solo alerta, noticia y prospecto; UNO por (fuente, tipo) y lote; una siembra de 20 no inunda; no es bitácora', async () => {
+    await api('/actividad', { key: KEY_J }) // fija el "visto hasta" de Jorbi
+    let base = await ultimo()
+    await pub({ titulo: 'Una idea cualquiera', tipo: 'idea', fuente: 'aviso-test' })
+    await pub({ titulo: 'Una oportunidad', tipo: 'oportunidad', fuente: 'aviso-test' })
+    assert.equal((await eventos(base)).length, 0, 'idea, oportunidad y proyecto no avisan')
+    await pub({ titulo: 'El competidor bajó precios', tipo: 'alerta', fuente: 'espia-pos' })
+    const e1 = await eventos(base)
+    assert.equal(e1.length, 1)
+    assert.match(e1[0].texto, /Feed de oportunidades: alerta nueva: El competidor bajó precios/)
+    assert.equal(e1[0].propia, false)
+    assert.equal(e1[0].cliente_id, null)
+    // siembra de 20 prospectos de una fuente: un solo aviso con la cuenta
+    base = await ultimo()
+    const siembra = await pub({ items: Array.from({ length: 20 }, (_, i) => ({ titulo: `Negocio ${i + 1}`, tipo: 'prospecto', fuente: 'siembra-test', clave_externa: `n${i}` })) })
+    assert.equal(siembra.body.creados, 20)
+    const e2 = await eventos(base)
+    assert.equal(e2.length, 1)
+    assert.match(e2[0].texto, /20 prospectos nuevos de siembra-test/)
+    // la misma fuente y tipo otra vez en seguida: no repite el aviso; otro tipo de la misma fuente sí
+    base = await ultimo()
+    await pub({ titulo: 'Negocio 21', tipo: 'prospecto', fuente: 'siembra-test' })
+    assert.equal((await eventos(base)).length, 0)
+    await pub({ titulo: 'Noticia del sector', tipo: 'noticia', fuente: 'siembra-test' })
+    assert.equal((await eventos(base)).length, 1)
+    // un duplicado no avisa
+    base = await ultimo()
+    await pub({ titulo: 'Negocio 1 otra vez', tipo: 'prospecto', fuente: 'siembra-test', clave_externa: 'n0' })
+    assert.equal((await eventos(base)).length, 0)
+    // la bitácora interna del hub NO lleva el feed, y el hub trae el contador
+    const h = await api('/hub')
+    assert.ok(!(h.body.bitacora as any[]).some((e) => e.tipo === 'feed_nuevo'), 'el feed no es bitácora')
+    assert.equal(h.body.feed.nuevos, (await api('/feed')).body.meta.nuevos)
+    assert.equal(h.body.feed.total, (await api('/feed')).body.meta.total)
+    assert.ok((await admin.query(`SELECT 1 FROM activity WHERE kind = 'feed_nuevo' AND client_id IS NULL LIMIT 1`)).rowCount)
+  })
+
+  it('campana: alerta/noticia/prospecto nuevos sin revisar; varios de un mismo origen y día van juntos; revisar o descartar la quita; la lectura es por socio', async () => {
+    const lista = async (key = KEY_J) => (await api('/notificaciones?tipo=feed&per_page=100', { key })).body
+    const a = await lista()
+    assert.ok(a.data.length >= 1)
+    assert.ok(a.data.every((x: any) => x.tipo === 'feed' && x.feed && x.cliente_id === null))
+    const idea1 = a.data.find((x: any) => x.feed.tipo === 'idea')
+    assert.equal(idea1, undefined, 'las ideas no alertan')
+    // la siembra de 20 es UNA alerta con la cuenta
+    const sem = a.data.find((x: any) => x.feed.fuente === 'siembra-test' && x.feed.tipo === 'prospecto')
+    assert.ok(sem, JSON.stringify(a.data.map((x: any) => x.clave)))
+    assert.equal(sem.feed.cantidad, 21)
+    assert.match(sem.titulo, /21 prospectos nuevos en el feed/)
+    assert.equal(sem.feed.item_id, null)
+    assert.match(sem.clave, /^feed:prospecto:siembra-test:\d{4}-\d{2}-\d{2}:21$/)
+    // uno solo: su propia alerta, con el id del ítem
+    const sola = a.data.find((x: any) => x.feed.fuente === 'espia-pos')
+    assert.equal(sola.feed.cantidad, 1)
+    assert.match(sola.clave, /^feed:[0-9a-f-]{36}$/)
+    assert.equal(sola.feed.item_id, sola.clave.slice(5))
+    assert.match(sola.titulo, /El competidor bajó precios/)
+    // leer es por socio
+    const antes = (await api('/notificaciones', { key: KEY_J })).body.meta.sin_leer
+    const l = await api('/notificaciones/leer', { body: { claves: [sola.clave] }, key: KEY_J })
+    assert.equal(l.body.marcadas, 1)
+    assert.equal(l.body.sin_leer, antes - 1)
+    assert.equal((await lista(KEY)).data.find((x: any) => x.clave === sola.clave).leida, false, 'Leandro no la ha leído')
+    // si llega uno más al grupo, cambia la clave y vuelve a salir sin leer
+    await pub({ titulo: 'Negocio 22', tipo: 'prospecto', fuente: 'siembra-test' })
+    await api('/notificaciones/leer', { body: { claves: [sem.clave] }, key: KEY_J })
+    const b = await lista()
+    const sem2 = b.data.find((x: any) => x.feed.fuente === 'siembra-test' && x.feed.tipo === 'prospecto')
+    assert.equal(sem2.feed.cantidad, 22)
+    assert.equal(sem2.leida, false)
+    // claves inventadas no se aceptan
+    assert.equal((await api('/notificaciones/leer', { body: { claves: ['feed:no-es-una-clave'] }, key: KEY_J })).status, 400)
+    // revisar o descartar quita la alerta
+    const itemSolo = sola.feed.item_id as string
+    await api(`/feed/${itemSolo}/estado`, { method: 'PATCH', body: { estado: 'revisado' } })
+    assert.ok(!(await lista()).data.some((x: any) => x.clave === sola.clave))
+    // la alerta ya no vigente no se marca
+    assert.equal((await api('/notificaciones/leer', { body: { claves: [sola.clave] }, key: KEY_J })).body.marcadas, 0)
+    // fuera de los 14 días ya no estorba
+    await admin.query(`UPDATE feed_items SET created_at = now() - interval '20 days' WHERE source = 'siembra-test'`)
+    assert.ok(!(await lista()).data.some((x: any) => x.feed.fuente === 'siembra-test'))
+  })
+
+  it('permisos: la llave de solo lectura lee el feed pero no publica, marca ni convierte; Space sin sesión no entra', async () => {
+    assert.equal((await api('/feed', { key: KEY_R })).status, 200)
+    assert.equal((await api(`/feed/${prospecto}`, { key: KEY_R })).status, 200)
+    assert.equal((await pub({ titulo: 'X', tipo: 'idea', fuente: 'manual' }, KEY_R)).status, 403)
+    assert.equal((await api(`/feed/${prospecto}/estado`, { method: 'PATCH', body: { estado: 'revisado' }, key: KEY_R })).status, 403)
+    assert.equal((await api(`/feed/${prospecto}/convertir`, { body: { a: 'tarea' }, key: KEY_R })).status, 403)
+    assert.equal((await api('/feed', { key: null })).status, 401)
+    assert.equal((await http(`${ROOT}/api/feed`)).status, 401)
+  })
+
+  it('MCP: las cuatro herramientas (la de lectura se ve con solo lectura), publicar idempotente, marcar con conflicto y convertir', async () => {
+    const nombres = async (key: string) => ((await rpc('tools/list', {}, key)).body.result.tools as any[]).map((t) => t.name).filter((x: string) => x.startsWith('hayai_feed'))
+    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_convertir', 'hayai_feed_listar', 'hayai_feed_marcar', 'hayai_feed_publicar'])
+    assert.deepEqual(await nombres(KEY_R), ['hayai_feed_listar'])
+    const tools = (await rpc('tools/list')).full.result.tools as any[] // full: body quita `actualizado_el`
+    assert.equal(tools.find((t) => t.name === 'hayai_feed_listar').annotations.readOnlyHint, true)
+    assert.ok(tools.find((t) => t.name === 'hayai_feed_marcar').inputSchema.properties.actualizado_el, 'marcar acepta actualizado_el')
+    const p = dato(await mcp('hayai_feed_publicar', { titulo: 'Idea desde el Muse', tipo: 'idea', fuente: 'muse-leandro', clave_externa: 'm-1', datos: { nota: 'hola' } }))
+    assert.deepEqual([p.creado, p.publicado_por.nombre, p.fuente], [true, 'Leandro', 'muse-leandro'])
+    const again = dato(await mcp('hayai_feed_publicar', { titulo: 'Idea desde el Muse', tipo: 'idea', fuente: 'muse-leandro', clave_externa: 'm-1' }))
+    assert.deepEqual([again.creado, again.id], [false, p.id])
+    const l = dato(await mcp('hayai_feed_listar', { fuente: 'muse-leandro' }))
+    assert.equal(l.meta.total, 1)
+    const malo = await mcp('hayai_feed_publicar', { titulo: 'x', tipo: 'chisme', fuente: 'manual' })
+    assert.ok(malo.result.isError)
+    const visto = p.actualizado_el
+    await espera()
+    dato(await mcp('hayai_feed_marcar', { id: p.id, estado: 'revisado' }))
+    const conf = await mcp('hayai_feed_marcar', { id: p.id, estado: 'descartado', actualizado_el: visto }, KEY_J)
+    assert.ok(conf.result.isError)
+    assert.match(conf.result.content[0].text, /cambió mientras lo editabas/)
+    const cv = dato(await mcp('hayai_feed_convertir', { id: p.id, a: 'tarea', titulo: 'Desde MCP' }))
+    assert.equal(cv.creado.tipo, 'tarea')
+    assert.equal(dato(await mcp('hayai_feed_listar', { estado: 'convertido', fuente: 'muse-leandro' })).data[0].convertido.a, 'tarea')
+    const dos = await mcp('hayai_feed_convertir', { id: p.id, a: 'tarea' })
+    assert.ok(dos.result.isError)
+    assert.match(dos.result.content[0].text, /ya se convirtió/)
+    const nf = dato(await mcp('hayai_notificaciones_listar', { tipo: 'feed' }))
+    assert.ok(Array.isArray(nf.data))
+  })
+
+  it('web (sesión): listar, publicar como "manual", marcar y convertir; sin sesión 401', async () => {
+    const web = (path: string, o: { method?: string; body?: unknown; headers?: Record<string, string> } = {}) => http(`${ROOT}/api${path}`, { ...o, headers: { cookie, ...o.headers } })
+    const l = await web('/feed')
+    assert.equal(l.status, 200)
+    assert.ok(l.body.meta.nuevos >= 1)
+    const p = await web('/feed', { body: { titulo: 'Propuesta de Jorbi desde la pantalla', tipo: 'idea', fuente: 'manual', datos: { nota: 'probar' } } })
+    assert.equal(p.status, 201, JSON.stringify(p.body))
+    assert.equal(p.body.publicado_por.nombre, 'Jorbi')
+    const m = await web(`/feed/${p.body.id}/estado`, { method: 'PATCH', body: { estado: 'descartado', motivo: 'Fuera de foco' } })
+    assert.deepEqual([m.status, m.body.estado], [200, 'descartado'])
+    const viejo = await web(`/feed/${p.body.id}/estado`, { method: 'PATCH', body: { estado: 'nuevo' }, headers: { 'if-match': '2020-01-01T00:00:00.000Z' } })
+    assert.equal(viejo.status, 409)
+    const q = await web('/feed', { body: { titulo: 'Para convertir desde la web', tipo: 'prospecto', fuente: 'manual' } })
+    const c = await web(`/feed/${q.body.id}/convertir`, { body: { a: 'posible_cliente' } })
+    assert.equal(c.status, 200, JSON.stringify(c.body))
+    assert.equal(c.body.item.estado, 'convertido')
+    assert.equal((await http(`${ROOT}/api/feed`)).status, 401)
+  })
+
+  it('base de datos: las reglas viven también en la tabla (convertido exige a qué, motivo solo al descartar, fuente válida)', async () => {
+    const insert = (cols: string, vals: string) => admin.query(`INSERT INTO feed_items (title, kind, source, published_by, ${cols}) SELECT 'x', 'idea', 'manual', id, ${vals} FROM users LIMIT 1`)
+    await assert.rejects(insert('status', `'convertido'`), /feed_converted_ck/)
+    await assert.rejects(insert('discard_reason', `'porque sí'`), /feed_discard_ck/)
+    await assert.rejects(admin.query(`INSERT INTO feed_items (title, kind, source, published_by) SELECT 'x', 'idea', 'Mala Fuente', id FROM users LIMIT 1`), /check/i)
+    await assert.rejects(admin.query(`INSERT INTO feed_items (title, kind, source, published_by) SELECT 'x', 'chisme', 'manual', id FROM users LIMIT 1`), /check/i)
   })
 })

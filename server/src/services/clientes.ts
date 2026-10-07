@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { recordActivity } from '../activity.ts'
+import { stamp } from '../concurrency.ts'
 import { pool, tx } from '../db.ts'
 import { expandCharge, insertCharges, insertItems, loadClients, repeatMonths } from '../routes/clients.ts'
 import { applyClientPatch, COLD_DAYS, daysBetween, entryStage, fichaShape, isOpenStage, loadStages, resolveStage, transitionShape, type ClientPatch } from '../crm.ts'
@@ -57,6 +58,7 @@ function resumen(c: Loaded) {
     // Vencido = pendiente con fecha anterior a hoy (hora de Caracas). Se deriva: no hay un estado "vencido" guardado.
     cuotas_vencidas: vencidasN,
     monto_vencido: r2(vencidasMonto),
+    actualizado_el: stamp(c.updatedAt), // mándalo como If-Match / actualizado_el al editar: si cambió, 409 en vez de pisar
     // ficha
     telefono: c.phone,
     email: c.email,
@@ -113,6 +115,7 @@ export async function clienteDetalle(clientId: string) {
       tipo: m.kind,
       estado: m.status,
       serie: serie(m),
+      actualizado_el: stamp(m.updatedAt),
     })),
     proyectos: rows.map((p) => ({ id: p.id, nombre: p.name, descripcion: p.description as string | null, estado: projectStateOut(p.status), entrega: p.due_date as string | null })),
     // La propuesta que cuenta (borrador, presentada o aceptada) con sus items y totales; el historial completo es /clientes/:id/propuestas.

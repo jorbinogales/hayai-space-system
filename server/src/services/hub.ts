@@ -3,6 +3,7 @@
 // del planeta Marketing, que sale de los mismos datos del pipeline. Un servicio para la web, la API v1 y el MCP.
 import { z } from 'zod'
 import { ACTIVITY_SELECT, activityOut, INTERNAL_ACTIVITY_SQL, recordActivity } from '../activity.ts'
+import { assertFresh, stamp } from '../concurrency.ts'
 import { pool, tx } from '../db.ts'
 import { userByName } from '../socios.ts'
 import { HttpError, id, isoDate, text } from '../util.ts'
@@ -54,7 +55,7 @@ export const equipoActualizar = op(
 const ESTADOS = ['abierto', 'cumplido', 'descartado'] as const
 const estado = z.enum(ESTADOS, `Estado inválido (${ESTADOS.join(', ')})`)
 
-const A_SELECT = `SELECT a.id, a.meeting_date, a.body, a.due_date, a.status, a.closed_at, a.created_at, o.id AS owner_id, o.name AS owner, u.name AS author
+const A_SELECT = `SELECT a.id, a.updated_at, a.meeting_date, a.body, a.due_date, a.status, a.closed_at, a.created_at, o.id AS owner_id, o.name AS owner, u.name AS author
   FROM agreements a LEFT JOIN users o ON o.id = a.owner_id JOIN users u ON u.id = a.created_by`
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -67,6 +68,7 @@ const acuerdoOut = (r: any) => ({
   estado: r.status as (typeof ESTADOS)[number],
   cerrado_el: r.closed_at ? (r.closed_at as Date).toISOString() : null,
   registrado_por: r.author as string,
+  actualizado_el: stamp(r.updated_at),
 })
 
 async function acuerdo(agreementId: string) {
@@ -121,6 +123,7 @@ export const acuerdoActualizar = op(
     .refine((v) => Object.entries(v).some(([k, x]) => k !== 'id' && x !== undefined), 'Envía al menos un campo a modificar'),
   async (_a, b) => {
     await tx(async (c) => {
+      await assertFresh(c, 'agreements', b.id)
       const owner = b.responsable ? (await userByName(c, b.responsable)).id : null
       const r = await c.query(
         `UPDATE agreements SET

@@ -3,6 +3,7 @@
 // barras en renta) y extras unicos (p. ej. una impresora). Los totales se calculan al leer, nunca se guardan.
 // La negociacion se registra como VERSIONES: crear una propuesta nueva deja la viva anterior como 'reemplazada'.
 import { z } from 'zod'
+import { assertFresh, stamp } from '../concurrency.ts'
 import { pool, tx } from '../db.ts'
 import { proposalTotals, syncEstValue } from '../crm.ts'
 import { HttpError, id, text } from '../util.ts'
@@ -191,6 +192,7 @@ export async function propuestasPor(where: string, args: unknown[]) {
       presentada_el: r.presented_at ? (r.presented_at as Date).toISOString() : null,
       creada_por: r.author as string,
       creada_el: (r.created_at as Date).toISOString(),
+      actualizado_el: stamp(r.updated_at),
       items: its.map((i) => ({
         id: i.id as string,
         tipo: i.kind as string,
@@ -249,6 +251,7 @@ export const propuestaActualizar = op(
   async (_a, b) => {
     const items = b.items ? await resolveItems(b.items) : null
     await tx(async (c) => {
+      await assertFresh(c, 'proposals', b.id)
       const cur = (await c.query('SELECT client_id, status FROM proposals WHERE id = $1 FOR UPDATE', [b.id])).rows[0]
       if (!cur) throw new HttpError(404, 'Propuesta no encontrada')
       if (!['borrador', 'presentada'].includes(cur.status))

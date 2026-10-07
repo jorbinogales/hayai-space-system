@@ -42,7 +42,7 @@ let bcvServer: Server
 const bcvPayload: { principal: unknown; respaldo: unknown } = { principal: null, respaldo: null }
 const bcvHits = { principal: 0, respaldo: 0 }
 
-type Res = { status: number; body: any; headers: Headers }
+type Res = { status: number; body: any; headers: Headers; full?: any }
 type Opts = { method?: string; body?: unknown; raw?: string; key?: string | null; headers?: Record<string, string> }
 
 async function http(url: string, o: Opts = {}): Promise<Res> {
@@ -56,8 +56,12 @@ async function http(url: string, o: Opts = {}): Promise<Res> {
   }
   const r = await fetch(url, { method: o.method ?? (body ? 'POST' : 'GET'), headers, body })
   const text = await r.text()
-  return { status: r.status, body: text ? JSON.parse(text) : undefined, headers: r.headers }
+  const full = text ? JSON.parse(text) : undefined
+  // `actualizado_el` (la versión del registro) cambia en cada prueba: se quita de body para comparar formas exactas; `full` la conserva.
+  return { status: r.status, body: stripStamp(full), headers: r.headers, full }
 }
+const stripStamp = (x: any): any =>
+  Array.isArray(x) ? x.map(stripStamp) : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'actualizado_el').map(([k, v]) => [k, stripStamp(v)])) : x
 
 let KEY = '' // Leandro
 let KEY_J = '' // Jorbi
@@ -144,6 +148,8 @@ before(async () => {
     BCV_SOURCES: `http://localhost:${BCV_PORT}/principal,http://localhost:${BCV_PORT}/respaldo`,
     BCV_TTL_MS: '300',
     BCV_REFRESH_MS: '0',
+    // El aviso de versión al arrancar se apaga: cada prueba que lo necesita publica su propia versión.
+    ANNOUNCE_VERSION: 'false',
   }
   const mig = spawnSync(process.execPath, ['server/db/migrate.mjs'], { cwd: root, env, encoding: 'utf8' })
   assert.equal(mig.status, 0, mig.stderr + mig.stdout)
@@ -1427,7 +1433,7 @@ describe('CRM: bitácora', () => {
     await api(`/clientes/${p.id}`, { method: 'PATCH', body: { etapa: 'visita_agendada' } })
     const e = (await api(`/clientes/${p.id}/interacciones?tipo=etapa`)).body.data[0]
     assert.equal(e.automatica, true)
-    assert.equal(e.resumen, 'Prospecto → Visita agendada')
+    assert.equal(e.resumen, 'Prospecto captado → Visita agendada')
     assert.equal((await api(`/interacciones/${e.id}`, { method: 'PATCH', body: { resumen: 'Mentira' } })).status, 409)
     assert.equal((await apiD(`/interacciones/${e.id}`, { method: 'DELETE' })).status, 409)
     assert.equal((await api(`/clientes/${p.id}/interacciones?tipo=etapa`)).body.data.length, 1)
@@ -2010,7 +2016,7 @@ describe('Actividad del equipo', () => {
     await api(`/clientes/${p.id}`, { method: 'PATCH', body: { etapa: 'visita_agendada' } })
     await api(`/clientes/${p.id}`, { method: 'PATCH', body: { etapa: 'visita_agendada' } }) // sin cambio: no avisa
     ev = await nuevos(b4)
-    assert.deepEqual(ev.map((e) => e.texto), ['Leandro movió a Aviso Etapas (Prospecto → Visita agendada)'])
+    assert.deepEqual(ev.map((e) => e.texto), ['Leandro movió a Aviso Etapas (Prospecto captado → Visita agendada)'])
     assert.equal(ev[0].tipo, 'cambio_etapa')
     const b5 = await ultimo()
     await api(`/clientes/${p.id}`, { method: 'PATCH', body: { etapa: 'ganado', fecha_implementacion: isoDay(2) } })
@@ -3524,8 +3530,12 @@ describe('Historial de versiones (changelog)', () => {
     assert.equal((await api('/versiones')).body.data.filter((v: any) => v.actual).length, 1)
     const ev = ((await api(`/actividad?desde_id=${base}&orden=asc`, { key: KEY_J })).body.data as any[]).filter((e) => e.tipo === 'version_nueva')
     assert.equal(ev.length, 1)
-    assert.equal(ev[0].texto, 'Leandro publicó la versión 1.5.1: Ajustes de la barra')
+    assert.equal(ev[0].texto, 'Nueva actualización v1.5.1 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
     assert.equal(ev[0].propia, false)
+    // y le llega a TODOS, también a quien la publicó (su pestaña abierta también debe enterarse)
+    const mio = ((await api(`/actividad?desde_id=${base}&orden=asc`)).body.data as any[]).find((e) => e.tipo === 'version_nueva')
+    assert.equal(mio.propia, false)
+    assert.equal(mio.leida, false)
     const j = await publicar({ version: '1.9.0', cambios: ['Algo de Jorbi'], fecha: '2026-10-01' }, KEY_J)
     assert.deepEqual([j.body.autor, j.body.titulo, j.body.fecha], ['Jorbi', null, '2026-10-01'])
   })
@@ -3595,5 +3605,243 @@ describe('Historial de versiones (changelog)', () => {
     assert.equal((await web('/version')).body.version, '1.13.0')
     assert.equal((await web('/versions', { body: { version: '1.13.0', cambios: ['x'] } })).status, 409)
     assert.equal((await http(`${ROOT}/api/versions`, { body: { version: '9.9.9', cambios: ['x'] } })).status, 401)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Aviso de actualización (campana, en vivo, agentes) y guardado sin pisar a nadie (If-Match / actualizado_el).
+// ---------------------------------------------------------------------------------------------------------------------
+describe('Aviso de actualización y conflictos al guardar', () => {
+  const alertas = async (key: string, q = '') => (await api(`/notificaciones?per_page=100${q}`, { key })).body
+  const publicar = (b: Record<string, unknown>, key = KEY) => api('/versiones', { key, body: b })
+
+  it('publicar una versión crea la alerta «Nueva actualización vX disponible» para TODOS los socios, y se lee por socio', async () => {
+    const r = await publicar({ version: '2.0.0', titulo: 'Gran salto', cambios: ['Algo nuevo'] })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    for (const key of [KEY, KEY_J]) {
+      const a = (await alertas(key, '&tipo=actualizacion')).data as any[]
+      assert.equal(a.length, 1, 'solo la versión vigente')
+      assert.deepEqual(
+        [a[0].clave, a[0].tipo, a[0].titulo, a[0].detalle, a[0].version, a[0].leida, a[0].cliente_id, a[0].cliente, a[0].monto],
+        ['version:2.0.0', 'actualizacion', 'Nueva actualización v2.0.0 disponible', 'Gran salto', '2.0.0', false, null, null, null],
+      )
+    }
+    // Primera de la lista: es lo más reciente y afecta a todos.
+    assert.equal((await alertas(KEY)).data[0].clave, 'version:2.0.0')
+    // Leerla (por clave) solo la marca para quien la leyó.
+    const m = await api('/notificaciones/leer', { body: { claves: ['version:2.0.0'] } })
+    assert.equal(m.status, 200, JSON.stringify(m.body))
+    assert.equal(m.body.marcadas, 1)
+    assert.equal(((await alertas(KEY, '&tipo=actualizacion')).data as any[])[0].leida, true)
+    assert.equal(((await alertas(KEY_J, '&tipo=actualizacion')).data as any[])[0].leida, false, 'Jorbi aún no la leyó')
+    assert.equal((await api('/notificaciones/leer', { body: { claves: ['version:9.9.9'] } })).body.marcadas, 0, 'una versión que no es la vigente no existe como alerta')
+    assert.equal((await api('/notificaciones?tipo=otra')).status, 400)
+  })
+
+  it('la actividad es del sistema: avisa a todos con el texto del aviso y llega a quien publicó', async () => {
+    const base = (await api('/actividad?per_page=1')).body.meta.ultimo_id as number
+    assert.equal((await publicar({ version: '2.0.1', titulo: 'Parche', cambios: ['Fix'] }, KEY_J)).status, 201)
+    for (const key of [KEY, KEY_J]) {
+      const ev = ((await api(`/actividad?desde_id=${base}&orden=asc`, { key })).body.data as any[]).filter((e) => e.tipo === 'version_nueva')
+      assert.equal(ev.length, 1)
+      assert.deepEqual([ev[0].texto, ev[0].propia, ev[0].leida, ev[0].sujeto], ['Nueva actualización v2.0.1 disponible: Parche', false, false, '2.0.1'])
+    }
+  })
+
+  it('/version trae el cambio de la versión y, con ?desde=, lo que cambió desde la que conocías (para agentes)', async () => {
+    const v = (await api('/version')).body
+    assert.deepEqual([v.version, v.titulo, v.cambios, typeof v.anunciada_el], ['2.0.1', 'Parche', ['Fix'], 'string'])
+    assert.equal(v.novedades, undefined, 'sin desde no hay novedades')
+    const n = (await api('/version?desde=2.0.0')).body.novedades
+    assert.deepEqual([n.desde, n.hay_cambios, n.versiones.map((x: any) => x.version)], ['2.0.0', true, ['2.0.1']])
+    assert.equal(n.versiones[0].cambios[0], 'Fix')
+    const igual = (await api('/version?desde=2.0.1')).body.novedades
+    assert.deepEqual([igual.hay_cambios, igual.versiones], [false, []])
+    assert.deepEqual(((await api('/versiones?desde=1.13.0')).body.data as any[]).map((x) => x.version), ['2.0.1', '2.0.0'])
+    assert.equal((await api('/version?desde=abc')).status, 400)
+  })
+
+  it('cada respuesta de la API, del MCP y de la web trae X-Hayai-Version (la fuente de verdad es /version)', async () => {
+    const top = (await api('/version')).body.version
+    assert.equal((await api('/clientes?per_page=1')).headers.get('x-hayai-version'), top)
+    assert.equal((await api('/me')).headers.get('x-hayai-version'), top)
+    assert.equal((await http(`${ROOT}/api/v1/clientes`)).headers.get('x-hayai-version'), null, 'sin llave no hay respuesta útil: 401 sin cabecera')
+    const m = await http(`${ROOT}/mcp`, { key: KEY, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '1' } } } })
+    assert.equal(m.headers.get('x-hayai-version'), top)
+    assert.equal(m.body.result.serverInfo.version, top, 'serverInfo.version = versión del sistema')
+    assert.match(m.body.result.instructions, new RegExp(`Versión actual del sistema: v${top.replace(/\./g, '\\.')}`))
+    const web = await http(`${ROOT}/api/auth/me`)
+    assert.equal(web.headers.get('x-hayai-version'), top, 'también en la web, incluso sin sesión')
+  })
+
+  it('al arrancar, la versión vigente sin anunciar (sembrada por una migración) se anuncia UNA sola vez', async () => {
+    const top = (await api('/version')).body.version as string
+    await admin.query('UPDATE app_versions SET announced_at = NULL WHERE version = $1', [top])
+    const run = (extra: Record<string, string> = {}) => {
+      const r = spawnSync(process.execPath, ['--import', 'tsx', '-e', "import('./server/src/services/versiones.ts').then((m) => m.announceCurrentVersion()).then((v) => { console.log('ANUNCIADA:' + v); process.exit(0) })"], { cwd: root, env: { ...env, ...extra }, encoding: 'utf8' })
+      assert.equal(r.status, 0, r.stderr)
+      return r.stdout.match(/ANUNCIADA:(.*)/)![1]
+    }
+    const base = (await api('/actividad?per_page=1')).body.meta.ultimo_id as number
+    assert.equal(run({ ANNOUNCE_VERSION: 'false' }), 'null', 'apagado por entorno')
+    assert.equal(run({ ANNOUNCE_VERSION: 'true' }), top)
+    assert.equal(run({ ANNOUNCE_VERSION: 'true' }), 'null', 'idempotente: no se repite al reiniciar')
+    const ev = ((await api(`/actividad?desde_id=${base}&orden=asc`)).body.data as any[]).filter((e) => e.tipo === 'version_nueva')
+    assert.equal(ev.length, 1)
+    assert.equal(ev[0].sujeto, top)
+    assert.equal(typeof (await api('/version')).body.anunciada_el, 'string')
+    // Una versión histórica sin autor se anuncia a nombre del socio activo más antiguo (la actividad exige un actor).
+    await admin.query('UPDATE app_versions SET announced_at = NULL, author_id = NULL WHERE version = $1', [top])
+    assert.equal(run({ ANNOUNCE_VERSION: 'true' }), top)
+  })
+
+  // ---------- conflictos ----------
+  const stampOf = async (path: string) => {
+    // Los acuerdos no tienen lectura individual: el sello sale de la lista.
+    const m = path.match(/^\/acuerdos\/(.+)$/)
+    if (m) return ((await api('/acuerdos')).full.data as any[]).find((x) => x.id === m[1]).actualizado_el as string
+    return (await api(path)).full.actualizado_el as string
+  }
+  const espera = (ms = 15) => new Promise((r) => setTimeout(r, ms))
+
+  it('cliente: If-Match con la versión vista guarda; con una vieja da 409 con la versión actual; sin versión guarda como siempre', async () => {
+    const c = await api('/clientes', { body: { nombre: 'Conflicto SA' } })
+    assert.equal(c.status, 201)
+    const id = c.body.id as string
+    const v1 = c.full.actualizado_el as string
+    assert.match(v1, /^\d{4}-\d{2}-\d{2}T.*Z$/)
+    // el sistema (o un socio) cambia el registro mientras otro lo edita
+    await espera()
+    const otro = await api(`/clientes/${id}`, { method: 'PATCH', body: { telefono: '+584141112222' }, key: KEY_J })
+    assert.equal(otro.status, 200)
+    const v2 = otro.full.actualizado_el as string
+    assert.notEqual(v2, v1)
+    const viejo = await api(`/clientes/${id}`, { method: 'PATCH', body: { notas: 'mi cambio' }, headers: { 'if-match': `"${v1}"` } })
+    assert.equal(viejo.status, 409)
+    assert.deepEqual([viejo.body.error.code, viejo.body.error.codigo, viejo.full.error.actualizado_el], ['conflict', 'conflicto', v2])
+    assert.match(viejo.body.error.message, /cambió mientras lo editabas/)
+    assert.equal((await api(`/clientes/${id}`)).body.notas, null, 'no se guardó nada')
+    assert.equal((await api(`/clientes/${id}`)).body.telefono, '+584141112222', 'lo del otro sigue intacto')
+    // la versión al día guarda (cabecera o campo del cuerpo)
+    const ok = await api(`/clientes/${id}`, { method: 'PATCH', body: { notas: 'ahora sí' }, headers: { 'if-match': v2 } })
+    assert.equal(ok.status, 200, JSON.stringify(ok.body))
+    assert.equal(ok.body.notas, 'ahora sí')
+    const v3 = ok.full.actualizado_el as string
+    const body = await api(`/clientes/${id}`, { method: 'PATCH', body: { notas: 'por el cuerpo', actualizado_el: v3 } })
+    assert.equal(body.status, 200, JSON.stringify(body.body))
+    const viejoCuerpo = await api(`/clientes/${id}`, { method: 'PATCH', body: { notas: 'x', actualizado_el: v1 } })
+    assert.equal(viejoCuerpo.status, 409)
+    // compatibilidad aditiva: un cliente viejo (sin versión) sigue guardando
+    assert.equal((await api(`/clientes/${id}`, { method: 'PATCH', body: { notas: 'sin versión' } })).status, 200)
+    // valor inválido: 400 legible, no 500
+    assert.equal((await api(`/clientes/${id}`, { method: 'PATCH', body: { notas: 'x' }, headers: { 'if-match': 'ayer' } })).status, 400)
+    assert.equal((await api(`/clientes/${id}`, { method: 'PATCH', body: { notas: 'x', actualizado_el: 12 } })).status, 400)
+    // "*" y vacío = sin condición
+    assert.equal((await api(`/clientes/${id}`, { method: 'PATCH', body: { notas: 'comodín' }, headers: { 'if-match': '*' } })).status, 200)
+  })
+
+  it('proyecto, tarea, cobro, gasto, acuerdo y propuesta: misma regla (409 si cambió, guarda si está al día)', async () => {
+    const cli = (await api('/clientes', { body: { nombre: 'Versionado SA' } })).body.id as string
+    const p = (await api('/proyectos', { body: { nombre: 'Proy versión', cliente_id: cli } })).body.id as string
+    const t = (await api('/tareas', { body: { titulo: 'Tarea versión', proyecto_id: p } })).body.id as string
+    const g = (await api('/gastos', { body: { concepto: 'Gasto versión', monto: 5, categoria: 'Otros', fecha: '2026-10-01' } })).body.id as string
+    const a = (await api('/acuerdos', { body: { texto: 'Acuerdo versión' } })).body.id as string
+    await api(`/clientes/${cli}/pagos`, { body: { fecha: '2026-11-01', monto: 10, concepto: 'Cuota versión' } })
+    const pg = ((await api(`/pagos?cliente_id=${cli}`)).body.data as any[])[0].id as string
+    const prop = await mkProp('Propuesta versión')
+    const casos: [string, string, Record<string, unknown>, Record<string, unknown>][] = [
+      ['proyecto', `/proyectos/${p}`, { descripcion: 'otro cambio' }, { descripcion: 'mi cambio' }],
+      ['tarea', `/tareas/${t}`, { titulo: 'Tarea cambiada por otro' }, { titulo: 'Mi título' }],
+      ['pago', `/pagos/${pg}`, { concepto: 'Cuota (otro)' }, { concepto: 'Cuota (mía)' }],
+      ['gasto', `/gastos/${g}`, { concepto: 'Gasto (otro)' }, { concepto: 'Gasto (mío)' }],
+      ['acuerdo', `/acuerdos/${a}`, { texto: 'Acuerdo (otro)' }, { texto: 'Acuerdo (mío)' }],
+      ['propuesta', `/propuestas/${prop.p.id}`, { notas: 'Notas (otro)' }, { notas: 'Notas (mías)' }],
+    ]
+    for (const [nombre, path, deOtro, mio] of casos) {
+      const visto = await stampOf(path)
+      assert.match(visto, /^\d{4}-\d{2}-\d{2}T/, `${nombre}: la lectura trae actualizado_el`)
+      await espera()
+      assert.equal((await api(path, { method: 'PATCH', body: deOtro, key: KEY_J })).status, 200, nombre)
+      const r = await api(path, { method: 'PATCH', body: mio, headers: { 'if-match': visto } })
+      assert.equal(r.status, 409, `${nombre}: ${JSON.stringify(r.body)}`)
+      assert.equal(r.body.error.codigo, 'conflicto', nombre)
+      const fresco = await stampOf(path)
+      assert.equal(r.full.error.actualizado_el, fresco, nombre)
+      const ok = await api(path, { method: 'PATCH', body: mio, headers: { 'if-match': fresco } })
+      assert.equal(ok.status, 200, `${nombre}: ${JSON.stringify(ok.body)}`)
+    }
+  })
+
+  it('completar una tarea y marcar cobrado también respetan la versión (el borrador viejo no revive nada)', async () => {
+    const cli = (await api('/clientes', { body: { nombre: 'Cobro versión SA' } })).body.id as string
+    const p = (await api('/proyectos', { body: { nombre: 'P', cliente_id: cli } })).body.id as string
+    const t = (await api('/tareas', { body: { titulo: 'T', proyecto_id: p } })).body.id as string
+    const visto = await stampOf(`/tareas/${t}`)
+    await espera()
+    await api(`/tareas/${t}`, { method: 'PATCH', body: { vence: '2026-12-01' }, key: KEY_J })
+    assert.equal((await api(`/tareas/${t}`, { method: 'PATCH', body: { estado: 'completada' }, headers: { 'if-match': visto } })).status, 409)
+    assert.equal((await api(`/tareas/${t}`)).body.estado, 'pendiente')
+  })
+
+  it('MCP: actualizado_el opcional en las herramientas de edición; el conflicto vuelve como error legible con la versión actual', async () => {
+    const c = await api('/clientes', { body: { nombre: 'Agente versión SA' } })
+    const id = c.body.id as string
+    const visto = c.full.actualizado_el as string
+    await espera()
+    await api(`/clientes/${id}`, { method: 'PATCH', body: { notas: 'otro agente' }, key: KEY_J })
+    const raw = await http(`${ROOT}/mcp`, { key: KEY, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'hayai_cliente_actualizar', arguments: { id, notas: 'mi cambio', actualizado_el: visto } } } })
+    assert.equal(raw.body.result.isError, true)
+    assert.match(raw.body.result.content[0].text, /cambió mientras lo editabas.*actualizado_el actual: \d{4}-/)
+    const sin = await mcp('hayai_cliente_actualizar', { id, notas: 'sin versión' })
+    assert.equal(data(sin).notas, 'sin versión', 'sin actualizado_el guarda como siempre')
+    const fresco = data(await mcp('hayai_cliente_ver', { id })).actualizado_el
+    assert.equal(data(await mcp('hayai_cliente_actualizar', { id, notas: 'al día', actualizado_el: fresco })).notas, 'al día')
+    // la herramienta anuncia el campo en su esquema
+    const list = await http(`${ROOT}/mcp`, { key: KEY, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: 8, method: 'tools/list', params: {} } })
+    const tools = list.full.result.tools as any[]
+    assert.ok(tools.find((x) => x.name === 'hayai_cliente_actualizar').inputSchema.properties.actualizado_el)
+    assert.equal(tools.find((x) => x.name === 'hayai_tarea_crear').inputSchema.properties.actualizado_el, undefined)
+  })
+
+  it('web (sesión): If-Match en PATCH de cliente, proyecto y tarea; las listas traen updatedAt', async () => {
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    const cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    const web = (path: string, o: { method?: string; body?: unknown; headers?: Record<string, string> } = {}) =>
+      http(`${ROOT}/api${path}`, { ...o, headers: { cookie, ...(o.headers ?? {}) } })
+    const clients = (await web('/clients')).body as any[]
+    const c = clients.find((x) => x.name === 'Conflicto SA')
+    assert.match(c.updatedAt, /^\d{4}-\d{2}-\d{2}T/)
+    await espera()
+    assert.equal((await web(`/clients/${c.id}`, { method: 'PATCH', body: { name: 'Conflicto SRL' } })).status, 200)
+    const viejo = await web(`/clients/${c.id}`, { method: 'PATCH', body: { name: 'Mi nombre' }, headers: { 'if-match': c.updatedAt } })
+    assert.equal(viejo.status, 409)
+    assert.equal(viejo.body.codigo, 'conflicto')
+    assert.match(viejo.body.error, /cambió mientras lo editabas/)
+    const ficha = await web(`/clients/${c.id}/ficha`, { method: 'PATCH', body: { notes: 'web' }, headers: { 'if-match': c.updatedAt } })
+    assert.equal(ficha.status, 409)
+    const fresco = ((await web('/clients')).body as any[]).find((x) => x.id === c.id).updatedAt
+    assert.equal((await web(`/clients/${c.id}/ficha`, { method: 'PATCH', body: { notes: 'web' }, headers: { 'if-match': fresco } })).status, 200)
+    // proyecto y tarea
+    const proj = ((await web('/projects')).body as any[])[0]
+    assert.match(proj.updatedAt, /^\d{4}-\d{2}-\d{2}T/)
+    const task = ((await web('/tasks')).body as any[])[0]
+    assert.match(task.updatedAt, /^\d{4}-\d{2}-\d{2}T/)
+    await espera()
+    await web(`/tasks/${task.id}`, { method: 'PATCH', body: { due: '2027-01-01' } })
+    assert.equal((await web(`/tasks/${task.id}`, { method: 'PATCH', body: { done: true }, headers: { 'if-match': task.updatedAt } })).status, 409)
+    await web(`/projects/${proj.id}`, { method: 'PATCH', body: { description: 'cambiada' } })
+    assert.equal((await web(`/projects/${proj.id}`, { method: 'PATCH', body: { name: 'otro' }, headers: { 'if-match': proj.updatedAt } })).status, 409)
+    // cobros del cliente: cada movimiento trae su versión
+    const conMov = ((await web('/clients')).body as any[]).find((x) => x.movements.length)
+    assert.match(conMov.movements[0].updatedAt, /^\d{4}-\d{2}-\d{2}T/)
+  })
+
+  it('un cambio que hace el SISTEMA (una migración o tarea) también bumpea la versión: el editor lo detecta', async () => {
+    const c = await api('/clientes', { body: { nombre: 'Sistema toca SA' } })
+    const visto = c.full.actualizado_el as string
+    await espera()
+    await admin.query(`UPDATE clients SET notes = 'migración' WHERE id = $1`, [c.body.id]) // como un deploy que corrige datos
+    const r = await api(`/clientes/${c.body.id}`, { method: 'PATCH', body: { telefono: '+584140000000' }, headers: { 'if-match': visto } })
+    assert.equal(r.status, 409)
   })
 })

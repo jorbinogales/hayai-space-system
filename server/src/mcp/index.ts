@@ -4,6 +4,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import express, { Router } from 'express'
+import { z } from 'zod'
+import { withExpected } from '../concurrency.ts'
 import type { SessionUser } from '../auth.ts'
 import { exec, type Op } from '../services/common.ts'
 import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoActualizar, pagoMarcarCobrado, pagoRegistrar, pagosListar } from '../services/clientes.ts'
@@ -14,7 +16,7 @@ import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
 import { comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
 import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
-import { versionesListar, versionPublicar, versionVer } from '../services/versiones.ts'
+import { currentVersionString, versionesListar, versionHeader, versionPublicar, versionVer } from '../services/versiones.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 import { finanzasResumen } from '../services/finanzas.ts'
 import { gastoRegistrar, gastosListar } from '../services/gastos.ts'
@@ -85,8 +87,8 @@ const TOOLS: Tool[] = [
   { name: 'hayai_receptor_guardar', op: receptorGuardar, scope: 'write', description: 'Agrega o cambia un documento del mapeo: documento (p. ej. V-12345678) y socio (Elis, Jorbi o Leandro).' },
   { name: 'hayai_receptor_eliminar', op: receptorEliminar, scope: 'delete', description: 'Quita un documento del mapeo por su id (de hayai_receptores_listar).' },
   // Barra superior: versión del sistema, tasa BCV e historial de versiones.
-  { name: 'hayai_version_ver', op: versionVer, scope: 'read', description: 'Versión actual del sistema (p. ej. 1.5.0) y la tasa del dólar oficial BCV en Bs. con SU fecha (en fin de semana o feriado es la última publicada). Úsala para saber en qué versión está HAYAI Space y a cuánto está el dólar.' },
-  { name: 'hayai_versiones_listar', op: versionesListar, scope: 'read', description: 'Historial completo de versiones (la más nueva primero), cada una con título, resumen, fecha, autor y la lista de cambios. Es el changelog del proyecto.' },
+  { name: 'hayai_version_ver', op: versionVer, scope: 'read', description: 'Versión actual del sistema (p. ej. 1.5.0) con su título, resumen y cambios, y la tasa del dólar oficial BCV en Bs. con SU fecha (en fin de semana o feriado es la última publicada). Pasa desde=<la última versión que conocías> y devuelve en novedades qué cambió desde entonces (hay_cambios y las versiones nuevas): así te enteras de las actualizaciones sin que nadie te las cuente.' },
+  { name: 'hayai_versiones_listar', op: versionesListar, scope: 'read', description: 'Historial de versiones (la más nueva primero), cada una con título, resumen, fecha, autor y la lista de cambios. Es el changelog del proyecto. Con desde=<versión> solo trae las posteriores a esa.' },
   { name: 'hayai_version_publicar', op: versionPublicar, scope: 'write', description: 'Publica una versión nueva en el historial: version (p. ej. 1.6.0, debe ser mayor que la actual), cambios (lista de textos, al menos uno), titulo, resumen y fecha (por defecto hoy) opcionales. El autor es el dueño de la llave. No se edita ni se borra después. Avisa al equipo.' },
   // Hub central (planeta HAYAI): lo interno de la empresa.
   { name: 'hayai_hub_ver', op: hubVer, scope: 'read', description: 'Hub central de HAYAI en una sola respuesta: pulso interno (gastos generales del mes, tareas internas pendientes y vencidas, proyectos internos activos), astronautas (Elis, Jorbi, Leandro con rol, responsabilidades y carga), bitácora interna, acuerdos abiertos, sistemas con su semáforo y el estado de la analítica.' },
@@ -115,29 +117,61 @@ const TOOLS: Tool[] = [
   { name: 'hayai_interaccion_eliminar', op: interaccionEliminar, scope: 'delete', description: 'Manda una interacción de la bitácora a la papelera (las automáticas de etapa no se borran). Restaurable 30 días.' },
 ]
 
+// Herramientas que editan un registro con fecha de actualización: aceptan `actualizado_el` (el que devolvió la lectura) y, si el
+// registro ya cambió, responden con conflicto en vez de pisarlo. Opcional: sin él se guarda como siempre.
+const CONFLICT_AWARE = new Set([
+  'hayai_cliente_actualizar',
+  'hayai_proyecto_actualizar',
+  'hayai_proyecto_estado',
+  'hayai_tarea_actualizar',
+  'hayai_tarea_completar',
+  'hayai_pago_actualizar',
+  'hayai_pago_marcar_cobrado',
+  'hayai_propuesta_actualizar',
+  'hayai_acuerdo_actualizar',
+])
+const actualizadoEl = z
+  .string()
+  .optional()
+  .describe('Opcional. El actualizado_el que devolvió la última lectura de este registro: si cambió desde entonces, la herramienta responde conflicto en vez de sobrescribir. Vuelve a leerlo y reintenta.')
+
 const INSTRUCTIONS =
   'HAYAI Space: sistema interno de HAYAI (clientes y posibles clientes con su pipeline de ventas y bitácora, cobros, proyectos, gastos, tareas, finanzas, alertas y búsqueda). ' +
   'Montos en USD como número; fechas AAAA-MM-DD; zona horaria de Caracas. ' +
   'Lo que se escriba queda atribuido al socio dueño de la llave de API. Solo ves las herramientas que los permisos de tu llave permiten (lectura, escritura, borrado). Borrar manda a la papelera 30 días: nada se pierde al instante.'
 
-function buildServer(actor: SessionUser) {
-  const server = new McpServer({ name: 'hayai-space', version: '1.0.0' }, { instructions: INSTRUCTIONS })
+function buildServer(actor: SessionUser, version: string | null) {
+  // La versión vigente va en las instrucciones y en serverInfo: el agente se entera de un cambio en cuanto se conecta, sin preguntar.
+  const aviso = version
+    ? ` Versión actual del sistema: v${version}. Si es distinta de la última que conocías, llama a hayai_version_ver con desde=<tu última versión> para ver qué cambió (nuevas herramientas, campos o reglas) antes de escribir. Al editar un registro, manda actualizado_el (el de tu última lectura) para no pisar cambios de otros.`
+    : ''
+  const server = new McpServer({ name: 'hayai-space', version: version ?? '1.0.0' }, { instructions: INSTRUCTIONS + aviso })
   // Solo se ofrecen las herramientas que los permisos de la llave permiten: el agente no ve lo que no puede usar.
   for (const t of TOOLS.filter((x) => actor.scopes?.includes(x.scope))) {
     server.registerTool(
       t.name,
       {
         description: t.description,
-        inputSchema: t.op.schema.shape,
+        inputSchema: CONFLICT_AWARE.has(t.name) ? { ...t.op.schema.shape, actualizado_el: actualizadoEl } : t.op.schema.shape,
         annotations: { readOnlyHint: t.scope === 'read', destructiveHint: t.scope === 'delete' },
       },
       async (args: unknown) => {
         try {
-          const data = await exec(t.op, actor, args)
+          let input = args
+          let expected: unknown
+          if (CONFLICT_AWARE.has(t.name) && args && typeof args === 'object') {
+            const { actualizado_el, ...rest } = args as Record<string, unknown>
+            input = rest
+            expected = actualizado_el
+          }
+          const data = await withExpected(expected, () => exec(t.op, actor, input))
           return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] }
         } catch (e) {
           // Los errores de negocio (validación, 404...) vuelven como resultado de la herramienta para que el agente los lea y corrija.
-          if (e instanceof HttpError) return { isError: true, content: [{ type: 'text' as const, text: e.message }] }
+          if (e instanceof HttpError) {
+            const now = e.extra.codigo === 'conflicto' ? ` (actualizado_el actual: ${String(e.extra.actualizado_el)})` : ''
+            return { isError: true, content: [{ type: 'text' as const, text: e.message + now }] }
+          }
           console.error(e)
           return { isError: true, content: [{ type: 'text' as const, text: 'Error interno del servidor' }] }
         }
@@ -156,8 +190,8 @@ mcpRouter.all('/', (req, res, next) => {
   res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed' }, id: null })
 })
 
-mcpRouter.post('/', apiKeyAuth, keyRateLimit(), jsonOnly, express.json({ limit: '6mb' }), async (req, res) => { // 6 MB: el comprobante de un cobro viaja en base64
-  const server = buildServer(req.user!)
+mcpRouter.post('/', apiKeyAuth, keyRateLimit(), versionHeader, jsonOnly, express.json({ limit: '6mb' }), async (req, res) => { // 6 MB: el comprobante de un cobro viaja en base64
+  const server = buildServer(req.user!, await currentVersionString())
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
   res.on('close', () => {
     void transport.close()

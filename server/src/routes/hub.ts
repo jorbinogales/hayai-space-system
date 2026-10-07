@@ -18,8 +18,8 @@ const query = (req: Request) => {
   return o
 }
 
-hubRouter.get('/version', async (req, res) => void res.json(await exec(versionVer, req.user!, {})))
-hubRouter.get('/versions', async (req, res) => void res.json(await exec(versionesListar, req.user!, {})))
+hubRouter.get('/version', async (req, res) => void res.json(await exec(versionVer, req.user!, query(req))))
+hubRouter.get('/versions', async (req, res) => void res.json(await exec(versionesListar, req.user!, query(req))))
 hubRouter.post('/versions', async (req, res) => void res.status(201).json(await exec(versionPublicar, req.user!, body(req))))
 hubRouter.get('/hub', async (req, res) => void res.json(await exec(hubVer, req.user!, {})))
 hubRouter.get('/team', async (req, res) => void res.json(await exec(equipoVer, req.user!, {})))

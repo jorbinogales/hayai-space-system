@@ -1,11 +1,12 @@
 import { z } from 'zod'
+import { assertFresh, stamp } from '../concurrency.ts'
 import { pool, tx } from '../db.ts'
 import { HttpError, id, isoDate, text } from '../util.ts'
 import { archivadosParam, filters, op, pageShape, paged, PROJECT_STATES, projectIcon, projectStateIn, projectStateOut } from './common.ts'
 
 // Un proyecto puede no tener cliente (trabajo interno de HAYAI): de ahi el LEFT JOIN. Hitos = roadmap; checklist = accionables
 // simples del proyecto (sin fecha ni responsable). Las tareas pueden colgar de un hito.
-const SELECT = `SELECT p.id, p.name, p.description, p.icon, u.name AS owner, c.name AS client, p.client_id, p.status, p.due_date,
+const SELECT = `SELECT p.id, p.name, p.description, p.icon, p.updated_at, u.name AS owner, c.name AS client, p.client_id, p.status, p.due_date,
     (p.archived_at IS NOT NULL) AS archived, COALESCE(c.archived_at IS NOT NULL, false) AS client_archived,
     (SELECT count(*)::int FROM tasks t WHERE t.project_id = p.id) AS t_total,
     (SELECT count(*)::int FROM tasks t WHERE t.project_id = p.id AND t.done) AS t_done,
@@ -28,6 +29,7 @@ const out = (r: any) => ({
   estado: projectStateOut(r.status),
   entrega: r.due_date as string | null,
   archivado: r.archived as boolean,
+  actualizado_el: stamp(r.updated_at), // mándalo como If-Match / actualizado_el al editar: si cambió, 409 en vez de pisar
   cliente_archivado: r.client_archived as boolean,
   tareas: { total: r.t_total as number, completadas: r.t_done as number },
   hitos: { total: r.m_total as number, hechos: r.m_done as number },
@@ -178,7 +180,9 @@ export async function actualizarProyecto(b: {
   const owner = b.responsable !== undefined ? await ownerId(b.responsable) : null
   if (b.cliente_id && !(await pool.query('SELECT 1 FROM clients WHERE id = $1', [b.cliente_id])).rowCount)
     throw new HttpError(404, 'Cliente no encontrado')
-  const { rowCount } = await pool.query(
+  const rowCount = await tx(async (c) => {
+    await assertFresh(c, 'projects', b.id)
+    return (await c.query(
     `UPDATE projects SET name = COALESCE($2, name), icon = COALESCE($3, icon),
        client_id = CASE WHEN $10::boolean THEN $4::uuid ELSE client_id END,
        owner_id = COALESCE($5::uuid, owner_id), status = COALESCE($6, status),
@@ -200,7 +204,8 @@ export async function actualizarProyecto(b: {
       b.descripcion !== undefined,
       b.descripcion ?? null,
     ],
-  )
+  )).rowCount
+  })
   if (!rowCount) throw new HttpError(404, 'Proyecto no encontrado')
   return proyecto(b.id)
 }

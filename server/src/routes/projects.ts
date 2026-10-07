@@ -7,7 +7,7 @@ import { actualizarProyecto } from '../services/proyectos.ts'
 import { HttpError, id, idParam, isoDate, parse, text } from '../util.ts'
 
 // client puede ser null: un proyecto interno no tiene cliente.
-export const PROJECT_SELECT = `SELECT p.id, p.name, p.description, p.icon, u.name AS owner, c.name AS client, p.client_id AS "clientId",
+export const PROJECT_SELECT = `SELECT p.id, p.name, p.description, p.icon, u.name AS owner, c.name AS client, p.client_id AS "clientId", p.updated_at AS "updatedAt",
     p.status, p.due_date AS due, p.archived_at IS NOT NULL AS archived, COALESCE(c.archived_at IS NOT NULL, false) AS "clientArchived"
   FROM projects p JOIN users u ON u.id = p.owner_id LEFT JOIN clients c ON c.id = p.client_id`
 

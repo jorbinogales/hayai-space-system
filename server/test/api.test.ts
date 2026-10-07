@@ -23,7 +23,10 @@ let dataDir: string
 let server: ChildProcess
 let admin: pg.Client
 
-type Res = { status: number; body: any; cookie?: string; setCookie?: string }
+type Res = { status: number; body: any; full?: any; cookie?: string; setCookie?: string }
+
+const stripStamp = (x: any): any =>
+  Array.isArray(x) ? x.map(stripStamp) : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'updatedAt').map(([k, v]) => [k, stripStamp(v)])) : x
 
 async function call(path: string, o: { method?: string; body?: unknown; raw?: string; cookie?: string; headers?: Record<string, string> } = {}): Promise<Res> {
   const headers: Record<string, string> = { ...o.headers }
@@ -39,7 +42,9 @@ async function call(path: string, o: { method?: string; body?: unknown; raw?: st
   const setCookie = r.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))
   return {
     status: r.status,
-    body: text ? JSON.parse(text) : undefined,
+    // updatedAt = versión del registro (cambia en cada escritura): se quita de body para comparar formas exactas; `full` la conserva.
+    body: stripStamp(text ? JSON.parse(text) : undefined),
+    full: text ? JSON.parse(text) : undefined,
     setCookie,
     cookie: setCookie?.split(';')[0],
   }

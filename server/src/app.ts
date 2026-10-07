@@ -15,6 +15,8 @@ import { usersRouter } from './routes/users.ts'
 import { mcpRouter } from './mcp/index.ts'
 import { v1Router } from './v1/index.ts'
 import { metaRouter } from './meta.ts'
+import { conflictGuard } from './concurrency.ts'
+import { versionHeader } from './services/versiones.ts'
 import { HttpError } from './util.ts'
 
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS'])
@@ -61,9 +63,11 @@ export function createApp() {
     res.setHeader('Cache-Control', 'no-store')
     next()
   })
+  api.use(versionHeader) // X-Hayai-Version: la pestaña abierta detecta una versión nueva en cualquier respuesta
   api.use(csrf)
   api.post('/cobros/:id/comprobante', express.json({ limit: '6mb' })) // la imagen viaja en base64 (hasta 4 MB)
   api.use(express.json({ limit: '100kb' }))
+  api.use(conflictGuard) // If-Match: no pisar lo que cambió mientras alguien editaba
   api.use('/auth', authRouter)
   api.use(requireSession, requirePinChanged)
   api.use('/users', usersRouter)

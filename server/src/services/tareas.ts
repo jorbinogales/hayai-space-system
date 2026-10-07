@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { recordActivity } from '../activity.ts'
+import { assertFresh, stamp } from '../concurrency.ts'
 import { pool, tx } from '../db.ts'
 import { userByName } from '../socios.ts'
 import { HttpError, id, isoDate, text } from '../util.ts'
@@ -7,7 +8,7 @@ import { type Actor, archivadosParam, boolFlag, filters, op, pageShape, paged } 
 
 // clients va con LEFT JOIN: un proyecto interno no tiene cliente.
 // responsable = quien la lleva: el asignado, y si no hay, el responsable del proyecto. es_interno = su proyecto no tiene cliente.
-const SELECT = `SELECT t.id, t.project_id, p.name AS project, t.title, t.done, t.due_date, u.name AS owner, t.milestone_id, m.title AS milestone,
+const SELECT = `SELECT t.id, t.updated_at, t.project_id, p.name AS project, t.title, t.done, t.due_date, u.name AS owner, t.milestone_id, m.title AS milestone,
     (p.client_id IS NULL) AS internal, t.assignee_id, COALESCE(au.id, po.id) AS resp_id, COALESCE(au.name, po.name) AS resp_name
   FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN clients c ON c.id = p.client_id JOIN users u ON u.id = t.created_by
   LEFT JOIN project_milestones m ON m.id = t.milestone_id LEFT JOIN users au ON au.id = t.assignee_id JOIN users po ON po.id = p.owner_id`
@@ -27,6 +28,7 @@ const out = (r: any) => ({
   // Quien la lleva (el asignado o, sin asignar, el responsable del proyecto) y si se le asignó a mano.
   responsable: { id: r.resp_id as string, nombre: r.resp_name as string },
   asignada: r.assignee_id !== null,
+  actualizado_el: stamp(r.updated_at),
 })
 
 const FROM_FILTER = `FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN clients c ON c.id = p.client_id LEFT JOIN users au ON au.id = t.assignee_id JOIN users po ON po.id = p.owner_id`
@@ -119,6 +121,7 @@ export const tareaCrear = op(
 export async function actualizarTarea(actor: Actor, b: { id: string; titulo?: string; estado?: string; vence?: string | null; hito_id?: string | null; responsable?: string | null }) {
   // estado ausente => no cambia; vence ausente => no cambia, vence null => borra la fecha.
   await tx(async (c) => {
+    await assertFresh(c, 'tasks', b.id)
     // Se bloquea la fila: solo el cambio que la completa avisa al equipo (reabrir o repetir "completada" no).
     const cur = (
       await c.query(

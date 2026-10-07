@@ -5,6 +5,7 @@ import { HttpError, idParam, isoDate, money, parse, text } from '../util.ts'
 import { applyClientPatch, entryStage, loadStages } from '../crm.ts'
 import { moneyLabel, patchPayment } from '../payments.ts'
 import { recordActivity } from '../activity.ts'
+import { assertFresh } from '../concurrency.ts'
 import { sendToTrash } from '../trash.ts'
 import { expandCharge, insertCharges, insertItems, repeatMonths } from '../charges.ts'
 export { expandCharge, insertCharges, insertItems, repeatMonths }
@@ -12,7 +13,7 @@ import { PROJECT_SELECT, projectIcon } from './projects.ts'
 import { TASK_SELECT } from './tasks.ts'
 
 type Item = { id: string; concept: string; amount: number }
-type Movement = { id: string; date: string; concept: string; amount: number; kind: string; status: string; series: { id: string; index: number; total: number } | null }
+type Movement = { id: string; updatedAt: Date; date: string; concept: string; amount: number; kind: string; status: string; series: { id: string; index: number; total: number } | null }
 
 /** 3 consultas y se agrupa en memoria (sin N+1). Con ids, solo esos clientes. */
 export async function loadClients(db: Db, ids?: string[]) {
@@ -20,7 +21,7 @@ export async function loadClients(db: Db, ids?: string[]) {
     db.query(
       `SELECT c.id, c.name, c.avatar, c.is_prospect, c.archived_at, c.created_at, c.phone, c.email, c.contact_name, c.contact_role, c.address, c.notes,
               c.tags, c.lead_source, c.pipeline_stage, c.est_value, c.probability, c.expected_close, c.lost_reason, c.stage_changed_at,
-              c.next_action, c.next_action_date, c.socials, c.implementation_date,
+              c.next_action, c.next_action_date, c.socials, c.implementation_date, c.updated_at,
               -- ultimo contacto real: las entradas automaticas de etapa no cuentan
               (SELECT max(i.occurred_at) FROM interactions i WHERE i.client_id = c.id AND i.kind <> 'etapa') AS last_contact_at
        FROM clients c ${ids ? 'WHERE c.id = ANY($1::uuid[])' : ''} ORDER BY c.created_at, c.id`,
@@ -31,7 +32,7 @@ export async function loadClients(db: Db, ids?: string[]) {
       ids ? [ids] : [],
     ),
     db.query(
-      `SELECT id, client_id, date, concept, amount, kind, status, series_id, series_index, series_total FROM payments ${ids ? 'WHERE client_id = ANY($1::uuid[])' : ''} ORDER BY date, created_at, id`,
+      `SELECT id, client_id, updated_at, date, concept, amount, kind, status, series_id, series_index, series_total FROM payments ${ids ? 'WHERE client_id = ANY($1::uuid[])' : ''} ORDER BY date, created_at, id`,
       ids ? [ids] : [],
     ),
   ])
@@ -45,7 +46,7 @@ export async function loadClients(db: Db, ids?: string[]) {
   for (const r of moves.rows) {
     const list = movesBy.get(r.client_id) ?? []
     const series = r.series_id ? { id: r.series_id, index: r.series_index, total: r.series_total } : null
-    list.push({ id: r.id, date: r.date, concept: r.concept, amount: r.amount, kind: r.kind, status: r.status, series })
+    list.push({ id: r.id, updatedAt: r.updated_at, date: r.date, concept: r.concept, amount: r.amount, kind: r.kind, status: r.status, series })
     movesBy.set(r.client_id, list)
   }
   return clients.rows.map((c) => ({
@@ -55,6 +56,7 @@ export async function loadClients(db: Db, ids?: string[]) {
     prospect: c.is_prospect,
     archived: c.archived_at !== null,
     createdAt: c.created_at as Date,
+    updatedAt: c.updated_at as Date, // version del registro: se manda como If-Match al editar
     phone: c.phone as string | null,
     email: c.email as string | null,
     contactName: c.contact_name as string | null,
@@ -139,11 +141,10 @@ clientsRouter.patch('/:id', async (req, res) => {
       .refine((v) => v.name !== undefined || v.avatar !== undefined, 'Envía al menos name o avatar'),
     req.body,
   )
-  const { rowCount } = await pool.query('UPDATE clients SET name = COALESCE($2, name), avatar = COALESCE($3, avatar) WHERE id = $1', [
-    clientId,
-    b.name ?? null,
-    b.avatar ?? null,
-  ])
+  const rowCount = await tx(async (c) => {
+    await assertFresh(c, 'clients', clientId)
+    return (await c.query('UPDATE clients SET name = COALESCE($2, name), avatar = COALESCE($3, avatar) WHERE id = $1', [clientId, b.name ?? null, b.avatar ?? null])).rowCount
+  })
   if (!rowCount) throw new HttpError(404, 'Cliente no encontrado')
   res.json(await clientOr404(pool, clientId))
 })

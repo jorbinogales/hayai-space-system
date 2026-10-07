@@ -6,7 +6,7 @@ import { tareaActualizar, tareaCrear } from '../services/tareas.ts'
 import { sendToTrash } from '../trash.ts'
 import { id, idParam, isoDate, parse, text } from '../util.ts'
 
-export const TASK_SELECT = `SELECT t.id, t.project_id AS "projectId", t.milestone_id AS "milestoneId", t.title, t.done, t.due_date AS due, u.name AS owner,
+export const TASK_SELECT = `SELECT t.id, t.project_id AS "projectId", t.milestone_id AS "milestoneId", t.title, t.done, t.due_date AS due, u.name AS owner, t.updated_at AS "updatedAt",
     (p.archived_at IS NOT NULL OR COALESCE(c.archived_at IS NOT NULL, false)) AS hidden
   FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN clients c ON c.id = p.client_id JOIN users u ON u.id = t.created_by`
 

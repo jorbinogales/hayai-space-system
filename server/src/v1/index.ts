@@ -5,7 +5,7 @@ import { exec, type Op } from '../services/common.ts'
 import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoActualizar, pagoRegistrar, pagosListar } from '../services/clientes.ts'
 import { comprobanteArchivo, comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
 import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
-import { versionesListar, versionPublicar, versionVer } from '../services/versiones.ts'
+import { versionesListar, versionHeader, versionPublicar, versionVer } from '../services/versiones.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 import { finanzasResumen } from '../services/finanzas.ts'
 import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResumen } from '../services/alertas.ts'
@@ -17,6 +17,7 @@ import { gastoActualizar, gastoRegistrar, gastosListar, gastoVer } from '../serv
 import { checklistActualizar, checklistAgregar, checklistOrdenar, hitoActualizar, hitoCrear, hitosOrdenar, proyectoActualizar, proyectoCrear, proyectosListar, proyectoVer } from '../services/proyectos.ts'
 import { ofertaActualizar, ofertaCrear, ofertaDesactivar, ofertasListar, propuestaActualizar, propuestaCrear, propuestasListar, propuestaVer } from '../services/propuestas.ts'
 import { tareaActualizar, tareaCrear, tareasListar, tareaVer } from '../services/tareas.ts'
+import { conflictGuard } from '../concurrency.ts'
 import { HttpError } from '../util.ts'
 import { apiKeyAuth, keyRateLimit, requireScope, SCOPE_LABEL, type Scope } from './apiKey.ts'
 
@@ -72,9 +73,11 @@ v1Router.use((_req, res, next) => {
   next()
 })
 v1Router.use(apiKeyAuth, keyRateLimit())
+v1Router.use(versionHeader) // X-Hayai-Version: el agente ve si el sistema se actualizó sin preguntar
 // El comprobante viaja en base64 (hasta 4 MB de imagen): solo esa ruta admite un cuerpo grande.
 v1Router.post('/pagos/:id/comprobante', jsonOnly, express.json({ limit: '6mb' }))
 v1Router.use(jsonOnly, express.json({ limit: '100kb' }))
+v1Router.use(conflictGuard) // If-Match o `actualizado_el` en el cuerpo: no pisar lo que cambió mientras alguien editaba
 
 const SCOPE_OF = { get: 'read', post: 'write', patch: 'write', delete: 'delete' } as const
 

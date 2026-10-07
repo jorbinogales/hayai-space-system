@@ -4,6 +4,7 @@
 import type { PoolClient } from 'pg'
 import { expandCharge, insertCharges, insertItems } from './charges.ts'
 import { recordActivity } from './activity.ts'
+import { assertFresh } from './concurrency.ts'
 import type { Db } from './db.ts'
 import { z } from 'zod'
 import { HttpError, isoDate, money, text } from './util.ts'
@@ -229,6 +230,7 @@ async function closeWithProposal(c: PoolClient, actorId: string, clientId: strin
  * Devuelve si cambio la etapa.
  */
 export async function applyClientPatch(c: PoolClient, actorId: string, clientId: string, p: ClientPatch, via?: string): Promise<{ changed: boolean }> {
+  await assertFresh(c, 'clients', clientId) // si quien edita mandó la versión que vio y ya cambió: 409
   const cur = (
     await c.query(
       `SELECT name, is_prospect, pipeline_stage, probability, lost_reason, next_action, next_action_date, archived_at, implementation_date

@@ -124,13 +124,14 @@ export async function writeDetalle(c: Db, paymentId: string, raw: Detalle, opts:
 }
 
 /** Columnas del detalle (con el socio que recibió y si hay comprobante) para armar la forma pública. */
-export const DETAIL_COLUMNS = `p.amount_bs, p.exchange_rate, p.rate_date, p.bank_reference, p.bank_origin, p.origin_last4, p.bank_destination, p.method, p.notes,
+export const DETAIL_COLUMNS = `p.updated_at, p.amount_bs, p.exchange_rate, p.rate_date, p.bank_reference, p.bank_origin, p.origin_last4, p.bank_destination, p.method, p.notes,
     p.received_by, ru.name AS received_by_name, p.received_by_source,
     (r.payment_id IS NOT NULL) AS has_receipt, r.filename AS receipt_name, r.mime AS receipt_mime, r.size AS receipt_size, r.uploaded_at AS receipt_at`
 export const DETAIL_JOINS = `LEFT JOIN users ru ON ru.id = p.received_by LEFT JOIN payment_receipts r ON r.payment_id = p.id`
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const detalleOut = (r: any) => ({
+  actualizado_el: r.updated_at ? new Date(r.updated_at).toISOString() : null, // versión del cobro: mándala como If-Match / actualizado_el al editar
   monto_bs: r.amount_bs == null ? null : Number(r.amount_bs),
   tasa: r.exchange_rate == null ? null : Number(r.exchange_rate),
   fecha_tasa: (r.rate_date ?? null) as string | null,

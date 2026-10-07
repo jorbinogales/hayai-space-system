@@ -2,6 +2,7 @@
 // sale una sola vez, dentro de la misma transaccion, venga de donde venga. Hoja del grafo de imports (db/util/activity).
 import { tx } from './db.ts'
 import { recordActivity } from './activity.ts'
+import { assertFresh } from './concurrency.ts'
 import { type Detalle, hasDetalle, pickDetalle, writeDetalle } from './paymentDetail.ts'
 import { HttpError } from './util.ts'
 
@@ -17,6 +18,7 @@ export const moneyLabel = (n: number) => `$${Number.isInteger(n) ? n : n.toFixed
  */
 export async function patchPayment(actor: { id: string; via?: string }, paymentId: string, p: PaymentPatch): Promise<string> {
   return tx(async (c) => {
+    await assertFresh(c, 'payments', paymentId)
     const row = (
       await c.query(
         `SELECT p.client_id, p.kind, p.status, p.amount, cl.name AS client FROM payments p JOIN clients cl ON cl.id = p.client_id WHERE p.id = $1 FOR UPDATE OF p`,

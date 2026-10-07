@@ -1,12 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { mountScene, type Mounted } from './scene'
-import { buildWorld, WORLD_TEXTURES, type PlanetKey, type World } from './world'
+import { buildWorld, WORLD_TEXTURES, type HotKey, type World } from './world'
 import type { Screen } from './App'
 
 interface Cosmic {
   world: World
-  hot: PlanetKey | null
-  setHot: (k: PlanetKey | null) => void
+  hot: HotKey | null
+  setHot: (k: HotKey | null) => void
   /** los formularios ocultan el planeta y su entorno mientras estan abiertos */
   setDeep: (on: boolean) => void
 }
@@ -33,7 +33,7 @@ export default function Cosmos({
 }) {
   const stage = useRef<HTMLDivElement>(null)
   const mounted = useRef<Mounted | null>(null)
-  const [hot, setHot] = useState<PlanetKey | null>(null)
+  const [hot, setHot] = useState<HotKey | null>(null)
   const [deep, setDeep] = useState(false)
   world.hot = hot
 

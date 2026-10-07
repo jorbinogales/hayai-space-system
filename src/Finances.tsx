@@ -6,7 +6,8 @@ import { useDragScroll } from './drag'
 import { money, todayISO, useAllClients } from './store'
 import { useAllProjects } from './projectData'
 import { useExpenses } from './expenseData'
-import { isInternalExpense, useInternalFilter } from './nav'
+import { isInternalExpense, setFinanceView, useFinanceView, useInternalFilter } from './nav'
+import { ExpensesPanel } from './Expenses'
 import { InternalChip } from './InternalChip'
 import { dashboard, series, type Period } from './finance'
 import { reduced } from './warp'
@@ -20,7 +21,7 @@ const PERIODS: { key: Period; label: string }[] = [
 
 /** Pantalla Finanzas: el planeta a un costado y un dashboard con lo recaudado por cada cliente frente a los gastos. */
 export default function Finances({ onBack }: { onBack: () => void }) {
-  const { world } = useCosmos()
+  const { world, setDeep } = useCosmos()
   // Finanzas cuenta TODO, archivado o no: archivar oculta, no borra el historial.
   const clients = useAllClients()
   const projects = useAllProjects()
@@ -30,11 +31,17 @@ export default function Finances({ onBack }: { onBack: () => void }) {
   const expenses = useMemo(() => (internal ? allExpenses.filter((x) => isInternalExpense(x, projects)) : allExpenses), [internal, allExpenses, projects])
   const [period, setPeriod] = useState<Period>('mes')
   const [exiting, setExiting] = useState(false)
+  const view = useFinanceView()
+  const [form, setForm] = useState(false) // formulario «Nuevo gasto» (vista Gastos)
   const scroll = useRef<HTMLDivElement>(null)
   useDragScroll(scroll, 'y')
   useEffect(() => {
     world.screenRate = null // gira a la velocidad propia del planeta
   }, [world])
+  useEffect(() => {
+    setDeep(form)
+    return () => setDeep(false)
+  }, [form, setDeep])
 
   const back = () => {
     setExiting(true)
@@ -60,7 +67,7 @@ export default function Finances({ onBack }: { onBack: () => void }) {
   const y = (v: number) => pad.t + (H - pad.t - pad.b) * (1 - v / max)
 
   return (
-    <main className={`screen layer finances arriving${exiting ? ' exiting' : ''}`}>
+    <main className={`screen layer finances arriving${form ? ' deep' : ''}${exiting ? ' exiting' : ''}`}>
       <div className="overlay">
         <div className="clients-left">
           <button className="back" onClick={back}>
@@ -74,16 +81,29 @@ export default function Finances({ onBack }: { onBack: () => void }) {
             <h1>Finanzas</h1>
             <div className="plist-side">
               {internal && <InternalChip label="Solo internos" />}
-              <div className="seg seg-light" role="tablist" aria-label="Periodo">
-                {PERIODS.map((p) => (
-                  <button key={p.key} role="tab" aria-selected={period === p.key} className={period === p.key ? 'is-on' : ''} onClick={() => setPeriod(p.key)}>
-                    {p.label}
-                  </button>
-                ))}
+              <div className="seg seg-light" role="tablist" aria-label="Vista de finanzas">
+                <button role="tab" aria-selected={view === 'resumen'} className={view === 'resumen' ? 'is-on' : ''} onClick={() => setFinanceView('resumen')}>
+                  Resumen
+                </button>
+                <button role="tab" aria-selected={view === 'gastos'} className={view === 'gastos' ? 'is-on' : ''} onClick={() => setFinanceView('gastos')}>
+                  Gastos
+                </button>
               </div>
+              {view === 'resumen' && (
+                <div className="seg seg-light" role="tablist" aria-label="Periodo">
+                  {PERIODS.map((p) => (
+                    <button key={p.key} role="tab" aria-selected={period === p.key} className={period === p.key ? 'is-on' : ''} onClick={() => setPeriod(p.key)}>
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </header>
 
+          {view === 'gastos' ? (
+            <ExpensesPanel form={form} setForm={setForm} />
+          ) : (
           <div className="plist-scroll" ref={scroll}>
             {internal ? (
               <div className="kpis">
@@ -197,6 +217,7 @@ export default function Finances({ onBack }: { onBack: () => void }) {
               </div>
             </div>
           </div>
+          )}
         </section>
 
         <ZoomControls onZoom={(f) => world.zoomBy(f)} />

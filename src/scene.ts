@@ -431,10 +431,10 @@ export function projectsLayout(w: number, h: number) {
   return { rpx, cx, cy, viewH: (PROJECTS_R * h) / rpx, originY: cy / h }
 }
 
-export type WarpDest = 'clientes' | 'proyectos' | 'gastos' | 'finanzas' | 'tareas'
+export type WarpDest = 'clientes' | 'proyectos' | 'finanzas' | 'tareas'
 /** Donde (px) y como (inclinacion) termina el planeta destino del viaje, para que la pantalla siguiente continue sin salto. */
 export function warpTarget(key: WarpDest, w: number, h: number) {
-  if (key === 'proyectos' || key === 'gastos' || key === 'finanzas' || key === 'tareas') {
+  if (key === 'proyectos' || key === 'finanzas' || key === 'tareas') {
     const l = projectsLayout(w, h)
     return { cx: l.cx, cy: l.cy, rpx: l.rpx, rx: 0.2, rz: 0.08 }
   }

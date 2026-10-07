@@ -3,15 +3,24 @@ import * as THREE from 'three'
 import { toScreen } from './scene'
 import { money, summary, useAllClients, useClients } from './store'
 import { projectCounts, useProjects } from './projectData'
-import { monthSummary, useExpenses } from './expenseData'
+import { useExpenses } from './expenseData'
 import { yearFinance } from './finance'
 import { taskCounts, useTasks } from './taskData'
 import { Icon, ZoomControls } from './ui'
 import type { Screen } from './App'
+import { loadFunnel, useLoaded } from './hubData'
 import { CORE_R, PLANETS, type PlanetKey } from './world'
 import { useCosmos } from './Cosmos'
 import { setInternal } from './nav'
 import './hub.css'
+
+/** Líneas de la tarjeta de Marketing, del embudo de los últimos 90 días (mientras carga, un texto neutro). */
+function marketingLines(f: ReturnType<typeof loadFunnel> extends Promise<infer T> ? T | null : never): string[] {
+  if (!f) return ['Embudo comercial', 'Últimos 90 días']
+  const abiertos = f.etapas.reduce((a, e) => a + e.posibles, 0)
+  const ponderado = f.etapas.reduce((a, e) => a + e.valor_ponderado, 0)
+  return [`${abiertos} ${abiertos === 1 ? 'posible abierto' : 'posibles abiertos'}`, `${money(ponderado)} ponderado`, f.cierres.tasa_cierre == null ? 'Sin cierres aún' : `${f.cierres.tasa_cierre.toLocaleString('es-VE', { maximumFractionDigits: 1 })} % de cierre`]
+}
 
 /** Capa HTML del Home: tarjetas de cada planeta + marca del nucleo, que siguen a los objetos 3D. Solo se ve con `shown`. */
 export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Screen) => void }) {
@@ -21,7 +30,7 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
   const sm = summary(useClients())
   const pc = projectCounts(useProjects())
   const expenses = useExpenses()
-  const gx = monthSummary(expenses)
+  const funnel = useLoaded(() => loadFunnel(90), []).data
   const tk = taskCounts(useTasks())
   const fin = yearFinance(useAllClients(), expenses)
 
@@ -91,11 +100,15 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
       <div className="overlay">
         <button
           type="button"
-          className="core-mark"
+          className={`core-mark${hot === 'hub' ? ' is-hot' : ''}`}
           ref={mark}
           aria-label="Hub central"
           title="Hub central"
           tabIndex={shown ? 0 : -1}
+          onPointerEnter={() => shown && setHot('hub')}
+          onPointerLeave={() => setHot(null)}
+          onFocus={() => setHot('hub')}
+          onBlur={() => setHot(null)}
           onClick={() => {
             if (!shown) return
             setHot(null)
@@ -111,8 +124,8 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
               ? { title: 'Clientes', lines: [`${sm.activos} activos`, `${money(sm.recaudado)} recaudado`, `${sm.porCobrar} por cobrar`] }
               : p.key === 'proyectos'
                 ? { title: 'Proyectos', lines: [`${pc.activo} activos`, `${pc.entrega} en entrega`, `${pc.planeacion} por visitar`] }
-                : p.key === 'gastos'
-                  ? { title: 'Gastos', lines: [`${money(gx.total)} este mes`, `${gx.cantidad} ${gx.cantidad === 1 ? 'gasto' : 'gastos'}`] }
+                : p.key === 'marketing'
+                  ? { title: 'Marketing', lines: marketingLines(funnel) }
                   : p.key === 'finanzas'
                     ? { title: `Finanzas ${new Date().getFullYear()}`, lines: [`${money(fin.ingresos)} ingresos`, `${money(fin.gastos)} gastos`, `${money(fin.ingresos - fin.gastos)} balance`] }
                     : { title: 'Tareas', lines: [`${tk.pendientes} por hacer`, `${tk.completadas} completadas`] }

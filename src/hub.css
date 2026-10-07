@@ -11,7 +11,7 @@ button.core-mark {
   border-radius: 0.2em;
   transition: color var(--t-hover) var(--ease), text-shadow var(--t-hover) var(--ease);
 }
-button.core-mark:hover { color: #ffd27a; text-shadow: 0 2px 18px rgba(239, 157, 37, 0.65); }
+button.core-mark:hover, button.core-mark.is-hot { color: #ffd27a; text-shadow: 0 2px 18px rgba(239, 157, 37, 0.65); }
 button.core-mark:focus-visible { outline: 2px solid #ffd27a; outline-offset: 0.18em; color: #ffd27a; }
 
 /* ---------- chip del filtro interno (Tareas, Gastos, Finanzas) ---------- */

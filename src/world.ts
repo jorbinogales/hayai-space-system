@@ -7,7 +7,10 @@ import { fx, reduced } from './warp'
 // Viajar a una pantalla es mover el planeta elegido de su orbita a su sitio en esa pantalla (y al reves); nada se desmonta ni se recarga.
 
 const TEXTURES = [1, 2, 3, 4].map((n) => `/planets/planeta${n}.png`)
-export type PlanetKey = 'clientes' | 'gastos' | 'proyectos' | 'tareas' | 'finanzas'
+/** 'marketing' es una pantalla plana (sin viaje 3D): su planeta se ve en el Home y abre el planeta Marketing. */
+export type PlanetKey = 'clientes' | 'marketing' | 'proyectos' | 'tareas' | 'finanzas'
+/** Lo que se puede resaltar con el cursor en el Home: un planeta o el núcleo HAYAI (que abre el Hub). */
+export type HotKey = PlanetKey | 'hub'
 export const CORE_R = 2.07
 const CLIENTS_R = 3.15 // radio del planeta en la pantalla Clientes: los anillos extra se dibujan con esa proporcion
 
@@ -30,7 +33,7 @@ export const PLANETS: {
   ph: number
 }[] = [
   { key: 'clientes', tex: 2, tint: 0xffffff, gain: 1.05, pos: [-4.39, 2.28], r: 1.12, spin: 0.16, tilt: 0.35, side: 'left', icon: 'users', iconBg: '#b4702a', dy: -0.15, amp: 0.1, w: 0.07, ph: 0 },
-  { key: 'gastos', tex: 0, tint: 0xffffff, gain: 1.5, pos: [4.19, 2.24], r: 0.97, spin: 0.22, tilt: -0.3, side: 'right', icon: 'wallet', iconBg: '#8a3414', dy: 0, amp: 0.1, w: 0.06, ph: 2 },
+  { key: 'marketing', tex: 0, tint: 0xffffff, gain: 1.5, pos: [4.19, 2.24], r: 0.97, spin: 0.22, tilt: -0.3, side: 'right', icon: 'globe', iconBg: '#8a3414', dy: 0, amp: 0.1, w: 0.06, ph: 2 },
   { key: 'proyectos', tex: 1, tint: 0xffffff, gain: 1.25, pos: [-5.13, -1.73], r: 1.14, spin: 0.12, tilt: 0.2, side: 'left', icon: 'folder', iconBg: '#2a2018', dy: 0.1, amp: 0.09, w: 0.08, ph: 4 },
   { key: 'finanzas', tex: 2, tint: 0xff9a3c, gain: 1.05, pos: [-0.09, -3.59], r: 1.12, spin: 0.2, tilt: -0.25, side: 'right', icon: 'chart', iconBg: '#a24d16', dy: 0.3, amp: 0.1, w: 0.065, ph: 1 },
   { key: 'tareas', tex: 3, tint: 0xc9d0d4, gain: 1.3, pos: [5.47, -1.82], r: 1.0, spin: 0.14, tilt: 0.3, side: 'right', icon: 'check', iconBg: '#5b4a40', dy: 0.05, amp: 0.09, w: 0.075, ph: 3 },
@@ -56,7 +59,7 @@ export interface World {
   ctx: Ctx | null
   items: Item[]
   /** planeta resaltado (hover) en el Home */
-  hot: PlanetKey | null
+  hot: HotKey | null
   /** pantalla destino (null = Home) */
   key: WarpDest | null
   /** 1 = viajando hacia la pantalla, 0 = hacia el Home */
@@ -77,7 +80,7 @@ export interface World {
   stageClick: (() => void) | null
   /** puntero sobre el planeta/escena en las pantallas (arrastrar para girarlo) */
   stagePointer: ((type: 'down' | 'move' | 'up', e: { clientX: number; clientY: number; pointerId: number }) => void) | null
-  pick: (cx: number, cy: number) => PlanetKey | null
+  pick: (cx: number, cy: number) => HotKey | null
   zoomBy: (f: number) => void
   go: (key: WarpDest | null) => void
   busy: () => boolean
@@ -155,6 +158,8 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
     scene.add(l)
     common.push({ m: l.material as THREE.Material, o, obj: l })
   })
+  const haloBase = halo.scale.clone()
+  let coreHot = 0
   const coreAir = core.pivot.children.find((c) => c instanceof THREE.Sprite) as THREE.Sprite
   common.push({ m: core.body.material as THREE.Material, o: 1, obj: core.pivot }, { m: coreAir.material, o: 1, obj: coreAir }, { m: halo.material, o: 1, obj: halo })
 
@@ -176,7 +181,7 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
     // extras que solo se ven cuando el planeta es el protagonista de su pantalla
     let rim: THREE.Sprite | null = null
     const extra: Item['extra'] = []
-    if (p.key === 'clientes' || p.key === 'proyectos' || p.key === 'gastos' || p.key === 'finanzas' || p.key === 'tareas') {
+    if (p.key === 'clientes' || p.key === 'proyectos' || p.key === 'marketing' || p.key === 'finanzas' || p.key === 'tareas') {
       rim = glow(p.r * 1.3, 1 / 1.3, '239,157,37', 0.32)
       rim.position.z = -0.4
       rim.material.opacity = 0
@@ -206,13 +211,15 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
   })
   world.items = items
 
-  const bodies: THREE.Object3D[] = items.map((i) => i.body)
+  const bodies: THREE.Object3D[] = [...items.map((i) => i.body), core.body] // el último es el núcleo HAYAI
   const ray = new THREE.Raycaster()
   world.pick = (cx, cy) => {
     const rect = ctx.renderer.domElement.getBoundingClientRect()
     ray.setFromCamera(new THREE.Vector2(((cx - rect.left) / rect.width) * 2 - 1, -((cy - rect.top) / rect.height) * 2 + 1), camera)
     const hit = ray.intersectObjects(bodies, false)[0]
-    return hit ? items[bodies.indexOf(hit.object)].p.key : null
+    if (!hit) return null
+    const i = bodies.indexOf(hit.object)
+    return i < items.length ? items[i].p.key : 'hub'
   }
 
   let lastNow = performance.now()
@@ -242,7 +249,11 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
       const e = smooth(clamp01((wp - split) / (1 - split)))
 
       const upp = (2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / (ctx.h * camera.zoom)
-      core.body.rotation.y += 0.05 * dt * m
+      // el núcleo reacciona al cursor como los planetas: crece un poco, gira más vivo y su halo se avivia
+      coreHot += ((world.hot === 'hub' && !key ? 1 : 0) - coreHot) * (1 - Math.exp(-dt * 12))
+      core.body.rotation.y += (0.05 + coreHot * 0.3) * dt * m
+      core.body.scale.setScalar(1 + coreHot * 0.05)
+      halo.scale.set(haloBase.x * (1 + coreHot * 0.1), haloBase.y * (1 + coreHot * 0.1), haloBase.z)
 
       for (const it of items) {
         const { p } = it

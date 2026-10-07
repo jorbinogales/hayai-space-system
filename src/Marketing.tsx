@@ -144,7 +144,7 @@ const SOURCES = [
 ]
 
 /** Planeta Marketing: embudo del pipeline, de dónde llegan los leads, Meta Ads y la propuesta de analítica. */
-export default function Marketing({ onBack }: { onBack: () => void }) {
+export default function Marketing({ from = 'hub', onBack }: { from?: 'hub' | 'home'; onBack: () => void }) {
   const [dias, setDias] = useState(90)
   const funnel = useLoaded(() => loadFunnel(dias), [dias])
   const stages = useLoaded(loadStages, [])
@@ -157,7 +157,7 @@ export default function Marketing({ onBack }: { onBack: () => void }) {
         <div className="hb-wrap">
           <button className="hb-back" onClick={onBack}>
             <Icon name="back" size={16} />
-            Volver al hub
+            {from === 'home' ? 'Volver al core' : 'Volver al hub'}
           </button>
 
           <header className="hb-head">

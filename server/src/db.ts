@@ -9,6 +9,7 @@ const connectionString =
   process.env.DATABASE_URL ?? (isProd ? undefined : 'postgres://hayai:hayai@localhost:54329/hayai')
 if (!connectionString) throw new Error('Falta DATABASE_URL')
 
+export { connectionString }
 export const pool = new pg.Pool({ connectionString, max: 10 })
 pool.on('error', (e) => console.error('pg idle client error:', e.message))
 

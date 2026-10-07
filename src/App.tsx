@@ -16,10 +16,11 @@ import { createWorld } from './world'
 import { logout, me, type Session } from './auth'
 import { loadAll, resetAll } from './data'
 import { SessionProvider } from './session'
+import { startLive, stopLive } from './live'
 
 export type Screen = 'home' | 'clientes' | 'proyectos' | 'gastos' | 'finanzas' | 'tareas'
 const fromHash = (): Screen => {
-  const h = location.hash.slice(1)
+  const h = location.hash.slice(1).split('/')[0]
   return h === 'clientes' || h === 'proyectos' || h === 'gastos' || h === 'finanzas' || h === 'tareas' ? h : 'home'
 }
 
@@ -52,6 +53,13 @@ export default function App() {
       alive = false
     }
   }, [])
+
+  // con sesion: avisos del equipo en vivo (stream + alertas); sin sesion: todo apagado y vaciado
+  useEffect(() => {
+    if (!session) return
+    startLive()
+    return stopLive
+  }, [session])
 
   // sesion vencida o revocada en el servidor: vuelve al acceso
   useEffect(() => {

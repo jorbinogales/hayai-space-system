@@ -78,7 +78,7 @@ Campos en español y snake_case, montos en USD como número, fechas `AAAA-MM-DD`
 
 ### MCP
 
-33 herramientas: 13 de lectura, 14 de escritura y 6 de borrado (`hayai_clientes_listar`, `hayai_cliente_crear`, `hayai_proyecto_estado`, `hayai_gasto_registrar`, `hayai_finanzas_resumen`, `hayai_papelera_restaurar`, `hayai_cliente_eliminar`...). Las del CRM: `hayai_interacciones_listar`, `hayai_interaccion_registrar`, `hayai_interaccion_actualizar`, `hayai_interaccion_eliminar`, `hayai_pipeline_resumen`, `hayai_notificaciones_listar`, `hayai_notificaciones_marcar_leidas` y `hayai_buscar`. Llaman a los mismos servicios que la REST, así que validan y atribuyen igual. Los errores de negocio vuelven como resultado con `isError`. Las peticiones deben llevar `Accept: application/json, text/event-stream`.
+35 herramientas: 14 de lectura, 15 de escritura y 6 de borrado (`hayai_clientes_listar`, `hayai_cliente_crear`, `hayai_proyecto_estado`, `hayai_gasto_registrar`, `hayai_finanzas_resumen`, `hayai_papelera_restaurar`, `hayai_cliente_eliminar`...). Las del CRM: `hayai_interacciones_listar`, `hayai_interaccion_registrar`, `hayai_interaccion_actualizar`, `hayai_interaccion_eliminar`, `hayai_pipeline_resumen`, `hayai_notificaciones_listar`, `hayai_notificaciones_marcar_leidas`, `hayai_actividad_listar`, `hayai_actividad_marcar_leida` y `hayai_buscar`. Llaman a los mismos servicios que la REST, así que validan y atribuyen igual. Los errores de negocio vuelven como resultado con `isError`. Las peticiones deben llevar `Accept: application/json, text/event-stream`.
 
 Conectar Growi: conector personalizado `custom.hayai-space` → URL `https://space.hayai.com.ve/mcp`, header `X-API-Key` con la llave guardada en su Secure Vault. Probar con `hayai_finanzas_resumen` y `hayai_tareas_listar`.
 
@@ -110,3 +110,11 @@ Todo lo que hace la web existe igual en la API y el MCP (los tres llaman a los m
 
 - **Papelera**: borrar (desde la web, la API o el MCP) no destruye. La fila y todo lo que cuelga de ella (un cliente se lleva sus cobros, proyectos, tareas, gastos e interacciones) se guardan en la tabla `trash` y se restauran con los mismos ids. Se vacía sola a los 30 días. Desde la web: menú de la cuenta → **Papelera y archivo** (restaurar, o eliminar definitivamente). Restaurar un proyecto cuyo cliente sigue borrado da 409: restaura primero el cliente. La inicial no se borra como un cobro: se edita desde sus ítems.
 - **Archivo**: archivar un cliente o proyecto lo oculta de las pantallas de trabajo (Clientes, Proyectos, Tareas, calendario) sin tocar su historial: **Finanzas sigue contando todo**. Se archiva desde la ficha de edición y se recupera en Papelera y archivo. Los proyectos y tareas de un cliente archivado se ocultan con él.
+
+## Actividad del equipo, avisos en vivo y búsqueda
+
+- **Qué se avisa** (solo esto): cliente nuevo, posible cliente nuevo, tarea nueva y tarea completada (solo al pasar a hecha). Se guarda en la tabla `activity` dentro de la misma transacción del cambio y se purga a los 60 días.
+- **Quién figura**: el nombre del socio, nunca el de la herramienta. Si una llave de API (Muse, Growi) crea algo, el aviso dice «Leandro añadió…» si la llave es de Leandro; la llave solo queda en `via`.
+- **Web**: campana con dos pestañas (Alertas · Equipo), contador de no leídos y popup lateral para todos menos para quien hizo el cambio. Llega por SSE (`GET /api/events`, con `Last-Event-ID`/`desde_id` para recuperar lo perdido) y, si un proxy retiene el stream, por un sondeo cada 30 s. «Visto hasta» es por socio (tabla `activity_seen`).
+- **Búsqueda**: Ctrl/Cmd+K o `/` abre la paleta (clientes, proyectos, tareas); al elegir un cliente se abre su cajón con el enlace `#clientes/<id>`.
+- **API**: `GET /api/v1/actividad` (`tipo`, `desde_id`, `orden=asc|desc`, `page`, `per_page`; devuelve `meta.sin_leer`, `visto_hasta`, `ultimo_id`) y `POST /api/v1/actividad/leer` (`hasta_id` o `todas:true`; nunca retrocede). Lectura: `GET /api/v1/notificaciones` y `GET /api/v1/buscar?q=`. MCP: `hayai_actividad_listar`, `hayai_actividad_marcar_leida`.

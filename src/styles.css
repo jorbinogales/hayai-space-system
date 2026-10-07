@@ -1750,3 +1750,77 @@ fieldset > .seg { margin-bottom: 12px; }
 @media (prefers-reduced-motion: reduce) {
   .ig-copy, .ig-perm { transition-duration: 0.01ms; }
 }
+
+/* ---------- campana, popups del equipo y busqueda (misma piel que .acct-menu: noche con acentos ambar) ---------- */
+.badge.count { top: 2px; right: 0; display: grid; place-items: center; width: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--amber); border: 2px solid var(--paper); color: var(--night); font: 700 0.62rem / 1 var(--sans); font-variant-numeric: tabular-nums; }
+.notif { position: relative; }
+.notif-panel {
+  position: absolute; right: 0; top: calc(100% + 10px); z-index: 25;
+  width: min(380px, calc(100vw - 2 * var(--pad)));
+  display: flex; flex-direction: column;
+  border-radius: 18px; overflow: hidden;
+  background: linear-gradient(180deg, rgba(34, 27, 19, 0.98), rgba(22, 17, 11, 0.98));
+  color: #f4ebdd;
+  box-shadow: 0 20px 40px -18px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(239, 157, 37, 0.2);
+  animation: panelIn var(--t-panel) var(--ease);
+}
+.notif-tabs { display: flex; gap: 4px; padding: 10px 10px 0; }
+.notif-tabs button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 12px; border: 0; border-radius: 10px 10px 0 0; background: transparent; color: rgba(244, 235, 221, 0.62); font: 600 0.84rem / 1 var(--sans); letter-spacing: 0.04em; cursor: pointer; border-bottom: 2px solid rgba(244, 235, 221, 0.12); transition: color var(--t-hover) var(--ease), border-color var(--t-hover) var(--ease); }
+.notif-tabs button[aria-selected='true'] { color: #ffd27a; border-bottom-color: var(--amber); }
+.notif-tabs i { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--amber); color: var(--night); font: 700 0.66rem / 1 var(--sans); font-style: normal; font-variant-numeric: tabular-nums; }
+.notif-list { display: flex; flex-direction: column; max-height: min(420px, 62dvh); overflow-y: auto; padding: 8px; overscroll-behavior: contain; }
+.notif-list ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.notif-item, .toast-main { position: relative; width: 100%; display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 10px 12px; border: 0; border-radius: 12px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background var(--t-hover) var(--ease); }
+.notif-item.is-new { background: rgba(239, 157, 37, 0.1); }
+.notif-ico, .notif-av { flex: none; display: grid; place-items: center; }
+.notif-ico { width: 34px; height: 34px; border-radius: 11px; background: rgba(239, 157, 37, 0.16); color: #ffd27a; }
+.notif-ico.cuota_vencida { background: rgba(229, 101, 74, 0.2); color: #ffb09f; }
+.notif-body { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.notif-text { font-size: 0.9rem; line-height: 1.35; overflow-wrap: anywhere; text-wrap: pretty; }
+.notif-text b { font-weight: 700; color: #ffd27a; }
+.notif-body small { font-size: 0.74rem; letter-spacing: 0.02em; color: rgba(244, 235, 221, 0.6); overflow-wrap: anywhere; }
+.notif-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--amber); }
+.notif-all { align-self: flex-end; margin: 0 4px 6px; padding: 8px 12px; min-height: 36px; border: 0; border-radius: 10px; background: rgba(239, 157, 37, 0.16); color: #ffd27a; font: 600 0.78rem / 1 var(--sans); cursor: pointer; }
+.notif-empty { margin: 8px; padding: 26px 16px; display: grid; gap: 6px; text-align: center; border-radius: 14px; border: 1px dashed rgba(244, 235, 221, 0.22); color: rgba(244, 235, 221, 0.7); font-size: 0.86rem; line-height: 1.45; }
+.notif-empty b { color: #f4ebdd; font-size: 0.95rem; }
+.notif-off { margin: 0; padding: 8px 14px; font-size: 0.76rem; color: #ffd27a; background: rgba(239, 157, 37, 0.12); text-align: center; }
+
+.toasts { position: fixed; z-index: 35; top: calc(clamp(18px, 3.4dvh, 34px) + 44px + 14px); right: var(--pad); width: min(360px, calc(100vw - 2 * var(--pad))); display: grid; gap: 10px; pointer-events: none; }
+.toasts[hidden] { display: none; }
+.toast { position: relative; pointer-events: auto; border-radius: 16px; background: linear-gradient(180deg, rgba(34, 27, 19, 0.98), rgba(22, 17, 11, 0.98)); color: #f4ebdd; box-shadow: 0 20px 40px -18px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(239, 157, 37, 0.28); animation: toastIn 320ms var(--ease); }
+.toast-main { padding-right: 48px; min-height: 64px; }
+.toast-x { position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 50%; background: transparent; color: rgba(244, 235, 221, 0.6); cursor: pointer; }
+.toast-x::after { content: ''; position: absolute; inset: -8px; } /* objetivo tactil de 44px */
+@keyframes toastIn { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
+@media (hover: hover) {
+  .notif-item:hover, .toast-main:hover { background: rgba(239, 157, 37, 0.18); }
+  .notif-tabs button:hover { color: #f4ebdd; }
+  .notif-all:hover { background: rgba(239, 157, 37, 0.3); }
+  .toast-x:hover { color: #ffd27a; background: rgba(239, 157, 37, 0.16); }
+}
+.notif-item:focus-visible, .toast-main:focus-visible, .toast-x:focus-visible, .notif-tabs button:focus-visible, .notif-all:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+.srch-veil { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: center; align-items: flex-start; padding: clamp(60px, 14dvh, 140px) 16px 16px; background: rgba(22, 17, 11, 0.45); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: arrive-in var(--t-panel) var(--ease); }
+.srch { width: min(560px, 100%); max-height: min(520px, 76dvh); display: flex; flex-direction: column; border-radius: 18px; overflow: hidden; background: linear-gradient(180deg, rgba(34, 27, 19, 0.99), rgba(22, 17, 11, 0.99)); color: #f4ebdd; box-shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(239, 157, 37, 0.24); }
+.srch-field { display: flex; align-items: center; gap: 12px; padding: 0 16px; min-height: 56px; border-bottom: 1px solid rgba(244, 235, 221, 0.12); color: #ffd27a; }
+.srch-field input { flex: 1; min-width: 0; height: 56px; border: 0; background: transparent; color: #f4ebdd; font: 500 1rem / 1 var(--sans); outline: none; }
+.srch-field input::placeholder { color: rgba(244, 235, 221, 0.45); }
+.srch-field kbd { padding: 3px 7px; border-radius: 6px; background: rgba(244, 235, 221, 0.1); color: rgba(244, 235, 221, 0.6); font: 600 0.68rem / 1 var(--sans); letter-spacing: 0.06em; }
+.srch-body { overflow-y: auto; padding: 8px; overscroll-behavior: contain; }
+.srch-body ul { margin: 0; padding: 0; list-style: none; }
+.srch-group { margin: 10px 10px 4px; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(244, 235, 221, 0.55); }
+.srch-body li button { width: 100%; display: grid; gap: 2px; min-height: 48px; padding: 9px 12px; border: 0; border-radius: 10px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.srch-body li button.is-on { background: rgba(239, 157, 37, 0.2); }
+.srch-title { font-weight: 600; font-size: 0.94rem; overflow-wrap: anywhere; }
+.srch-body li button small { font-size: 0.76rem; color: rgba(244, 235, 221, 0.6); overflow-wrap: anywhere; }
+.srch-note { margin: 0; padding: 22px 14px; display: grid; gap: 6px; text-align: center; font-size: 0.86rem; line-height: 1.45; color: rgba(244, 235, 221, 0.68); }
+.srch-note b { color: #f4ebdd; }
+
+@media (max-width: 640px) {
+  .notif { position: static; }
+  .notif-panel { position: fixed; left: var(--pad); right: var(--pad); width: auto; top: calc(clamp(18px, 3.4dvh, 34px) + 44px + 10px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast, .notif-panel, .srch-veil { animation-duration: 0.01ms; }
+  .notif-item, .toast-main, .notif-tabs button { transition-duration: 0.01ms; }
+}

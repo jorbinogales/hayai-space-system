@@ -17,6 +17,7 @@ import History from './History'
 import { Blobvatar } from './blob'
 import { Icon, ZoomControls } from './ui'
 import { reduced, useDive } from './warp'
+import { hashClientId } from './nav'
 
 const ANCHOR_LON = -0.5 // longitud (rad) de la posicion destacada, a la izquierda del meridiano central
 const LATS = [0.12, 0.5, 0.22, -0.4, 0.42, -0.04, -0.52, 0.28, -0.26]
@@ -266,6 +267,32 @@ export default function Clients({ onBack }: { onBack: () => void }) {
     window.addEventListener('keydown', esc)
     return () => window.removeEventListener('keydown', esc)
   }, [deep])
+
+  // enlace directo: `#clientes/<id>` (desde la busqueda o un aviso) abre el cajon de ese cliente
+  const known = useRef(clients)
+  known.current = clients
+  const wasOpen = useRef<string | null>(null)
+  useEffect(() => {
+    const openFromHash = () => {
+      const id = hashClientId()
+      if (id && known.current.some((x) => x.id === id)) {
+        setSelected(id)
+        setOpen(id)
+      }
+    }
+    openFromHash()
+    window.addEventListener('hashchange', openFromHash)
+    window.addEventListener('hayai:open-client', openFromHash)
+    return () => {
+      window.removeEventListener('hashchange', openFromHash)
+      window.removeEventListener('hayai:open-client', openFromHash)
+    }
+  }, [])
+  useEffect(() => {
+    // al cerrar el cajon el enlace vuelve a #clientes (asi volver a tocar el mismo aviso lo abre otra vez)
+    if (wasOpen.current && !open && hashClientId()) history.replaceState(null, '', '#clientes')
+    wasOpen.current = open
+  }, [open])
 
   const track = useRef<HTMLDivElement>(null)
   useDragScroll(track, 'x') // la linea de tiempo se arrastra con el raton (y la rueda la desplaza)

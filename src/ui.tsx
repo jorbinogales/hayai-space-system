@@ -1,5 +1,7 @@
 import { Blobvatar } from './blob'
 import { useEffect, useState } from 'react'
+import { Notifications } from './Notifications'
+import { Search } from './SearchPalette'
 
 const PATHS = {
   search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14ZM20 20l-3.5-3.5',
@@ -59,13 +61,12 @@ export function Topbar({ user, onLogout, onProfile, onIntegrations, onVault }: {
         <p className="mark-tag">TODO ESTÁ CONECTADO</p>
       </div>
       <div className="tools">
-        <button className="round" aria-label="Buscar">
-          <Icon name="search" />
-        </button>
-        <button className="round" aria-label="Notificaciones, 1 sin leer">
-          <Icon name="bell" />
-          <span className="badge" aria-hidden="true" />
-        </button>
+        {user && (
+          <>
+            <Search />
+            <Notifications />
+          </>
+        )}
         {user && (
           <div className="acct">
             <button className="avatar" aria-label={`Cuenta de ${user.name}`} aria-expanded={menu} onClick={() => setMenu((m) => !m)}>

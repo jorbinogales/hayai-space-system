@@ -4,8 +4,14 @@
 // avisos de algo que no paso, ni algo que pasa sin aviso.
 import type { Pool, PoolClient } from 'pg'
 
-export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido', 'lead_meta'] as const
+export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido', 'lead_meta', 'acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado'] as const
 export type ActivityKind = (typeof KINDS)[number]
+
+/** Avisos que trae el sistema (no un socio): le llegan a TODOS, también a quien figura como actor. */
+export const SYSTEM_KINDS: readonly ActivityKind[] = ['lead_meta', 'sistema_caido', 'sistema_recuperado']
+export const isSystemKind = (k: string) => (SYSTEM_KINDS as readonly string[]).includes(k)
+/** Condicion SQL de la bitácora interna de HAYAI (hub): lo que no es de un cliente, más acuerdos y sistemas. */
+export const INTERNAL_ACTIVITY_SQL = "((a.client_id IS NULL AND a.kind <> 'lead_meta') OR a.kind IN ('acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado'))"
 
 export const CHANNEL = 'activity'
 const RETENTION_DAYS = 60
@@ -57,6 +63,12 @@ export function activityText(kind: ActivityKind, actor: string, subject: string,
       return `${actor} marcó como perdido a ${subject}${detail ? ` (${detail})` : ''}`
     case 'lead_meta':
       return `Llegó un posible cliente de Meta Ads: ${subject}` // lo trae el sistema, no un socio: no nombra a nadie
+    case 'acuerdo_nuevo':
+      return `${actor} registró un acuerdo: ${subject}`
+    case 'sistema_caido':
+      return `El sistema «${subject}»${detail ? ` de ${detail}` : ''} dejó de responder`
+    case 'sistema_recuperado':
+      return `El sistema «${subject}»${detail ? ` de ${detail}` : ''} volvió a responder`
   }
 }
 
@@ -67,8 +79,8 @@ export const activityOut = (r: any, viewerId?: string) => ({
   tipo: r.kind as ActivityKind,
   texto: activityText(r.kind, r.actor_name, r.subject, r.detail),
   actor: { id: r.actor_id as string, nombre: r.actor_name as string, avatar: r.actor_avatar as string },
-  // Un lead de Meta lo trae el sistema (el socio del actor es solo su responsable): le avisa a TODOS, también a el.
-  propia: r.kind !== 'lead_meta' && viewerId !== undefined && r.actor_id === viewerId,
+  // Un lead de Meta o un sistema caído los trae el sistema (el socio del actor es solo una referencia): avisan a TODOS, también a el.
+  propia: !isSystemKind(r.kind) && viewerId !== undefined && r.actor_id === viewerId,
   sujeto: r.subject as string,
   detalle: (r.detail ?? null) as string | null,
   cliente_id: (r.client_id ?? null) as string | null,

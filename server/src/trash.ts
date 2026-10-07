@@ -25,9 +25,9 @@ const NOT_FOUND: Record<Entity, string> = {
 // Tabla de cada entidad e hijos, en orden de insercion (los padres antes que los hijos). Lista cerrada: nunca viene del cliente.
 const TABLE: Record<Entity, string> = { cliente: 'clients', proyecto: 'projects', pago: 'payments', gasto: 'expenses', tarea: 'tasks', interaccion: 'interactions', hito: 'project_milestones', checklist_item: 'project_checklist' }
 const INSERT_ORDER: Record<Entity, string[]> = {
-  cliente: ['clients', 'client_items', 'interactions', 'payments', 'proposals', 'proposal_items', 'projects', 'project_milestones', 'project_checklist', 'tasks', 'expenses'],
+  cliente: ['clients', 'client_items', 'interactions', 'payments', 'payment_receipts', 'systems', 'proposals', 'proposal_items', 'projects', 'project_milestones', 'project_checklist', 'tasks', 'expenses'],
   proyecto: ['projects', 'project_milestones', 'project_checklist', 'tasks', 'expenses'],
-  pago: ['payments'],
+  pago: ['payments', 'payment_receipts'],
   gasto: ['expenses'],
   tarea: ['tasks'],
   interaccion: ['interactions'],
@@ -55,6 +55,9 @@ async function snapshot(c: PoolClient, entity: Entity, entityId: string): Promis
       // La bitacora muere con el cliente (CASCADE): si no entra en la foto, se perderia para siempre.
       interactions: await rows(c, 'SELECT * FROM interactions WHERE client_id = $1', [entityId]),
       payments: await rows(c, 'SELECT * FROM payments WHERE client_id = $1', [entityId]),
+      // Comprobantes (la imagen vive en la fila) y sistemas: mueren con el cliente por CASCADE, asi que entran en la foto.
+      payment_receipts: await rows(c, 'SELECT * FROM payment_receipts WHERE payment_id IN (SELECT id FROM payments WHERE client_id = $1)', [entityId]),
+      systems: await rows(c, 'SELECT * FROM systems WHERE client_id = $1', [entityId]),
       // Las propuestas (y sus items) mueren con el cliente por CASCADE: sin foto se perderia la negociacion.
       proposals,
       proposal_items: await rows(c, 'SELECT * FROM proposal_items WHERE proposal_id = ANY($1::uuid[])', [proposals.map((p) => p.id)]),
@@ -70,6 +73,7 @@ async function snapshot(c: PoolClient, entity: Entity, entityId: string): Promis
       plural(projects.length, 'proyecto', 'proyectos'),
       plural(children.tasks.length, 'tarea', 'tareas'),
       plural(children.expenses.length, 'gasto', 'gastos'),
+      ...(children.systems.length ? [plural(children.systems.length, 'sistema', 'sistemas')] : []),
       ...(children.interactions.length ? [plural(children.interactions.length, 'interacción', 'interacciones')] : []),
     ]
     return { root, children, label: String(root.name), detail: parts.join(', ') }
@@ -87,7 +91,8 @@ async function snapshot(c: PoolClient, entity: Entity, entityId: string): Promis
   }
   if (entity === 'pago') {
     const owner = (await c.query('SELECT name FROM clients WHERE id = $1', [root.client_id])).rows[0]?.name
-    return { root, children: {}, label: `${root.concept} · ${money(root.amount)}`, detail: owner ? `Cobro de ${owner}` : null }
+    const receipts = await rows(c, 'SELECT * FROM payment_receipts WHERE payment_id = $1', [entityId])
+    return { root, children: { payment_receipts: receipts }, label: `${root.concept} · ${money(root.amount)}`, detail: owner ? `Cobro de ${owner}${receipts.length ? ' (con comprobante)' : ''}` : null }
   }
   if (entity === 'gasto') return { root, children: {}, label: `${root.concept} · ${money(root.amount)}`, detail: `Gasto del ${root.date}` }
   if (entity === 'interaccion') {

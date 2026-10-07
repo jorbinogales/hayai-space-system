@@ -3,6 +3,9 @@
 import express, { Router, type NextFunction, type Request, type Response } from 'express'
 import { exec, type Op } from '../services/common.ts'
 import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoActualizar, pagoRegistrar, pagosListar } from '../services/clientes.ts'
+import { comprobanteArchivo, comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
+import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
+import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 import { finanzasResumen } from '../services/finanzas.ts'
 import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResumen } from '../services/alertas.ts'
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
@@ -55,7 +58,7 @@ const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
 /** Query string -> entrada: page y per_page llegan como texto y el esquema espera numeros. */
 const fromQuery = (req: Request) => {
   const o: Record<string, unknown> = { ...req.query }
-  for (const k of ['page', 'per_page', 'limite', 'desde_id']) if (typeof o[k] === 'string') o[k] = Number(o[k])
+  for (const k of ['page', 'per_page', 'limite', 'desde_id', 'dias']) if (typeof o[k] === 'string') o[k] = Number(o[k])
   return { ...o, ...req.params }
 }
 /** Cuerpo JSON + parametros de la ruta (los de la ruta mandan: el :id de la URL no se puede pisar desde el cuerpo). */
@@ -68,6 +71,8 @@ v1Router.use((_req, res, next) => {
   next()
 })
 v1Router.use(apiKeyAuth, keyRateLimit())
+// El comprobante viaja en base64 (hasta 4 MB de imagen): solo esa ruta admite un cuerpo grande.
+v1Router.post('/pagos/:id/comprobante', jsonOnly, express.json({ limit: '6mb' }))
 v1Router.use(jsonOnly, express.json({ limit: '100kb' }))
 
 const SCOPE_OF = { get: 'read', post: 'write', patch: 'write', delete: 'delete' } as const
@@ -115,7 +120,22 @@ route('patch', '/ofertas/:id', ofertaActualizar)
 route('delete', '/ofertas/:id', ofertaDesactivar) // desactiva (no destruye): las propuestas que la usan conservan su texto y precio
 
 route('get', '/pagos', pagosListar)
+route('get', '/pagos/:id', pagoVer) // detalle del cobro: bolívares, tasa, referencia, bancos, recibido_por, método, comprobante
 route('patch', '/pagos/:id', pagoActualizar)
+route('post', '/pagos/:id/comprobante', comprobanteSubir) // imagen_base64 (PNG/JPEG/WebP, máx. 4 MB); lee "DOCUMENTO V-..." y asigna recibido_por si está mapeado
+route('get', '/pagos/:id/comprobante', comprobanteVer)
+route('post', '/pagos/:id/comprobante/detectar', comprobanteDetectar) // vuelve a cruzar el documento leído con el mapeo (sin repetir el OCR)
+v1Router.get('/pagos/:id/comprobante/archivo', async (req, res) => {
+  requireScope(req, 'read')
+  const f = await comprobanteArchivo(String(req.params.id))
+  res.setHeader('Content-Type', f.mime)
+  res.setHeader('Content-Disposition', `inline; filename="${f.filename}"`)
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox")
+  res.send(f.data)
+})
+route('get', '/receptores', receptoresListar) // documentos -> socio que recibe (enmascarados)
+route('post', '/receptores', receptorGuardar)
+route('delete', '/receptores/:id', receptorEliminar)
 route('delete', '/pagos/:id', pagoEliminar)
 
 route('get', '/proyectos', proyectosListar)
@@ -140,6 +160,20 @@ route('patch', '/gastos/:id', gastoActualizar)
 route('delete', '/gastos/:id', gastoEliminar)
 
 route('get', '/finanzas/resumen', finanzasResumen)
+
+// Hub central (planeta HAYAI) y embudo del planeta Marketing.
+route('get', '/hub', hubVer)
+route('get', '/equipo', equipoVer)
+route('patch', '/equipo/:socio', equipoActualizar)
+route('get', '/acuerdos', acuerdosListar)
+route('post', '/acuerdos', acuerdoCrear, 201)
+route('patch', '/acuerdos/:id', acuerdoActualizar)
+route('get', '/sistemas', sistemasListar)
+route('get', '/sistemas/:id', sistemaVer)
+route('post', '/sistemas', sistemaCrear, 201)
+route('patch', '/sistemas/:id', sistemaActualizar)
+route('post', '/sistemas/:id/verificar', sistemaVerificar)
+route('get', '/marketing/embudo', marketingEmbudo)
 
 route('get', '/pipeline', pipelineResumen)
 route('get', '/pipeline/etapas', pipelineEtapas)

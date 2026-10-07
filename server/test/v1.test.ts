@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process'
 import { createHmac } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -32,6 +32,10 @@ let graph: Server
 const graphLeads = new Map<string, unknown>() // leadgen_id -> respuesta de Graph
 const graphDown = new Set<string>() // leadgen_id que responden 500
 const graphHits: string[] = []
+// Sistema "de un cliente" falso: el vigilante lo consulta aquí. up=false => 500.
+const TARGET_PORT = 3198
+let target: Server
+let targetUp = true
 
 type Res = { status: number; body: any; headers: Headers }
 type Opts = { method?: string; body?: unknown; raw?: string; key?: string | null; headers?: Record<string, string> }
@@ -96,6 +100,13 @@ before(async () => {
   })
   await new Promise<void>((ok) => graph.listen(GRAPH_PORT, ok))
 
+  target = createServer((req, res) => {
+    if (req.url?.startsWith('/siempre')) return void res.writeHead(200).end('ok')
+    if (req.url?.startsWith('/redir')) return void res.writeHead(302, { location: `http://localhost:${TARGET_PORT}/health` }).end()
+    res.writeHead(targetUp ? 200 : 500).end(targetUp ? 'ok' : 'caido')
+  })
+  await new Promise<void>((ok) => target.listen(TARGET_PORT, ok))
+
   env = {
     ...process.env,
     DATABASE_URL,
@@ -110,6 +121,12 @@ before(async () => {
     META_GRAPH_BASE: `http://localhost:${GRAPH_PORT}`,
     META_LEADS_OWNER: 'Elis,Jorbi',
     META_RETRY_MS: '400',
+    // Hub y cobros: el mapeo de documentos se siembra desde el entorno (aquí, cédulas inventadas); el vigilante de sistemas
+    // corre rápido y puede apuntar a localhost; la confirmación de una caída espera 100 ms en vez de 20 s.
+    RECEIVER_DOCUMENTS: 'V-12345678=Jorbi,V-11111111=Nadie,roto,E-22222222=Leandro',
+    SYSTEMS_ALLOW_PRIVATE: 'true',
+    SYSTEMS_CHECK_MS: '2500',
+    SYSTEMS_RETRY_MS: '100',
   }
   const mig = spawnSync(process.execPath, ['server/db/migrate.mjs'], { cwd: root, env, encoding: 'utf8' })
   assert.equal(mig.status, 0, mig.stderr + mig.stdout)
@@ -134,6 +151,7 @@ after(async () => {
   await admin?.end().catch(() => {})
   server?.kill()
   graph?.close()
+  target?.close()
   await embedded?.stop().catch(() => {})
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 })
 })
@@ -413,6 +431,7 @@ describe('proyectos', () => {
         entrega: null,
         archivado: false,
         cliente_archivado: false,
+        es_interno: false,
         tareas: { total: 0, completadas: 0 },
         hitos: { total: 0, hechos: 0 },
         checklist: { total: 0, hechas: 0 },
@@ -464,8 +483,8 @@ describe('tareas', () => {
     const b = await api('/tareas', { body: { titulo: 'Reunión', proyecto_id: p1, vence: '2026-10-20' } })
     assert.equal(a.status, 201)
     assert.deepEqual(
-      { ...b.body, id: '<id>' },
-      { id: '<id>', titulo: 'Reunión', proyecto_id: p1, proyecto: 'Sistema Karelys', hito_id: null, hito: null, estado: 'pendiente', vence: '2026-10-20', creada_por: 'Leandro' },
+      { ...b.body, id: '<id>', responsable: { ...b.body.responsable, id: '<id>' } },
+      { id: '<id>', titulo: 'Reunión', proyecto_id: p1, proyecto: 'Sistema Karelys', hito_id: null, hito: null, estado: 'pendiente', vence: '2026-10-20', creada_por: 'Leandro', es_interno: false, responsable: { id: '<id>', nombre: 'Leandro' }, asignada: false },
     )
     t1 = a.body.id
     t2 = b.body.id
@@ -501,7 +520,7 @@ describe('gastos', () => {
     const a = await api('/gastos', { body: { concepto: 'Lovable', monto: 25, categoria: 'Herramientas', fecha: '2026-10-01' } })
     assert.equal(a.status, 201, JSON.stringify(a.body))
     assert.deepEqual({ ...a.body, id: '<id>' }, {
-      id: '<id>', fecha: '2026-10-01', concepto: 'Lovable', monto: 25, categoria: 'Herramientas', ambito: 'general', referencia: null, registrado_por: 'Leandro',
+      id: '<id>', fecha: '2026-10-01', concepto: 'Lovable', monto: 25, categoria: 'Herramientas', ambito: 'general', referencia: null, registrado_por: 'Leandro', es_interno: true,
     })
     e1 = a.body.id
     const b = await api('/gastos', { body: { concepto: 'Anuncio', monto: 10, categoria: 'Marketing', fecha: '2026-10-02', ambito: 'cliente', referencia_id: karelys } })
@@ -681,11 +700,11 @@ describe('MCP', () => {
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 44) // lectura + escritura
+    assert.equal(names.length, 63) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 53)
-    assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 9)
+    assert.equal(full.length, 73)
+    assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
     assert.equal(r.body.result.tools.find((t: any) => t.name === 'hayai_finanzas_resumen').annotations.readOnlyHint, true)
@@ -2692,5 +2711,678 @@ describe('Meta Lead Ads (webhook)', () => {
     } finally {
       srv.close()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Hub central + módulo de cobros: detalle del cobro, comprobante con OCR, mapeo de cédulas, sistemas, acuerdos, equipo.
+// ---------------------------------------------------------------------------------------------------------------------
+const FIXTURE_PNG = readFileSync(resolve(root, 'server/test/fixtures/comprobante-prueba.png'))
+const png64 = FIXTURE_PNG.toString('base64')
+const mcp = async (name: string, args: unknown, key = KEY) => {
+  const r = await http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } } })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  return r.body.result
+}
+
+describe('Cobros: detalle del pago (bolívares, tasa, banco, recibido por)', () => {
+  let cid = ''
+  let pid = ''
+  const mkPago = async (b: Record<string, unknown>) => {
+    const r = await api(`/clientes/${cid}/pagos`, { body: { fecha: '2026-10-07', monto: 75, concepto: 'Mensualidad', estado: 'cobrado', ...b } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    return r
+  }
+  const lastId = async () => (await admin.query('SELECT id FROM payments WHERE client_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1', [cid])).rows[0].id as string
+
+  before(async () => {
+    const r = await api('/clientes', { body: { nombre: 'Cobros SA' } })
+    assert.equal(r.status, 201)
+    cid = r.body.id
+  })
+
+  it('registrar con el detalle del caso real: la tasa se deriva (873,87), el banco se separa de los 4 dígitos, recibido_por se resuelve por nombre', async () => {
+    await mkPago({
+      monto_bs: 65540.25,
+      referencia: '071026007463',
+      banco_origen: 'Bancrecer ****8017',
+      banco_destino: 'Mercantil',
+      recibido_por: 'elis',
+      metodo: 'transferencia',
+    })
+    pid = await lastId()
+    const r = await api(`/pagos/${pid}`)
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual(
+      { ...r.body, id: '<id>', cliente_id: '<id>', recibido_por: { ...r.body.recibido_por, id: '<id>' } },
+      {
+        id: '<id>', cliente_id: '<id>', cliente: 'Cobros SA', fecha: '2026-10-07', concepto: 'Mensualidad', monto: 75, tipo: 'pago', estado: 'cobrado', vencido: false,
+        monto_bs: 65540.25, tasa: 873.87, fecha_tasa: '2026-10-07', referencia: '071026007463', banco_origen: 'Bancrecer', cuenta_origen_ultimos4: '8017', banco_destino: 'Mercantil',
+        recibido_por: { id: '<id>', nombre: 'Elis' }, recibido_por_origen: 'manual', metodo: 'transferencia', notas: null, comprobante: null,
+      },
+    )
+  })
+
+  it('tasa sin bolívares => bolívares = monto × tasa; los dos a la vez deben cuadrar (400); método y últimos 4 se validan', async () => {
+    await mkPago({ monto: 100, tasa: 900, concepto: 'Solo tasa' })
+    const a = (await api(`/pagos/${await lastId()}`)).body
+    assert.equal(a.monto_bs, 90000)
+    assert.equal(a.tasa, 900)
+    const bad = [
+      { monto: 100, monto_bs: 1000, tasa: 900 },
+      { monto_bs: -5 },
+      { monto_bs: 10.123 },
+      { tasa: 0 },
+      { metodo: 'cheque' },
+      { cuenta_origen_ultimos4: '12' },
+      { referencia: 'x', repetir_meses: 2, estado: 'pendiente' },
+      { fecha_tasa: '2026-10-01' },
+    ]
+    for (const b of bad) assert.equal((await api(`/clientes/${cid}/pagos`, { body: { fecha: '2026-10-07', monto: 100, concepto: 'x', ...b } })).status, 400, JSON.stringify(b))
+    assert.equal((await api(`/clientes/${cid}/pagos`, { body: { fecha: '2026-10-07', monto: 100, concepto: 'x', monto_bs: 9000, tasa: 90, recibido_por: 'Ellis' } })).status, 404)
+  })
+
+  it('cambiar el monto en USD recalcula la tasa (los bolívares recibidos no cambian); quitar los bolívares quita también la tasa', async () => {
+    const m = await api(`/pagos/${pid}`, { method: 'PATCH', body: { monto: 80 } })
+    assert.equal(m.status, 200, JSON.stringify(m.body))
+    const a = (await api(`/pagos/${pid}`)).body
+    assert.equal(a.monto, 80)
+    assert.equal(a.monto_bs, 65540.25)
+    assert.equal(a.tasa, 819.2531)
+    const d = await api(`/pagos/${pid}`, { method: 'PATCH', body: { monto_bs: null } })
+    assert.equal(d.status, 200)
+    const b = (await api(`/pagos/${pid}`)).body
+    assert.deepEqual([b.monto_bs, b.tasa, b.fecha_tasa], [null, null, null])
+    assert.equal(b.referencia, '071026007463', 'lo demás se conserva')
+    // volver a ponerlos: la fecha de la tasa por defecto es la del cobro
+    await api(`/pagos/${pid}`, { method: 'PATCH', body: { monto: 75, monto_bs: 65540.25, fecha_tasa: '2026-10-06' } })
+    const c = (await api(`/pagos/${pid}`)).body
+    assert.deepEqual([c.monto_bs, c.tasa, c.fecha_tasa], [65540.25, 873.87, '2026-10-06'])
+  })
+
+  it('una referencia bancaria no se registra dos veces (409, sin importar mayúsculas); la propia se puede reescribir', async () => {
+    const dup = await api(`/clientes/${cid}/pagos`, { body: { fecha: '2026-10-08', monto: 10, concepto: 'Repetido', referencia: '071026007463' } })
+    assert.equal(dup.status, 409)
+    assert.match(dup.body.error.message, /ya está registrada/)
+    assert.equal((await api(`/pagos/${pid}`, { method: 'PATCH', body: { referencia: '071026007463', notas: 'Confirmado por el banco' } })).status, 200)
+    assert.equal((await api(`/pagos/${pid}`)).body.notas, 'Confirmado por el banco')
+  })
+
+  it('la inicial acepta detalle (notas, método) pero no cambia sus campos de fondo', async () => {
+    const ini = await api('/clientes', { body: { nombre: 'Con inicial', items: [{ concepto: 'Web', monto: 40 }], fecha_inicial: '2026-10-01' } })
+    const id = ini.body.movimientos.find((m: any) => m.tipo === 'inicial').id
+    assert.equal((await api(`/pagos/${id}`, { method: 'PATCH', body: { notas: 'Efectivo en la visita', metodo: 'efectivo' } })).status, 200)
+    assert.equal((await api(`/pagos/${id}`)).body.metodo, 'efectivo')
+    assert.equal((await api(`/pagos/${id}`, { method: 'PATCH', body: { monto: 1 } })).status, 400)
+    assert.equal((await api(`/pagos/${NOPE}`)).status, 404)
+  })
+
+  it('GET /pagos filtra por recibido_por y método y trae el detalle', async () => {
+    const e = await api('/pagos?recibido_por=Elis&per_page=100')
+    assert.equal(e.status, 200, JSON.stringify(e.body))
+    assert.ok(e.body.data.some((p: any) => p.id === pid))
+    assert.ok(e.body.data.every((p: any) => p.recibido_por?.nombre === 'Elis'))
+    const row = e.body.data.find((p: any) => p.id === pid)
+    assert.equal(row.referencia, '071026007463')
+    assert.equal(row.banco_destino, 'Mercantil')
+    const m = await api('/pagos?metodo=efectivo&per_page=100')
+    assert.ok(m.body.data.length >= 1 && m.body.data.every((p: any) => p.metodo === 'efectivo'))
+    assert.equal((await api('/pagos?metodo=cheque')).status, 400)
+  })
+
+  it('MCP: hayai_pago_actualizar y hayai_pago_ver', async () => {
+    const a = data(await mcp('hayai_pago_actualizar', { id: pid, banco_destino: 'Banesco' }))
+    assert.equal(a.id, cid)
+    const v = data(await mcp('hayai_pago_ver', { id: pid }))
+    assert.equal(v.banco_destino, 'Banesco')
+    assert.equal(v.recibido_por.nombre, 'Elis')
+  })
+})
+
+describe('Cobros: comprobante, OCR y mapeo de cédulas a socios', () => {
+  let cid = ''
+  const mkPago = async (b: Record<string, unknown> = {}) => {
+    const r = await api(`/clientes/${cid}/pagos`, { body: { fecha: '2026-10-07', monto: 20, concepto: 'Pago', estado: 'cobrado', ...b } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    return (await admin.query('SELECT id FROM payments WHERE client_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1', [cid])).rows[0].id as string
+  }
+  const subir = (id: string, b: Record<string, unknown> = {}, key = KEY) => api(`/pagos/${id}/comprobante`, { key, body: { imagen_base64: png64, nombre: 'captura.png', ...b } })
+
+  before(async () => {
+    cid = (await api('/clientes', { body: { nombre: 'Comprobantes SA' } })).body.id
+  })
+
+  it('el mapeo sembrado desde RECEIVER_DOCUMENTS (entradas rotas ignoradas) se lista ENMASCARADO, sin cédulas completas', async () => {
+    const r = await api('/receptores')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual(r.body.data.map((x: any) => [x.socio.nombre, x.documento]).sort(), [['Jorbi', 'V-123•••78'], ['Leandro', 'E-222•••22']])
+    const raw = JSON.stringify(r.body)
+    assert.ok(!raw.includes('12345678') && !raw.includes('22222222'), 'la cédula completa nunca sale por la API')
+    const { seedReceiverDocuments } = await import('../src/services/cobros.ts')
+    assert.equal(typeof seedReceiverDocuments, 'function')
+  })
+
+  it('subir el capture: guarda la imagen, el OCR lee "DOCUMENTO V-99999999"; sin mapeo NO se inventa el receptor y pide confirmar', async () => {
+    const id = await mkPago()
+    const r = await subir(id)
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.deteccion.estado, 'sin_mapeo')
+    assert.equal(r.body.deteccion.requiere_confirmacion, true)
+    assert.match(r.body.deteccion.documento, /^V-999.*99$/)
+    assert.ok(!JSON.stringify(r.body).includes('99999999'), 'el documento sale enmascarado')
+    assert.match(r.body.deteccion.texto_ocr, /DOCUMENTO/i)
+    assert.equal(r.body.cobro.recibido_por, null)
+    assert.deepEqual([r.body.cobro.comprobante.nombre, r.body.cobro.comprobante.tipo, r.body.cobro.comprobante.tamano], ['captura.png', 'image/png', FIXTURE_PNG.length])
+  })
+
+  it('agregar el mapeo y volver a detectar asigna al socio (origen "comprobante"); no se pisa lo ya fijado a mano', async () => {
+    const id = (await admin.query("SELECT payment_id AS id FROM payment_receipts ORDER BY uploaded_at DESC LIMIT 1")).rows[0].id as string
+    const sin = await api('/receptores', { body: { documento: 'v - 99.999.999', socio: 'elis' } })
+    assert.equal(sin.status, 200, JSON.stringify(sin.body))
+    assert.match(sin.body.documento, /^V-999.*99$/)
+    const d = await api(`/pagos/${id}/comprobante/detectar`, { body: {} })
+    assert.equal(d.status, 200, JSON.stringify(d.body))
+    assert.equal(d.body.deteccion.estado, 'asignado')
+    assert.equal(d.body.deteccion.socio.nombre, 'Elis')
+    assert.equal(d.body.cobro.recibido_por.nombre, 'Elis')
+    assert.equal(d.body.cobro.recibido_por_origen, 'comprobante')
+    assert.equal((await api(`/pagos/${id}/comprobante/detectar`, { body: {} })).body.deteccion.estado, 'ya_asignado')
+
+    // difiere: ya había un receptor fijado a mano distinto del que dice el capture => no se cambia, se avisa
+    const j = await mkPago({ recibido_por: 'Jorbi' })
+    const r = await subir(j)
+    assert.equal(r.body.deteccion.estado, 'difiere')
+    assert.equal(r.body.deteccion.requiere_confirmacion, true)
+    assert.equal(r.body.cobro.recibido_por.nombre, 'Jorbi')
+    assert.equal(r.body.cobro.recibido_por_origen, 'manual')
+    // ya_asignado: coincide con lo fijado
+    const e = await mkPago({ recibido_por: 'Elis' })
+    assert.equal((await subir(e)).body.deteccion.estado, 'ya_asignado')
+    // un pago nuevo sin receptor se asigna solo al subir
+    const n = await mkPago()
+    const up = await subir(n)
+    assert.equal(up.body.deteccion.estado, 'asignado')
+    assert.equal(up.body.cobro.recibido_por.nombre, 'Elis')
+  })
+
+  it('texto_ocr (agente con visión) sustituye al OCR del servidor; sin "DOCUMENTO" => no_detectado, confirmar a mano', async () => {
+    const a = await mkPago()
+    const r = await subir(a, { texto_ocr: 'Comprobante\nDOCUMENTO: V-99999999\nMonto 10' })
+    assert.equal(r.body.deteccion.estado, 'asignado')
+    const b = await mkPago()
+    const n = await subir(b, { texto_ocr: 'Transferencia exitosa. Gracias por usar el banco' })
+    assert.equal(n.body.deteccion.estado, 'no_detectado')
+    assert.equal(n.body.deteccion.requiere_confirmacion, true)
+    assert.equal(n.body.cobro.recibido_por, null)
+    const m = await api(`/pagos/${b}`, { method: 'PATCH', body: { recibido_por: 'Leandro' } })
+    assert.equal(m.status, 200)
+    assert.equal((await api(`/pagos/${b}`)).body.recibido_por_origen, 'manual')
+  })
+
+  it('valida: solo PNG/JPEG/WebP por los bytes (no por el nombre), máximo 4 MB, pago inexistente 404, sin imagen 400', async () => {
+    const id = await mkPago()
+    const fake = Buffer.from('<html>no soy una imagen, '.repeat(20)).toString('base64')
+    assert.equal((await subir(id, { imagen_base64: fake, nombre: 'ok.png' })).status, 400)
+    const big = Buffer.concat([FIXTURE_PNG.subarray(0, 16), Buffer.alloc(4 * 1024 * 1024 + 10)]).toString('base64')
+    const huge = await subir(id, { imagen_base64: big })
+    assert.equal(huge.status, 413, JSON.stringify(huge.body))
+    assert.equal((await subir(NOPE)).status, 404)
+    assert.equal((await api(`/pagos/${id}/comprobante`, { body: {} })).status, 400)
+    assert.equal((await api(`/pagos/${id}/comprobante`)).status, 404, 'sin comprobante')
+  })
+
+  it('GET comprobante/archivo devuelve los bytes exactos, con tipo, cabeceras seguras y exige llave; ver trae el texto leído', async () => {
+    const id = (await admin.query("SELECT payment_id AS id FROM payment_receipts ORDER BY uploaded_at ASC LIMIT 1")).rows[0].id as string
+    const f = await fetch(`${ROOT}/api/v1/pagos/${id}/comprobante/archivo`, { headers: { 'x-api-key': KEY } })
+    assert.equal(f.status, 200)
+    assert.equal(f.headers.get('content-type'), 'image/png')
+    assert.match(f.headers.get('content-security-policy') ?? '', /sandbox/)
+    assert.ok(Buffer.from(await f.arrayBuffer()).equals(FIXTURE_PNG))
+    assert.equal((await fetch(`${ROOT}/api/v1/pagos/${id}/comprobante/archivo`)).status, 401)
+    const v = await api(`/pagos/${id}/comprobante`)
+    assert.equal(v.status, 200)
+    assert.match(v.body.texto_ocr, /DOCUMENTO/i)
+    assert.match(v.body.documento_detectado, /^V-999.*99$/)
+  })
+
+  it('el mapeo se cambia con guardar (mismo documento, otro socio) y eliminar exige permiso de borrado', async () => {
+    const a = await api('/receptores', { body: { documento: 'V-99999999', socio: 'Jorbi' } })
+    assert.equal(a.status, 200)
+    const lst = (await api('/receptores')).body.data
+    assert.equal(lst.filter((x: any) => /^V-999/.test(x.documento)).length, 1, 'un documento, un socio')
+    assert.equal(lst.find((x: any) => /^V-999/.test(x.documento)).socio.nombre, 'Jorbi')
+    assert.equal((await api('/receptores', { body: { documento: '123', socio: 'Jorbi' } })).status, 400)
+    assert.equal((await api('/receptores', { body: { documento: 'V-12345678', socio: 'Ellis' } })).status, 404)
+    assert.equal((await api(`/receptores/${a.body.id}`, { method: 'DELETE' })).status, 403)
+    assert.equal((await apiD(`/receptores/${a.body.id}`, { method: 'DELETE' })).status, 200)
+    assert.equal((await apiD(`/receptores/${a.body.id}`, { method: 'DELETE' })).status, 404)
+  })
+
+  it('papelera: un cobro borrado vuelve con su comprobante y todo su detalle', async () => {
+    const id = await mkPago({ monto_bs: 1000, referencia: 'REF-PAPELERA-1', recibido_por: 'Leandro' })
+    await subir(id, { texto_ocr: 'sin documento' })
+    const antes = (await api(`/pagos/${id}`)).body
+    assert.ok(antes.comprobante)
+    const del = await apiD(`/pagos/${id}`, { method: 'DELETE' })
+    assert.equal(del.status, 200, JSON.stringify(del.body))
+    assert.equal((await api(`/pagos/${id}`)).status, 404)
+    const back = await apiD(`/papelera/${del.body.papelera_id}/restaurar`, { method: 'POST', body: {} })
+    assert.equal(back.status, 200, JSON.stringify(back.body))
+    assert.deepEqual((await api(`/pagos/${id}`)).body, antes)
+    const f = await fetch(`${ROOT}/api/v1/pagos/${id}/comprobante/archivo`, { headers: { 'x-api-key': KEY } })
+    assert.ok(Buffer.from(await f.arrayBuffer()).equals(FIXTURE_PNG), 'los bytes sobreviven a la ida y vuelta')
+  })
+
+  it('MCP: hayai_comprobante_subir/ver/detectar y listar receptores', async () => {
+    await api('/receptores', { body: { documento: 'V-99999999', socio: 'Elis' } })
+    const id = await mkPago()
+    const s = data(await mcp('hayai_comprobante_subir', { id, imagen_base64: png64, texto_ocr: 'DOCUMENTO V-99999999' }))
+    assert.equal(s.deteccion.estado, 'asignado')
+    assert.equal(data(await mcp('hayai_comprobante_ver', { id })).cobro.id, id)
+    assert.equal(data(await mcp('hayai_comprobante_detectar', { id })).deteccion.estado, 'ya_asignado')
+    assert.ok(data(await mcp('hayai_receptores_listar', {})).data.length >= 3)
+  })
+
+  it('web (sesión): detalle, comprobante y archivo con las mismas reglas; el parser grande solo en la ruta del comprobante', async () => {
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    assert.equal(login.status, 200)
+    const cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    const web = (path: string, o: { method?: string; body?: unknown } = {}) => http(`${ROOT}/api${path}`, { headers: { cookie }, ...o })
+    const id = await mkPago()
+    const up = await web(`/cobros/${id}/comprobante`, { body: { imagen_base64: png64 } })
+    assert.equal(up.status, 200, JSON.stringify(up.body))
+    assert.equal(up.body.deteccion.estado, 'asignado')
+    const patch = await web(`/cobros/${id}`, { method: 'PATCH', body: { notas: 'desde la web', banco_origen: 'Banesco ****1234' } })
+    assert.equal(patch.status, 200, JSON.stringify(patch.body))
+    assert.deepEqual([patch.body.notas, patch.body.banco_origen, patch.body.cuenta_origen_ultimos4], ['desde la web', 'Banesco', '1234'])
+    const img = await fetch(`${ROOT}/api/cobros/${id}/comprobante/archivo`, { headers: { cookie } })
+    assert.equal(img.status, 200)
+    assert.ok(Buffer.from(await img.arrayBuffer()).equals(FIXTURE_PNG))
+    assert.equal((await http(`${ROOT}/api/cobros/${id}`)).status, 401)
+    assert.equal((await web('/receptores')).body.data.length >= 3, true)
+    // fuera de la ruta del comprobante el límite sigue siendo 100 KB
+    const huge = await web(`/cobros/${id}`, { method: 'PATCH', body: { notas: 'x'.repeat(200_000) } })
+    assert.equal(huge.status, 413)
+  })
+})
+
+describe('Sistemas de los clientes: semáforo de disponibilidad', () => {
+  let cid = ''
+  let sid = ''
+  const act = async (q = '', key = KEY_J) => (await api(`/actividad${q}`, { key })).body
+  const ultimo = async () => (await act('?per_page=1')).meta.ultimo_id as number
+  const nuevos = async (desde: number) => ((await act(`?desde_id=${desde}&orden=asc&per_page=100`)).data as any[]).filter((e) => /^sistema_/.test(e.tipo))
+
+  before(async () => {
+    cid = (await api('/clientes', { body: { nombre: 'Panadería Sistemas' } })).body.id
+    await act() // fija el "visto hasta" de Jorbi
+  })
+
+  it('crear: solo URLs y el nombre del usuario de gestión; sin usuario:clave@ ni esquemas raros; estado inicial desconocido', async () => {
+    const r = await api('/sistemas', { body: { cliente_id: cid, nombre: 'Inventario', enlace: `http://localhost:${TARGET_PORT}/health`, usuario_gestion: 'admin.panaderia', servidor: 'VPS Hostinger', verificar: false } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    sid = r.body.id
+    assert.deepEqual([r.body.estado, r.body.cliente, r.body.verificar, r.body.activo, r.body.usuario_gestion], ['desconocido', 'Panadería Sistemas', false, true, 'admin.panaderia'])
+    for (const enlace of ['http://admin:secreto@x.com', 'ftp://x.com', 'javascript:alert(1)', 'no es una url']) assert.equal((await api('/sistemas', { body: { cliente_id: cid, nombre: 'Mal', enlace } })).status, 400, enlace)
+    assert.equal((await api('/sistemas', { body: { cliente_id: cid, nombre: 'Mal', clave: 'x' } })).status, 400, 'no hay campo para contraseñas')
+    assert.equal((await api('/sistemas', { body: { cliente_id: NOPE, nombre: 'x' } })).status, 404)
+  })
+
+  it('verificar: arriba -> caído (se confirma con un segundo intento) -> recuperado; cada cambio avisa UNA vez y a todos', async () => {
+    const base = await ultimo()
+    targetUp = true
+    const a = await api(`/sistemas/${sid}/verificar`, { body: {} })
+    assert.equal(a.status, 200, JSON.stringify(a.body))
+    assert.deepEqual([a.body.verificacion.estado, a.body.verificacion.codigo_http, a.body.sistema.estado], ['arriba', 200, 'arriba'])
+    assert.equal((await nuevos(base)).length, 0, 'arrancar en "arriba" no avisa')
+
+    targetUp = false
+    const d = await api(`/sistemas/${sid}/verificar`, { body: {} })
+    assert.deepEqual([d.body.verificacion.estado, d.body.verificacion.codigo_http, d.body.verificacion.cambio], ['caido', 500, true])
+    assert.equal(d.body.sistema.disponibilidad_24h < 100, true)
+    assert.ok(d.body.sistema.desde)
+    const dos = await api(`/sistemas/${sid}/verificar`, { body: {} })
+    assert.equal(dos.body.verificacion.cambio, false, 'seguir caído no repite el aviso')
+
+    targetUp = true
+    const u = await api(`/sistemas/${sid}/verificar`, { body: {} })
+    assert.deepEqual([u.body.verificacion.estado, u.body.verificacion.cambio], ['arriba', true])
+
+    const ev = await nuevos(base)
+    assert.deepEqual(ev.map((e) => e.tipo), ['sistema_caido', 'sistema_recuperado'])
+    assert.ok(ev.every((e) => e.propia === false && e.leida === false), 'avisa a todos los socios, también a quien creó el sistema')
+    assert.match(ev[0].texto, /Inventario/)
+    assert.equal(ev[0].cliente_id, cid)
+    const mine = await act(`?desde_id=${base}&orden=asc`, KEY)
+    assert.ok(mine.data.filter((e: any) => /^sistema_/.test(e.tipo)).every((e: any) => e.propia === false), 'tampoco es "propia" para el dueño: lo hizo el monitor')
+  })
+
+  it('un fallo aislado no alarma: el segundo intento sale bien', async () => {
+    const base = await ultimo()
+    // el servidor falso responde 500 solo a la primera petición de esta verificación
+    const { createServer: mk } = await import('node:http')
+    let hits = 0
+    const flaky = mk((_q, res) => void res.writeHead(++hits === 1 ? 500 : 200).end('x'))
+    await new Promise<void>((ok) => flaky.listen(3197, ok))
+    try {
+      const s = (await api('/sistemas', { body: { cliente_id: cid, nombre: 'Intermitente', enlace: 'http://localhost:3197/', verificar: false } })).body.id
+      assert.equal((await api(`/sistemas/${s}/verificar`, { body: {} })).body.verificacion.estado, 'arriba')
+      assert.equal(hits, 2)
+      assert.equal((await nuevos(base)).length, 0)
+    } finally {
+      flaky.close()
+    }
+  })
+
+  it('sigue las redirecciones; una URL que cambia reinicia el semáforo; sin URL queda "desconocido"', async () => {
+    const r = (await api('/sistemas', { body: { cliente_id: cid, nombre: 'Con redirección', url_produccion: `http://localhost:${TARGET_PORT}/redir`, verificar: false } })).body
+    targetUp = true
+    assert.equal((await api(`/sistemas/${r.id}/verificar`, { body: {} })).body.verificacion.estado, 'arriba')
+    const p = await api(`/sistemas/${r.id}`, { method: 'PATCH', body: { url_verificacion: `http://localhost:${TARGET_PORT}/siempre` } })
+    assert.deepEqual([p.body.estado, p.body.desde, p.body.codigo_http], ['desconocido', null, null])
+    const none = (await api('/sistemas', { body: { cliente_id: cid, nombre: 'Sin URL', verificar: false } })).body
+    const v = await api(`/sistemas/${none.id}/verificar`, { body: {} })
+    assert.deepEqual([v.body.verificacion.estado, v.body.verificacion.error], ['desconocido', 'Sin URL para verificar'])
+  })
+
+  it('listar: caídos primero, resumen por estado, filtros; PATCH vacío 400; 404', async () => {
+    targetUp = false
+    await api(`/sistemas/${sid}/verificar`, { body: {} })
+    const l = await api('/sistemas?per_page=100')
+    assert.equal(l.status, 200)
+    assert.equal(l.body.data[0].id, sid, 'el caído va primero')
+    assert.ok(l.body.meta.por_estado.caido >= 1)
+    assert.ok((await api(`/sistemas?estado=caido`)).body.data.every((x: any) => x.estado === 'caido'))
+    assert.equal((await api(`/sistemas?cliente_id=${cid}`)).body.data.every((x: any) => x.cliente_id === cid), true)
+    assert.equal((await api(`/sistemas/${sid}`, { method: 'PATCH', body: {} })).status, 400)
+    assert.equal((await api(`/sistemas/${NOPE}`)).status, 404)
+    const off = await api(`/sistemas/${sid}`, { method: 'PATCH', body: { activo: false } })
+    assert.equal(off.body.activo, false)
+    assert.ok(!(await api('/sistemas')).body.data.some((x: any) => x.id === sid))
+    assert.ok((await api('/sistemas?activos=false')).body.data.some((x: any) => x.id === sid))
+    await api(`/sistemas/${sid}`, { method: 'PATCH', body: { activo: true } })
+    targetUp = true
+  })
+
+  it('el vigilante verifica solo los sistemas con monitor activo (SYSTEMS_CHECK_MS)', async () => {
+    const s = (await api('/sistemas', { body: { cliente_id: cid, nombre: 'Vigilado', enlace: `http://localhost:${TARGET_PORT}/siempre` } })).body
+    assert.equal(s.verificar, true)
+    let estado = 'desconocido'
+    for (let i = 0; i < 40 && estado !== 'arriba'; i++) {
+      await new Promise((r) => setTimeout(r, 500))
+      estado = (await api(`/sistemas/${s.id}`)).body.estado
+    }
+    assert.equal(estado, 'arriba', 'el vigilante lo verificó sin que nadie lo pidiera')
+  })
+
+  it('protección SSRF: sin SYSTEMS_ALLOW_PRIVATE no se consulta localhost, redes privadas ni metadatos de la nube', async () => {
+    const { assertPublicTarget } = await import('../src/systems.ts')
+    const before = process.env.SYSTEMS_ALLOW_PRIVATE
+    delete process.env.SYSTEMS_ALLOW_PRIVATE
+    try {
+      for (const u of ['http://127.0.0.1/', 'http://localhost/', 'http://10.0.0.5/x', 'http://192.168.1.10/', 'http://172.16.0.1/', 'http://169.254.169.254/latest/meta-data', 'http://[::1]/', 'http://0.0.0.0/', 'http://[fd00::1]/'])
+        await assert.rejects(assertPublicTarget(u), /privada|local/, u)
+      await assert.rejects(assertPublicTarget('file:///etc/passwd'), /http/)
+      await assert.rejects(assertPublicTarget('http://u:p@8.8.8.8/'), /usuario/)
+      assert.equal((await assertPublicTarget('http://8.8.8.8/')).hostname, '8.8.8.8')
+    } finally {
+      if (before !== undefined) process.env.SYSTEMS_ALLOW_PRIVATE = before
+    }
+  })
+
+  it('papelera: borrar el cliente se lleva sus sistemas y restaurar los devuelve (con su estado)', async () => {
+    const c2 = (await api('/clientes', { body: { nombre: 'Se va con sistemas' } })).body.id
+    const s = (await api('/sistemas', { body: { cliente_id: c2, nombre: 'Mi sistema', enlace: 'http://localhost:3198/siempre', usuario_gestion: 'dueno', verificar: false } })).body.id
+    const del = await apiD(`/clientes/${c2}`, { method: 'DELETE' })
+    assert.equal(del.status, 200, JSON.stringify(del.body))
+    assert.equal((await api(`/sistemas/${s}`)).status, 404)
+    assert.equal((await apiD(`/papelera/${del.body.papelera_id}/restaurar`, { method: 'POST', body: {} })).status, 200)
+    const back = await api(`/sistemas/${s}`)
+    assert.equal(back.status, 200)
+    assert.equal(back.body.usuario_gestion, 'dueno')
+  })
+
+  it('MCP y web: sistemas listar/ver/crear/actualizar/verificar y las rutas de sesión', async () => {
+    const lst = data(await mcp('hayai_sistemas_listar', {}))
+    assert.ok(lst.data.length >= 3)
+    const n = data(await mcp('hayai_sistema_crear', { cliente_id: cid, nombre: 'Por MCP', enlace: `http://localhost:${TARGET_PORT}/siempre`, verificar: false }))
+    assert.equal(data(await mcp('hayai_sistema_actualizar', { id: n.id, notas: 'ok' })).notas, 'ok')
+    assert.equal(data(await mcp('hayai_sistema_verificar', { id: n.id })).verificacion.estado, 'arriba')
+    assert.equal(data(await mcp('hayai_sistema_ver', { id: n.id })).nombre, 'Por MCP')
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    const cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    const web = (path: string, o: { method?: string; body?: unknown } = {}) => http(`${ROOT}/api${path}`, { headers: { cookie }, ...o })
+    assert.ok((await web('/systems')).body.data.length >= 3)
+    assert.equal((await web(`/systems/${n.id}/check`, { body: {} })).body.verificacion.estado, 'arriba')
+  })
+})
+
+describe('Hub central: equipo, acuerdos, bitácora interna y pulso', () => {
+  let agr = ''
+
+  it('acuerdos: crear (responsable por nombre, fecha de hoy por defecto), cerrar, reabrir, descartar; el aviso "acuerdo_nuevo" llega al otro socio', async () => {
+    const base = ((await api('/actividad?per_page=1', { key: KEY_J })).body.meta.ultimo_id as number) ?? 0
+    const r = await api('/acuerdos', { body: { texto: 'Subir el plan de contenidos de octubre', responsable: 'jorbi', vence: '2026-10-14' } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    agr = r.body.id
+    assert.deepEqual([r.body.estado, r.body.responsable.nombre, r.body.vence, r.body.registrado_por, r.body.cerrado_el], ['abierto', 'Jorbi', '2026-10-14', 'Leandro', null])
+    assert.match(r.body.fecha_reunion, /^\d{4}-\d{2}-\d{2}$/)
+    const ev = ((await api(`/actividad?desde_id=${base}&orden=asc`, { key: KEY_J })).body.data as any[]).filter((e) => e.tipo === 'acuerdo_nuevo')
+    assert.equal(ev.length, 1)
+    assert.match(ev[0].texto, /Leandro/)
+    assert.equal(ev[0].propia, false)
+
+    const c = await api(`/acuerdos/${agr}`, { method: 'PATCH', body: { estado: 'cumplido' } })
+    assert.equal(c.body.estado, 'cumplido')
+    assert.ok(c.body.cerrado_el)
+    assert.equal((await api(`/acuerdos/${agr}`, { method: 'PATCH', body: { estado: 'abierto' } })).body.cerrado_el, null)
+    const sinResp = await api(`/acuerdos/${agr}`, { method: 'PATCH', body: { responsable: null, vence: null } })
+    assert.deepEqual([sinResp.body.responsable, sinResp.body.vence], [null, null])
+    assert.equal((await api(`/acuerdos/${agr}`, { method: 'PATCH', body: { estado: 'descartado' } })).body.estado, 'descartado')
+    assert.equal((await api(`/acuerdos/${agr}`, { method: 'PATCH', body: {} })).status, 400)
+    assert.equal((await api(`/acuerdos/${NOPE}`, { method: 'PATCH', body: { estado: 'cumplido' } })).status, 404)
+    assert.equal((await api('/acuerdos', { body: { texto: '' } })).status, 400)
+    assert.equal((await api('/acuerdos', { body: { texto: 'x', responsable: 'Ellis' } })).status, 404)
+  })
+
+  it('listar acuerdos: abiertos primero, conteo por estado, filtro', async () => {
+    await api('/acuerdos', { body: { texto: 'Abierto B' } })
+    const l = await api('/acuerdos')
+    assert.equal(l.status, 200)
+    assert.equal(l.body.data[0].estado, 'abierto')
+    assert.ok(l.body.meta.por_estado.abierto >= 1 && l.body.meta.por_estado.descartado >= 1)
+    assert.ok((await api('/acuerdos?estado=descartado')).body.data.every((a: any) => a.estado === 'descartado'))
+    assert.equal((await api('/acuerdos?estado=raro')).status, 400)
+  })
+
+  it('equipo: rol y responsabilidades editables; la carga cuenta lo asignado y, sin asignar, lo del proyecto que lleva', async () => {
+    const eq = await api('/equipo')
+    assert.equal(eq.status, 200)
+    assert.deepEqual(eq.body.data.map((x: any) => x.nombre), ['Elis', 'Jorbi', 'Leandro'])
+    assert.ok(eq.body.data.every((x: any) => x.rol && x.responsabilidades), 'la migración deja un rol inicial para cada socio')
+    const carga = (n: string, d: any) => d.data.find((x: any) => x.nombre === n).carga
+    const antes = eq.body
+
+    const p = (await api('/proyectos', { body: { nombre: 'Interno de carga', responsable: 'Leandro' } })).body
+    const sinAsignar = await api('/tareas', { body: { titulo: 'La lleva el dueño del proyecto', proyecto_id: p.id } })
+    assert.equal(sinAsignar.body.responsable.nombre, 'Leandro')
+    assert.equal(sinAsignar.body.asignada, false)
+    assert.equal(sinAsignar.body.es_interno, true)
+    const asignada = await api('/tareas', { body: { titulo: 'Para Jorbi', proyecto_id: p.id, responsable: 'jorbi', vence: '2000-01-01' } })
+    assert.equal(asignada.body.responsable.nombre, 'Jorbi')
+    assert.equal(asignada.body.asignada, true)
+    const des = await api('/equipo')
+    assert.equal(carga('Leandro', des.body).abiertas, carga('Leandro', antes).abiertas + 1)
+    assert.equal(carga('Jorbi', des.body).abiertas, carga('Jorbi', antes).abiertas + 1)
+    assert.equal(carga('Jorbi', des.body).vencidas, carga('Jorbi', antes).vencidas + 1)
+    assert.equal(carga('Jorbi', des.body).internas_abiertas, carga('Jorbi', antes).internas_abiertas + 1)
+
+    await api(`/tareas/${asignada.body.id}`, { method: 'PATCH', body: { estado: 'completada' } })
+    const fin = await api('/equipo')
+    assert.equal(carga('Jorbi', fin.body).abiertas, carga('Jorbi', antes).abiertas)
+    assert.equal(carga('Jorbi', fin.body).completadas_7d, carga('Jorbi', antes).completadas_7d + 1)
+    // reasignar y des-asignar
+    assert.equal((await api(`/tareas/${asignada.body.id}`, { method: 'PATCH', body: { responsable: 'Elis' } })).body.responsable.nombre, 'Elis')
+    assert.equal((await api(`/tareas/${asignada.body.id}`, { method: 'PATCH', body: { responsable: null } })).body.responsable.nombre, 'Leandro')
+    assert.equal((await api('/tareas', { body: { titulo: 'x', proyecto_id: p.id, responsable: 'Ellis' } })).status, 404)
+
+    const e = await api('/equipo/jorbi', { method: 'PATCH', body: { rol: 'Backend e IA', responsabilidades: 'Sistemas, servidores y automatizaciones' } })
+    assert.equal(e.status, 200, JSON.stringify(e.body))
+    assert.deepEqual([e.body.nombre, e.body.rol, e.body.responsabilidades], ['Jorbi', 'Backend e IA', 'Sistemas, servidores y automatizaciones'])
+    assert.equal((await api('/equipo/jorbi', { method: 'PATCH', body: {} })).status, 400)
+    assert.equal((await api('/equipo/nadie', { method: 'PATCH', body: { rol: 'x' } })).status, 404)
+  })
+
+  it('interno vs cliente: tareas, proyectos y gastos filtran por "interno"; finanzas?interno=true es la vista de gastos generales', async () => {
+    const t = await api('/tareas?interno=true&per_page=100')
+    assert.equal(t.status, 200, JSON.stringify(t.body))
+    assert.ok(t.body.data.length >= 1 && t.body.data.every((x: any) => x.es_interno === true))
+    assert.ok((await api('/tareas?interno=false&per_page=100')).body.data.every((x: any) => x.es_interno === false))
+    assert.ok((await api('/tareas?responsable=jorbi&per_page=100')).body.data.every((x: any) => x.responsable.nombre === 'Jorbi'))
+    assert.ok((await api('/proyectos?interno=true&per_page=100')).body.data.every((x: any) => x.es_interno === true))
+
+    await api('/gastos', { body: { concepto: 'Servidor HAYAI', monto: 12.5, categoria: 'Infraestructura', fecha: isoDay(0) } })
+    const g = await api('/gastos?interno=true&per_page=100')
+    assert.ok(g.body.data.length >= 1 && g.body.data.every((x: any) => x.es_interno === true))
+    assert.ok((await api('/gastos?interno=false&per_page=100')).body.data.every((x: any) => x.es_interno === false))
+
+    const full = (await api('/finanzas/resumen?periodo=todo')).body
+    const int = (await api('/finanzas/resumen?periodo=todo&interno=true')).body
+    assert.equal(full.interno, false)
+    assert.equal(int.interno, true)
+    assert.deepEqual(int.clientes, [])
+    assert.equal(int.gastos, full.gastos_generales)
+    assert.equal(int.ingresos, 0)
+    assert.equal(int.balance, -full.gastos_generales)
+  })
+
+  it('GET /hub: pulso, astronautas, bitácora interna, acuerdos abiertos, sistemas y el hueco de analytics', async () => {
+    const h = await api('/hub')
+    assert.equal(h.status, 200, JSON.stringify(h.body))
+    assert.deepEqual(Object.keys(h.body).sort(), ['acuerdos', 'analytics', 'astronautas', 'bitacora', 'pulso', 'sistemas'])
+    assert.equal(h.body.astronautas.length, 3)
+    assert.match(h.body.pulso.mes, /^\d{4}-\d{2}$/)
+    assert.ok(h.body.pulso.gastos_generales_mes >= 12.5)
+    assert.ok(h.body.pulso.proyectos_internos.total >= 1)
+    assert.ok(h.body.pulso.tareas_internas.pendientes >= 1)
+    assert.ok(h.body.acuerdos.abiertos.every((a: any) => a.estado === 'abierto'))
+    assert.ok(h.body.sistemas.data.length >= 3 && typeof h.body.sistemas.resumen.arriba === 'number')
+    assert.deepEqual(h.body.analytics, { disponible: false, planeta: 'marketing', resumen: null })
+    assert.ok(h.body.bitacora.length >= 1)
+    // la bitácora interna no trae movimientos de clientes (cobros, pipeline) pero sí lo interno
+    const tipos = new Set(h.body.bitacora.map((e: any) => e.tipo))
+    assert.ok(!tipos.has('cobro_cobrado') && !tipos.has('cliente_nuevo'), [...tipos].join())
+    assert.ok(tipos.has('acuerdo_nuevo') || tipos.has('sistema_caido') || tipos.has('tarea_nueva'))
+    assert.equal(h.body.bitacora.length <= 15, true)
+  })
+
+  it('actividad?alcance=interno separa lo interno de lo de clientes', async () => {
+    const todo = (await api('/actividad?per_page=100')).body.data
+    const int = (await api('/actividad?alcance=interno&per_page=100')).body.data
+    assert.ok(int.length >= 1 && int.length < todo.length)
+    assert.ok(!int.some((e: any) => e.tipo === 'cliente_nuevo'))
+    assert.equal((await api('/actividad?alcance=raro')).status, 400)
+  })
+
+  it('MCP y web: hub, equipo y acuerdos', async () => {
+    assert.equal(data(await mcp('hayai_hub_ver', {})).astronautas.length, 3)
+    assert.equal(data(await mcp('hayai_equipo_ver', {})).data.length, 3)
+    const a = data(await mcp('hayai_acuerdo_crear', { texto: 'Desde MCP', responsable: 'Elis' }))
+    assert.equal(data(await mcp('hayai_acuerdo_actualizar', { id: a.id, estado: 'cumplido' })).estado, 'cumplido')
+    assert.ok(data(await mcp('hayai_acuerdos_listar', { estado: 'cumplido' })).data.length >= 1)
+    assert.equal(data(await mcp('hayai_equipo_actualizar', { socio: 'Elis', rol: 'Gerencia' })).rol, 'Gerencia')
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    const cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    const web = (path: string, o: { method?: string; body?: unknown } = {}) => http(`${ROOT}/api${path}`, { headers: { cookie }, ...o })
+    assert.equal((await web('/hub')).status, 200)
+    assert.equal((await web('/team')).body.data.length, 3)
+    assert.equal((await web('/agreements', { body: { texto: 'Desde la web' } })).status, 201)
+    assert.equal((await web('/marketing/funnel')).status, 200)
+    assert.equal((await http(`${ROOT}/api/hub`)).status, 401)
+  })
+})
+
+describe('Marketing: embudo y decisión 3 (versión de la propuesta en la bitácora)', () => {
+  it('GET /marketing/embudo: etapas abiertas con valor y ponderado, cierres, cohorte por origen y Meta Ads', async () => {
+    const r = await api('/marketing/embudo?dias=90')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual(r.body.etapas.map((e: any) => e.etapa), ['prospecto', 'visita_agendada', 'visita_realizada', 'propuesta_en_armado', 'propuesta_presentada'])
+    assert.ok(r.body.etapas.every((e: any) => typeof e.posibles === 'number' && typeof e.valor_ponderado === 'number'))
+    assert.ok(Array.isArray(r.body.por_origen))
+    assert.ok('tasa_cierre' in r.body.cierres)
+    assert.deepEqual(Object.keys(r.body.meta_ads).sort(), ['con_error', 'duplicados', 'leads_30d', 'procesados'])
+    assert.equal((await api('/marketing/embudo?dias=3')).status, 400)
+    assert.equal(data(await mcp('hayai_marketing_embudo', { dias: 30 })).dias, 30)
+  })
+
+  it('al presentar y al ganar, la entrada de etapa guarda la versión de la propuesta vigente', async () => {
+    const { c } = await mkProp('Versión Propuesta')
+    await api(`/clientes/${c.id}/propuestas`, { body: { items: items3(55) } }) // v2 reemplaza a v1
+    const pres = await api(`/clientes/${c.id}`, { method: 'PATCH', body: { etapa: 'propuesta_presentada' } })
+    assert.equal(pres.status, 200, JSON.stringify(pres.body))
+    const feed = (await api(`/clientes/${c.id}/interacciones?tipo=etapa`)).body.data
+    const e1 = feed.find((e: any) => e.cambio.a === 'propuesta_presentada')
+    assert.equal(e1.cambio.propuesta_version, 2)
+    assert.match(e1.resumen, /propuesta v2/)
+    const gan = await api(`/clientes/${c.id}`, { method: 'PATCH', body: { etapa: 'ganado', fecha_implementacion: isoDay(2), esquema_cobro: { inicio_cobro: isoDay(10), meses: 2, unicos_cobrados: false } } })
+    assert.equal(gan.status, 200, JSON.stringify(gan.body))
+    const e2 = (await api(`/clientes/${c.id}/interacciones?tipo=etapa`)).body.data.find((e: any) => e.cambio.a === 'ganado')
+    assert.equal(e2.cambio.propuesta_version, 2)
+    // sin propuesta no hay versión que registrar
+    const sin = await mkPosible('Sin versión')
+    await api(`/clientes/${sin.id}`, { method: 'PATCH', body: { etapa: 'visita_agendada' } })
+    const e3 = (await api(`/clientes/${sin.id}/interacciones?tipo=etapa`)).body.data[0]
+    assert.equal(e3.cambio.propuesta_version ?? null, null)
+  })
+})
+
+describe('Migración 010: datos que se mueven al estrenar el hub', () => {
+  // Se rehace la migración a mano sobre datos sembrados para probar sus bloques de datos (el esquema ya existe).
+  const sql = readFileSync(resolve(root, 'server/db/migrations/010_hub_cobros.sql'), 'utf8')
+  const doBlocks = [...sql.matchAll(/DO \$\$[\s\S]*?END \$\$;/g)].map((m) => m[0])
+
+  it('hay bloques de datos y todos son re-ejecutables sin romper nada (idempotentes)', async () => {
+    assert.ok(doBlocks.length >= 2)
+    for (const b of doBlocks) await admin.query(b)
+    for (const b of doBlocks) await admin.query(b)
+  })
+
+  it('cliente falso "HAYAI (interno)": sus proyectos pasan a internos, sus gastos a generales y el cliente se archiva; el total de Finanzas no cambia', async () => {
+    const u = (await admin.query("SELECT id FROM users WHERE name = 'Leandro'")).rows[0].id
+    const fake = (await admin.query("INSERT INTO clients (name, avatar, created_by) VALUES ('HAYAI (interno)', 'HI', $1) RETURNING id", [u])).rows[0].id
+    const proj = (await admin.query("INSERT INTO projects (client_id, name, icon, owner_id, status, created_by) VALUES ($1, 'Sistema Space', 'code', $2, 'activo', $2) RETURNING id", [fake, u])).rows[0].id
+    await admin.query("INSERT INTO expenses (date, concept, amount, category, scope, client_id, created_by) VALUES ('2026-10-02', 'Dominio', 11, 'Otros', 'cliente', $1, $2)", [fake, u])
+    await admin.query("INSERT INTO expenses (date, concept, amount, category, scope, project_id, created_by) VALUES ('2026-10-03', 'Hosting Space', 9, 'Otros', 'proyecto', $1, $2)", [proj, u])
+    const antes = (await api('/finanzas/resumen?periodo=todo')).body
+    assert.equal(antes.clientes.some((c: any) => c.nombre === 'HAYAI (interno)'), true)
+    for (const b of doBlocks) await admin.query(b)
+    const p = (await api(`/proyectos/${proj}`)).body
+    assert.deepEqual([p.cliente_id, p.es_interno], [null, true])
+    const des = (await api('/finanzas/resumen?periodo=todo')).body
+    assert.equal(des.gastos, antes.gastos, 'el total de gastos no cambia')
+    assert.equal(des.balance, antes.balance)
+    assert.equal(des.gastos_generales, antes.gastos_generales + 20, 'los 11 del cliente falso y los 9 de su proyecto ahora son generales')
+    assert.equal(des.clientes.some((c: any) => c.nombre === 'HAYAI (interno)'), false, 'archivado y sin movimientos propios: no ocupa fila')
+    assert.equal((await admin.query('SELECT archived_at IS NOT NULL AS a FROM clients WHERE id = $1', [fake])).rows[0].a, true)
+    assert.equal((await api('/gastos?interno=true&per_page=100')).body.data.filter((g: any) => ['Dominio', 'Hosting Space'].includes(g.concepto)).length, 2)
+  })
+
+  it('Super Miga: con UN candidato se completa el cobro del caso real; con dos no se toca ninguno', async () => {
+    const elis = (await admin.query("SELECT id FROM users WHERE name = 'Elis'")).rows[0].id
+    const c = (await admin.query("INSERT INTO clients (name, avatar, created_by) VALUES ('Super Miga', 'SM', $1) RETURNING id", [elis])).rows[0].id
+    const pay = (await admin.query("INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by) VALUES ($1, '2026-10-07', 'Mensualidad', 75, 'pago', 'cobrado', $2) RETURNING id", [c, elis])).rows[0].id
+    for (const b of doBlocks) await admin.query(b)
+    const r = (await api(`/pagos/${pay}`)).body
+    assert.deepEqual([r.monto_bs, r.tasa, r.fecha_tasa, r.referencia, r.banco_origen, r.cuenta_origen_ultimos4, r.banco_destino, r.recibido_por?.nombre, r.metodo], [65540.25, 873.87, '2026-10-07', '071026007463', 'Bancrecer', '8017', 'Mercantil', 'Elis', 'transferencia'])
+    // ya completado: otra pasada no cambia nada (idempotente)
+    for (const b of doBlocks) await admin.query(b)
+    assert.deepEqual((await api(`/pagos/${pay}`)).body, r)
+
+    // dos candidatos iguales: se limpia el primero y se agrega otro => ambiguo, no se asume cuál es
+    await admin.query('UPDATE payments SET bank_reference = NULL, amount_bs = NULL, exchange_rate = NULL, rate_date = NULL, bank_origin = NULL, origin_last4 = NULL, bank_destination = NULL, method = NULL, received_by = NULL, received_by_source = NULL WHERE id = $1', [pay])
+    await admin.query("INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by) VALUES ($1, '2026-10-07', 'Otra', 75, 'pago', 'cobrado', $2)", [c, elis])
+    for (const b of doBlocks) await admin.query(b)
+    const n = (await admin.query('SELECT count(*)::int AS n FROM payments WHERE client_id = $1 AND bank_reference IS NOT NULL', [c])).rows[0].n
+    assert.equal(n, 0)
   })
 })

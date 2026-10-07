@@ -7,7 +7,7 @@ import { loadClients } from './store'
 import { loadProjects } from './projectData'
 import { loadTasks } from './taskData'
 
-export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta'
+export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta' | 'acuerdo_nuevo' | 'sistema_caido' | 'sistema_recuperado'
 export interface Activity {
   id: number
   tipo: ActivityKind

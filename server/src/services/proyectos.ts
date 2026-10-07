@@ -23,6 +23,7 @@ const out = (r: any) => ({
   icono: r.icon,
   cliente: r.client as string | null,
   cliente_id: r.client_id as string | null,
+  es_interno: r.client_id === null, // proyecto de HAYAI (sin cliente): vive en el hub central
   responsable: r.owner,
   estado: projectStateOut(r.status),
   entrega: r.due_date as string | null,
@@ -56,6 +57,7 @@ export const proyectosListar = op(
     estado: estado.optional(),
     cliente_id: id.optional(),
     sin_cliente: z.union([z.boolean(), z.enum(['true', 'false'])], 'sin_cliente inválido (true o false)').optional(), // true: solo los internos
+    interno: z.union([z.boolean(), z.enum(['true', 'false'])], 'interno inválido (true o false)').optional(), // igual que sin_cliente (el nombre del hub)
     archivados: archivadosParam,
     ...pageShape,
   }),
@@ -63,7 +65,8 @@ export const proyectosListar = op(
     const f = filters()
     if (i.estado) f.add('p.status = ?', projectStateIn(i.estado))
     if (i.cliente_id) f.add('p.client_id = ?', i.cliente_id)
-    if (i.sin_cliente !== undefined) f.raw(i.sin_cliente === true || i.sin_cliente === 'true' ? 'p.client_id IS NULL' : 'p.client_id IS NOT NULL')
+    const interno = i.sin_cliente ?? i.interno
+    if (interno !== undefined) f.raw(interno === true || interno === 'true' ? 'p.client_id IS NULL' : 'p.client_id IS NOT NULL')
     // Un proyecto queda oculto si él o su cliente están archivados.
     if (i.archivados === 'excluir') f.raw('p.archived_at IS NULL AND c.archived_at IS NULL')
     if (i.archivados === 'solo') f.raw('(p.archived_at IS NOT NULL OR c.archived_at IS NOT NULL)')

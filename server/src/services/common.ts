@@ -44,6 +44,9 @@ export const todayISO = () => dayISO(new Date())
 export const r2 = (n: number) => Math.round(n * 100) / 100
 export const cents = (n: number) => Math.round(n * 100)
 
+/** Booleano que también llega como texto (query string): true | false | "true" | "false". */
+export const boolFlag = z.union([z.boolean(), z.enum(['true', 'false'])], 'Valor inválido (true o false)')
+
 /** Archivados: por defecto se ocultan (como en las pantallas de trabajo de la web). */
 export const archivadosParam = z
   .enum(['excluir', 'incluir', 'solo'], 'archivados inválido (excluir, incluir o solo)')

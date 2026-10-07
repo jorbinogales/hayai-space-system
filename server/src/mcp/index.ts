@@ -6,12 +6,15 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import express, { Router } from 'express'
 import type { SessionUser } from '../auth.ts'
 import { exec, type Op } from '../services/common.ts'
-import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoMarcarCobrado, pagoRegistrar, pagosListar } from '../services/clientes.ts'
+import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoActualizar, pagoMarcarCobrado, pagoRegistrar, pagosListar } from '../services/clientes.ts'
 import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResumen } from '../services/alertas.ts'
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
+import { comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
+import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
+import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 import { finanzasResumen } from '../services/finanzas.ts'
 import { gastoRegistrar, gastosListar } from '../services/gastos.ts'
 import { checklistActualizar, checklistAgregar, checklistOrdenar, hitoActualizar, hitoCrear, hitosOrdenar, proyectoActualizar, proyectoCrear, proyectoEstado, proyectosListar, proyectoVer } from '../services/proyectos.ts'
@@ -71,6 +74,28 @@ const TOOLS: Tool[] = [
   { name: 'hayai_actividad_listar', op: actividadListar, scope: 'read', description: 'Actividad del equipo: clientes nuevos, posibles clientes nuevos, tareas nuevas, tareas completadas, cobros cobrados, cambios de etapa, clientes ganados y perdidos, con el texto ya redactado ("Leandro añadió la tarea «X» en Y") y el socio que lo hizo. Lo más reciente primero. Para consultar solo lo nuevo desde la última vez: orden=asc y desde_id=<meta.ultimo_id que guardaste>. meta.sin_leer cuenta lo de otros socios posterior al "visto hasta" del dueño de la llave.' },
   { name: 'hayai_actividad_marcar_leida', op: actividadLeer, scope: 'write', description: 'Mueve el "visto hasta" de la actividad del dueño de la llave: hasta_id (nunca retrocede) o todas=true.' },
   { name: 'hayai_buscar', op: buscar, scope: 'read', description: 'Búsqueda global sin importar acentos ni mayúsculas, por palabras. Busca en clientes (nombre, teléfono, email, contacto, dirección, etiquetas, notas), proyectos y tareas. tipo opcional (cliente | proyecto | tarea); archivados: excluir (por defecto) | incluir | solo; limite por tipo (máx. 25).' },
+  // Cobros: detalle completo, comprobante y mapeo de receptores.
+  { name: 'hayai_pago_actualizar', op: pagoActualizar, scope: 'write', description: 'Edita un cobro: fecha, monto (USD, el campo principal de Finanzas), concepto, estado y el DETALLE de cómo entró: monto_bs (bolívares), tasa (Bs por USD; con monto y monto_bs se calcula sola, y si das uno de los dos se calcula el otro), fecha_tasa, referencia (bancaria; no se repite), banco_origen (vale "Bancrecer ****8017"), cuenta_origen_ultimos4, banco_destino, recibido_por (socio: Elis, Jorbi o Leandro), metodo (transferencia | pago_movil | efectivo | zelle | otro) y notas. null borra un dato. La inicial solo admite el detalle (su monto sale de sus ítems).' },
+  { name: 'hayai_pago_ver', op: pagoVer, scope: 'read', description: 'Detalle de un cobro: monto USD, monto_bs, tasa y su fecha, referencia, bancos de origen (con últimos 4) y destino, recibido_por (y si lo asignó el comprobante), método, notas y si tiene comprobante.' },
+  { name: 'hayai_comprobante_subir', op: comprobanteSubir, scope: 'write', description: 'Adjunta el comprobante (capture de la transferencia) a un cobro: imagen_base64 (PNG, JPEG o WebP, máx. 4 MB), nombre opcional y texto_ocr opcional (si ya leíste el texto de la imagen, pásalo y no se repite el OCR). Busca "DOCUMENTO V-..." y, si ese documento está en el mapeo, asigna recibido_por. Devuelve deteccion.estado: asignado | ya_asignado | difiere (el mapeo dice otro socio que el ya fijado; no se pisa) | sin_mapeo | no_detectado; con requiere_confirmacion=true pregunta a un socio quién recibió y fíjalo con hayai_pago_actualizar.' },
+  { name: 'hayai_comprobante_ver', op: comprobanteVer, scope: 'read', description: 'Datos del comprobante de un cobro: nombre, tipo, tamaño, documento detectado (enmascarado) y el texto leído.' },
+  { name: 'hayai_comprobante_detectar', op: comprobanteDetectar, scope: 'write', description: 'Vuelve a cruzar el documento ya leído del comprobante con el mapeo (úsalo después de agregar un documento al mapeo). No repite el OCR.' },
+  { name: 'hayai_receptores_listar', op: receptoresListar, scope: 'read', description: 'Mapeo documento (cédula, enmascarada) -> socio que recibe los fondos. Se usa para asignar recibido_por al leer un comprobante.' },
+  { name: 'hayai_receptor_guardar', op: receptorGuardar, scope: 'write', description: 'Agrega o cambia un documento del mapeo: documento (p. ej. V-12345678) y socio (Elis, Jorbi o Leandro).' },
+  { name: 'hayai_receptor_eliminar', op: receptorEliminar, scope: 'delete', description: 'Quita un documento del mapeo por su id (de hayai_receptores_listar).' },
+  // Hub central (planeta HAYAI): lo interno de la empresa.
+  { name: 'hayai_hub_ver', op: hubVer, scope: 'read', description: 'Hub central de HAYAI en una sola respuesta: pulso interno (gastos generales del mes, tareas internas pendientes y vencidas, proyectos internos activos), astronautas (Elis, Jorbi, Leandro con rol, responsabilidades y carga), bitácora interna, acuerdos abiertos, sistemas con su semáforo y el estado de la analítica.' },
+  { name: 'hayai_equipo_ver', op: equipoVer, scope: 'read', description: 'Los socios con su rol, responsabilidades y carga de trabajo (tareas abiertas, vencidas, completadas en 7 días e internas). Una tarea es de quien tiene asignada o, sin asignar, del responsable de su proyecto.' },
+  { name: 'hayai_equipo_actualizar', op: equipoActualizar, scope: 'write', description: 'Edita el rol y las responsabilidades de un socio (socio: Elis, Jorbi o Leandro). null borra un dato.' },
+  { name: 'hayai_acuerdos_listar', op: acuerdosListar, scope: 'read', description: 'Acuerdos de la reunión semanal (abiertos primero). estado: abierto | cumplido | descartado.' },
+  { name: 'hayai_acuerdo_crear', op: acuerdoCrear, scope: 'write', description: 'Registra un acuerdo de la reunión semanal: texto, fecha_reunion (por defecto hoy), responsable (socio, opcional) y vence (opcional). Avisa al equipo.' },
+  { name: 'hayai_acuerdo_actualizar', op: acuerdoActualizar, scope: 'write', description: 'Edita un acuerdo o cámbiale el estado: cumplido o descartado lo cierra; abierto lo reabre. Los acuerdos no se borran.' },
+  { name: 'hayai_sistemas_listar', op: sistemasListar, scope: 'read', description: 'Sistemas entregados a clientes con su semáforo (arriba | caido | desconocido), enlace, usuario de gestión (nunca contraseñas), datos del entorno y disponibilidad de 24 h. Filtros cliente_id, estado y activos. Los caídos salen primero.' },
+  { name: 'hayai_sistema_ver', op: sistemaVer, scope: 'read', description: 'Un sistema con su estado de verificación actual.' },
+  { name: 'hayai_sistema_crear', op: sistemaCrear, scope: 'write', description: 'Registra el sistema construido para un cliente: cliente_id, nombre, enlace, url_produccion, url_verificacion (por defecto la de producción o el enlace), repo, servidor, usuario_gestion (SIN contraseñas), notas y verificar (por defecto sí: se verifica cada ~10 minutos y avisa si cae).' },
+  { name: 'hayai_sistema_actualizar', op: sistemaActualizar, scope: 'write', description: 'Edita un sistema (campos de hayai_sistema_crear; null borra un dato; activo=false lo oculta). Cambiar una URL reinicia su semáforo.' },
+  { name: 'hayai_sistema_verificar', op: sistemaVerificar, scope: 'write', description: 'Verifica un sistema ahora (GET a su URL; 2xx/3xx = arriba). Un fallo se confirma con un segundo intento antes de declararlo caído.' },
+  { name: 'hayai_marketing_embudo', op: marketingEmbudo, scope: 'read', description: 'Embudo del planeta Marketing: posibles clientes por etapa abierta con su valor mensual y ponderado, cierres (ganados, perdidos y tasa) de los últimos dias (7-365, def. 90), cohorte por origen y los leads de Meta Ads de 30 días.' },
   // Papelera: borrar nunca destruye, manda a la papelera 30 días y se puede restaurar.
   { name: 'hayai_papelera_listar', op: papeleraListar, scope: 'read', description: 'Lista lo que hay en la papelera (borrado en los últimos 30 días), con quién lo borró y hasta cuándo se puede restaurar.' },
   { name: 'hayai_papelera_restaurar', op: papeleraRestaurar, scope: 'write', description: 'Restaura algo de la papelera con su id de papelera (con todo lo que colgaba de ello). Falla si lo que lo contenía (p. ej. el cliente de un proyecto) sigue borrado: restaura eso primero.' },
@@ -126,7 +151,7 @@ mcpRouter.all('/', (req, res, next) => {
   res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed' }, id: null })
 })
 
-mcpRouter.post('/', apiKeyAuth, keyRateLimit(), jsonOnly, express.json({ limit: '100kb' }), async (req, res) => {
+mcpRouter.post('/', apiKeyAuth, keyRateLimit(), jsonOnly, express.json({ limit: '6mb' }), async (req, res) => { // 6 MB: el comprobante de un cobro viaja en base64
   const server = buildServer(req.user!)
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
   res.on('close', () => {

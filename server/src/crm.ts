@@ -166,8 +166,8 @@ export async function syncEstValue(c: PoolClient, clientId: string) {
 }
 
 const liveProposal = async (c: PoolClient, clientId: string) =>
-  (await c.query(`SELECT id, status FROM proposals WHERE client_id = $1 AND status IN ('borrador', 'presentada') FOR UPDATE`, [clientId])).rows[0] as
-    | { id: string; status: string }
+  (await c.query(`SELECT id, status, version FROM proposals WHERE client_id = $1 AND status IN ('borrador', 'presentada') FOR UPDATE`, [clientId])).rows[0] as
+    | { id: string; status: string; version: number }
     | undefined
 
 /** Crea (o reprograma) la tarea de visita del posible cliente. Vive en su proyecto en planeacion; si no tiene, se crea uno. */
@@ -361,9 +361,16 @@ export async function applyClientPatch(c: PoolClient, actorId: string, clientId:
 
   if (changed) {
     const label = (s: string | null) => (s ? (byKey.get(s)?.label ?? s) : 'Sin etapa')
+    // Al presentar o ganar queda escrito QUE version de la propuesta fue (la bitacora es la fuente de verdad de la negociacion).
+    const version = live && (stage === 'propuesta_presentada' || stage === 'ganado') ? live.version : null
     await c.query(
       `INSERT INTO interactions (client_id, kind, summary, meta, created_by) VALUES ($1, 'etapa', $2, $3::jsonb, $4)`,
-      [clientId, `${label(was)} → ${label(stage)}`, JSON.stringify({ de: was, a: stage, ...(lost ? { motivo: lost } : {}) }), actorId],
+      [
+        clientId,
+        `${label(was)} → ${label(stage)}${version ? ` (propuesta v${version})` : ''}`,
+        JSON.stringify({ de: was, a: stage, ...(lost ? { motivo: lost } : {}), ...(version ? { propuesta_version: version, propuesta_id: live!.id } : {}) }),
+        actorId,
+      ],
     )
     // Aviso al equipo en la misma transaccion. Ganar y perder tienen su propio texto; el resto es "movió a X (De → A)".
     const kind = stage === 'ganado' ? 'cliente_ganado' : stage === 'perdido' ? 'cliente_perdido' : 'cambio_etapa'
@@ -371,7 +378,7 @@ export async function applyClientPatch(c: PoolClient, actorId: string, clientId:
       kind,
       actorId,
       subject: name,
-      detail: stage === 'perdido' ? lost : stage === 'ganado' ? null : `${label(was)} → ${label(stage)}`,
+      detail: stage === 'perdido' ? lost : stage === 'ganado' ? null : `${label(was)} → ${label(stage)}${version && stage === 'propuesta_presentada' ? ` · propuesta v${version}` : ''}`,
       clientId,
       via,
     })

@@ -68,6 +68,8 @@ export const useLive = () =>
     (f) => (subs.add(f), () => void subs.delete(f)),
     () => state,
   )
+/** Eventos que ya tienen su propia alerta en la campana: no suman otra vez al «sin leer» del equipo ni se listan en su pestaña. */
+export const ALERT_BACKED: readonly ActivityKind[] = ['version_nueva', 'feed_nuevo']
 /** Lo que muestra el numero de la campana. */
 export const unreadTotal = (s: State) => s.alertsUnread + s.activityUnread
 
@@ -147,7 +149,7 @@ function receive(e: Activity) {
   if (e.tipo === 'feed_nuevo') void refreshAlerts().catch(() => {})
   set({
     activity: [e, ...state.activity].sort((a, b) => b.id - a.id).slice(0, MAX_ACTIVITY),
-    activityUnread: state.activityUnread + (e.propia ? 0 : 1),
+    activityUnread: state.activityUnread + (e.propia || ALERT_BACKED.includes(e.tipo) ? 0 : 1),
   })
   reloadFor(e)
   // Popup solo si lo hizo otro y la pestaña se esta viendo: en segundo plano nadie lo leeria y se perderia.

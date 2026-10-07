@@ -9,6 +9,8 @@ export type ActivityKind = (typeof KINDS)[number]
 
 /** Avisos que trae el sistema (no un socio): le llegan a TODOS, también a quien figura como actor. */
 export const SYSTEM_KINDS: readonly ActivityKind[] = ['lead_meta', 'sistema_caido', 'sistema_recuperado', 'version_nueva', 'feed_nuevo']
+/** Eventos que YA tienen su propia alerta en la campana (leída por socio): no cuentan otra vez como «sin leer» del equipo ni se repiten en su pestaña. */
+export const ALERT_BACKED_KINDS: readonly ActivityKind[] = ['version_nueva', 'feed_nuevo']
 export const isSystemKind = (k: string) => (SYSTEM_KINDS as readonly string[]).includes(k)
 /** Condicion SQL de la bitácora interna de HAYAI (hub): lo que no es de un cliente, más acuerdos y sistemas. */
 // El feed de oportunidades (lo que encontraron las máquinas) NO es bitácora: tiene su propia vista en el hub.

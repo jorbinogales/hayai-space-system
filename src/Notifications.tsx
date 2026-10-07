@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Blobvatar } from './blob'
-import { dismissToast, markActivitySeen, markAlerts, settleSeen, unreadTotal, useLive, type Activity, type Alert } from './live'
+import { ALERT_BACKED, dismissToast, markActivitySeen, markAlerts, settleSeen, unreadTotal, useLive, type Activity, type Alert } from './live'
 import { go } from './nav'
 import { openFeed, type FeedTipo } from './feedData'
 import { ago } from './time'
@@ -49,6 +49,8 @@ export function Notifications() {
   const wrap = useRef<HTMLDivElement>(null)
   const bell = useRef<HTMLButtonElement>(null)
   const total = unreadTotal(live)
+  // La pestaña Equipo es lo que HICIERON los demás; la versión nueva y el feed ya tienen su alerta en la otra pestaña.
+  const team = live.activity.filter((e) => !ALERT_BACKED.includes(e.tipo))
 
   const close = () => {
     setOpen(false)
@@ -160,14 +162,14 @@ export function Notifications() {
               </div>
             ) : (
               <div role="tabpanel" id="np-equipo" aria-labelledby="nt-equipo" className="notif-list">
-                {live.activity.length === 0 ? (
+                {team.length === 0 ? (
                   <p className="notif-empty">
                     <b>Aún no hay movimientos del equipo.</b>
                     Aquí verás cuando alguien añada un cliente o una tarea, o la complete.
                   </p>
                 ) : (
                   <ul>
-                    {live.activity.map((e) => (
+                    {team.map((e) => (
                       <li key={e.id}>
                         <button
                           className={`notif-item${!e.propia && e.id > live.seenUpTo ? ' is-new' : ''}`}

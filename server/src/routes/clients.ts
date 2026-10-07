@@ -1,15 +1,16 @@
-import { randomUUID } from 'node:crypto'
 import { Router } from 'express'
 import { z } from 'zod'
 import { pool, tx, type Db } from '../db.ts'
 import { HttpError, idParam, isoDate, money, parse, text } from '../util.ts'
-import { applyClientPatch, STAGE_PROB } from '../crm.ts'
+import { applyClientPatch, entryStage, loadStages } from '../crm.ts'
+import { moneyLabel, patchPayment } from '../payments.ts'
 import { recordActivity } from '../activity.ts'
 import { sendToTrash } from '../trash.ts'
+import { expandCharge, insertCharges, insertItems, repeatMonths } from '../charges.ts'
+export { expandCharge, insertCharges, insertItems, repeatMonths }
 import { PROJECT_SELECT, projectIcon } from './projects.ts'
 import { TASK_SELECT } from './tasks.ts'
 
-type ChargeRow = { d: string; c: string; a: number; s: string; sid: string | null; si: number | null; st: number | null }
 type Item = { id: string; concept: string; amount: number }
 type Movement = { id: string; date: string; concept: string; amount: number; kind: string; status: string; series: { id: string; index: number; total: number } | null }
 
@@ -19,7 +20,7 @@ export async function loadClients(db: Db, ids?: string[]) {
     db.query(
       `SELECT c.id, c.name, c.avatar, c.is_prospect, c.archived_at, c.created_at, c.phone, c.email, c.contact_name, c.contact_role, c.address, c.notes,
               c.tags, c.lead_source, c.pipeline_stage, c.est_value, c.probability, c.expected_close, c.lost_reason, c.stage_changed_at,
-              c.next_action, c.next_action_date,
+              c.next_action, c.next_action_date, c.socials, c.implementation_date,
               -- ultimo contacto real: las entradas automaticas de etapa no cuentan
               (SELECT max(i.occurred_at) FROM interactions i WHERE i.client_id = c.id AND i.kind <> 'etapa') AS last_contact_at
        FROM clients c ${ids ? 'WHERE c.id = ANY($1::uuid[])' : ''} ORDER BY c.created_at, c.id`,
@@ -70,78 +71,16 @@ export async function loadClients(db: Db, ids?: string[]) {
     stageChangedAt: c.stage_changed_at as Date | null,
     nextAction: c.next_action as string | null,
     nextActionDate: c.next_action_date as string | null,
+    socials: (c.socials ?? []) as { red: string; url: string }[],
+    implementationDate: c.implementation_date as string | null,
     lastContactAt: c.last_contact_at as Date | null,
     items: itemsBy.get(c.id) ?? [],
     movements: movesBy.get(c.id) ?? [],
   }))
 }
 
-/** 'AAAA-MM-DD' + k meses, mismo día del mes recortado al último día si no existe (siempre desde el día original). */
-function addMonths(iso: string, k: number): string {
-  const [y, m, d] = iso.split('-').map(Number)
-  const t = m - 1 + k
-  const ny = y + Math.floor(t / 12)
-  const nm = (t % 12) + 1
-  const last = new Date(Date.UTC(ny, nm, 0)).getUTCDate() // día 0 del mes siguiente = último de nm (calendario puro, UTC)
-  return `${String(ny).padStart(4, '0')}-${String(nm).padStart(2, '0')}-${String(Math.min(d, last)).padStart(2, '0')}`
-}
-
-export const repeatMonths = z
-  .number('Repetición inválida (entero de 2 a 36)')
-  .int('Repetición inválida (entero de 2 a 36)')
-  .min(2, 'Mínimo 2 meses de repetición')
-  .max(36, 'Máximo 36 meses de repetición')
-
 const status = z.enum(['pendiente', 'cobrado'], 'Estado inválido')
 const itemList = z.array(z.object({ concept: text(120), amount: money })).max(50, 'Máximo 50 conceptos')
-
-/** Un cobro con repeatMonths = N se materializa en N filas pendientes con su propio series_id. */
-export function expandCharge(x: { date: string; amount: number; concept: string; status?: string; repeatMonths?: number }): ChargeRow[] {
-  if (!x.repeatMonths) return [{ d: x.date, c: x.concept, a: x.amount, s: x.status ?? 'pendiente', sid: null, si: null, st: null }]
-  const sid = randomUUID()
-  return Array.from({ length: x.repeatMonths }, (_, i) => ({
-    d: addMonths(x.date, i),
-    c: x.concept,
-    a: x.amount,
-    s: 'pendiente',
-    sid,
-    si: i + 1,
-    st: x.repeatMonths!,
-  }))
-}
-
-export async function insertCharges(c: Db, clientId: string, userId: string, rows: ChargeRow[]) {
-  if (!rows.length) return
-  await c.query(
-    `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, series_id, series_index, series_total, created_at)
-     SELECT $1, t.d, t.c, t.a, 'pago', t.s, $10, t.sid, t.si, t.st, now() + t.n * interval '1 microsecond'
-     FROM unnest($2::date[], $3::text[], $4::numeric[], $5::text[], $6::uuid[], $7::smallint[], $8::smallint[], $9::bigint[])
-          AS t(d, c, a, s, sid, si, st, n)`,
-    [
-      clientId,
-      rows.map((x) => x.d),
-      rows.map((x) => x.c),
-      rows.map((x) => x.a),
-      rows.map((x) => x.s),
-      rows.map((x) => x.sid),
-      rows.map((x) => x.si),
-      rows.map((x) => x.st),
-      rows.map((_, i) => i + 1),
-      userId,
-    ],
-  )
-}
-
-/** created_at = now() + n µs: el orden de inserción queda estable al listar (now() es igual dentro de la transacción). */
-export async function insertItems(c: Db, clientId: string, items: Item[] | { concept: string; amount: number }[]) {
-  if (!items.length) return
-  await c.query(
-    `INSERT INTO client_items (client_id, concept, amount, created_at)
-     SELECT $1, t.c, t.a, now() + t.n * interval '1 microsecond'
-     FROM unnest($2::text[], $3::numeric[]) WITH ORDINALITY AS t(c, a, n)`,
-    [clientId, items.map((i) => i.concept), items.map((i) => i.amount)],
-  )
-}
 
 const newClient = z.object({
   name: text(80),
@@ -266,6 +205,10 @@ clientsRouter.post('/:id/payments', async (req, res) => {
     if (!(await c.query('SELECT 1 FROM clients WHERE id = $1 FOR UPDATE', [clientId])).rowCount)
       throw new HttpError(404, 'Cliente no encontrado')
     await insertCharges(c, clientId, req.user!.id, expandCharge(b))
+    if (b.status === 'cobrado') {
+      const name = (await c.query('SELECT name FROM clients WHERE id = $1', [clientId])).rows[0].name as string
+      await recordActivity(c, { kind: 'cobro_cobrado', actorId: req.user!.id, subject: name, detail: moneyLabel(b.amount), clientId })
+    }
   })
   res.status(201).json(await clientOr404(pool, clientId))
 })
@@ -273,7 +216,11 @@ clientsRouter.post('/:id/payments', async (req, res) => {
 // Convertir = pasar a la etapa "ganado" (probabilidad 100, queda en la bitacora). Lo decide applyClientPatch, igual que en la API.
 clientsRouter.post('/:id/convert', async (req, res) => {
   const clientId = idParam(req.params.id)
-  await tx((c) => applyClientPatch(c, req.user!.id, clientId, { etapa: 'ganado' }))
+  // La pantalla actual no pide la fecha de implementacion: si la ficha no la tiene, se asume hoy (Caracas).
+  await tx(async (c) => {
+    const { rows } = await c.query(`SELECT implementation_date IS NOT NULL AS has, (now() AT TIME ZONE 'America/Caracas')::date::text AS today FROM clients WHERE id = $1`, [clientId])
+    await applyClientPatch(c, req.user!.id, clientId, { etapa: 'ganado', ...(rows[0] && !rows[0].has ? { fecha_implementacion: rows[0].today } : {}) })
+  })
   res.json(await clientOr404(pool, clientId))
 })
 
@@ -295,12 +242,7 @@ paymentsRouter.patch('/:id', async (req, res) => {
       .refine((v) => Object.values(v).some((x) => x !== undefined), 'Envía al menos un campo a modificar'),
     req.body,
   )
-  const clientId = await paymentOwner(paymentId)
-  await pool.query(
-    `UPDATE payments SET date = COALESCE($2, date), amount = COALESCE($3, amount), concept = COALESCE($4, concept), status = COALESCE($5, status)
-     WHERE id = $1`,
-    [paymentId, b.date ?? null, b.amount ?? null, b.concept ?? null, b.status ?? null],
-  )
+  const clientId = await patchPayment(req.user!, paymentId, { fecha: b.date, monto: b.amount, concepto: b.concept, estado: b.status })
   res.json(await clientOr404(pool, clientId))
 })
 
@@ -328,11 +270,12 @@ prospectsRouter.post('/', async (req, res) => {
   if (!owner) throw new HttpError(404, 'Responsable no encontrado')
 
   const ids = await tx(async (c) => {
-    // Entra al pipeline en "nuevo" (10 %), contando desde ahora.
+    // Entra al pipeline en la primera etapa abierta (prospecto, 10 %), contando desde ahora.
+    const entry = entryStage(await loadStages(c))
     const client = await c.query(
       `INSERT INTO clients (name, avatar, is_prospect, pipeline_stage, probability, stage_changed_at, created_by)
-       VALUES ($1, $2, true, 'nuevo', $3, now(), $4) RETURNING id`,
-      [b.name, b.avatar, STAGE_PROB.nuevo, userId],
+       VALUES ($1, $2, true, $3, $4, now(), $5) RETURNING id`,
+      [b.name, b.avatar, entry.key, entry.probability, userId],
     )
     const project = await c.query(
       `INSERT INTO projects (name, icon, client_id, owner_id, status, due_date, created_by)

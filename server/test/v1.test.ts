@@ -1093,7 +1093,8 @@ describe('CRM: ficha del cliente', () => {
 
   it('la BD también lo exige (CHECK): email malo y etapa incoherente se rechazan aunque se salte la API', async () => {
     await assert.rejects(admin.query("UPDATE clients SET email = 'basura' WHERE id = $1", [id]), /clients_email_ck/)
-    await assert.rejects(admin.query("UPDATE clients SET pipeline_stage = 'nuevo' WHERE id = $1", [id]), /clients_stage_/)
+    await assert.rejects(admin.query("UPDATE clients SET pipeline_stage = 'prospecto' WHERE id = $1", [id]), /clients_stage_/, 'un cliente no puede tener etapa abierta')
+    await assert.rejects(admin.query("UPDATE clients SET pipeline_stage = 'nuevo' WHERE id = $1", [id]), /clients_stage_/, 'etapas inexistentes: FK')
     await assert.rejects(admin.query("UPDATE clients SET next_action_date = '2026-01-01' WHERE id = $1", [id]), /clients_next_ck/)
   })
 
@@ -1130,51 +1131,53 @@ describe('CRM: ficha del cliente', () => {
 })
 
 describe('CRM: pipeline', () => {
-  it('un posible nuevo entra en "nuevo" con 10 %; se puede crear en otra etapa abierta, no en ganado/perdido', async () => {
+  it('un posible nuevo entra en "prospecto" con 10 %; se puede crear en otra etapa abierta (incl. alias viejos), no en ganado/perdido/presentada', async () => {
     const a = await mkPosible('Pipe A')
     assert.equal(a.estado, 'posible')
-    assert.equal(a.etapa, 'nuevo')
+    assert.equal(a.etapa, 'prospecto')
     assert.equal(a.probabilidad, 10)
     assert.equal(a.valor_ponderado, null, 'sin valor estimado no hay ponderado (null, no 0)')
-    const b = await mkPosible('Pipe B', { etapa: 'propuesta', valor_estimado: 1000 })
-    assert.equal(b.etapa, 'propuesta')
+    const b = await mkPosible('Pipe B', { etapa: 'propuesta', valor_estimado: 1000 }) // alias de la fase 1
+    assert.equal(b.etapa, 'propuesta_en_armado', 'la salida siempre usa los nombres nuevos')
     assert.equal(b.probabilidad, 50)
     assert.equal(b.valor_ponderado, 500)
-    for (const etapa of ['ganado', 'perdido'])
+    for (const etapa of ['ganado', 'perdido', 'propuesta_presentada', 'negociacion', 'inventada'])
       assert.equal((await api('/clientes', { body: { nombre: 'Pipe X', estado: 'posible', etapa } })).status, 400, etapa)
-    assert.equal((await api('/clientes', { body: { nombre: 'Pipe Y', etapa: 'nuevo' } })).status, 400, 'pipeline sin estado posible')
+    assert.equal((await api('/clientes', { body: { nombre: 'Pipe Y', etapa: 'prospecto' } })).status, 400, 'pipeline sin estado posible')
     assert.equal((await api('/clientes', { body: { nombre: 'Pipe Z', valor_estimado: 5 } })).status, 400)
   })
 
   it('transiciones: cada cambio de etapa deja una entrada automática en la bitácora; mismo valor no duplica', async () => {
     const p = await mkPosible('Pipe C', { valor_estimado: 2000 })
     const move = (body: unknown) => api(`/clientes/${p.id}`, { method: 'PATCH', body })
-    const c1 = await move({ etapa: 'contactado' })
+    const c1 = await move({ etapa: 'contactado' }) // alias viejo => visita_agendada
     assert.equal(c1.status, 200, JSON.stringify(c1.body))
-    assert.equal(c1.body.etapa, 'contactado')
-    assert.equal(c1.body.probabilidad, 10, 'cambiar de etapa abierta no pisa la probabilidad que ya había')
-    const c2 = await move({ etapa: 'negociacion', probabilidad: 80 })
-    assert.equal(c2.body.probabilidad, 80)
+    assert.equal(c1.body.etapa, 'visita_agendada')
+    assert.equal(c1.body.probabilidad, 20, 'cada etapa trae su probabilidad')
+    const c2 = await move({ etapa: 'propuesta_en_armado', probabilidad: 80 })
+    assert.equal(c2.body.probabilidad, 80, 'se puede pisar a mano')
     assert.equal(c2.body.valor_ponderado, 1600)
-    await move({ etapa: 'negociacion' }) // sin cambio
+    await move({ etapa: 'propuesta_en_armado' }) // sin cambio
     const feed = (await api(`/clientes/${p.id}/interacciones?tipo=etapa`)).body.data
-    assert.deepEqual(feed.map((e: any) => e.cambio.a).sort(), ['contactado', 'negociacion'])
+    assert.deepEqual(feed.map((e: any) => e.cambio.a).sort(), ['propuesta_en_armado', 'visita_agendada'])
     assert.ok(feed.every((e: any) => e.automatica === true && e.tipo === 'etapa'))
-    assert.equal(feed.find((e: any) => e.cambio.a === 'negociacion').cambio.de, 'contactado')
+    assert.equal(feed.find((e: any) => e.cambio.a === 'propuesta_en_armado').cambio.de, 'visita_agendada')
     assert.equal(feed[0].registrada_por, 'Leandro')
   })
 
   it('ganar: probabilidad 100, pasa a cliente activo; perder: exige motivo, probabilidad 0; reabrir devuelve la probabilidad de la etapa', async () => {
     const w = await mkPosible('Pipe Gana', { valor_estimado: 800 })
-    const won = await api(`/clientes/${w.id}`, { method: 'PATCH', body: { etapa: 'ganado' } })
+    assert.equal((await api(`/clientes/${w.id}`, { method: 'PATCH', body: { etapa: 'ganado' } })).status, 400, 'ganar exige fecha_implementacion')
+    const won = await api(`/clientes/${w.id}`, { method: 'PATCH', body: { etapa: 'ganado', fecha_implementacion: isoDay(7) } })
     assert.equal(won.status, 200, JSON.stringify(won.body))
+    assert.equal(won.body.fecha_implementacion, isoDay(7))
     assert.equal(won.body.estado, 'activo')
     assert.equal(won.body.etapa, 'ganado')
     assert.equal(won.body.probabilidad, 100)
-    assert.equal((await api(`/clientes/${w.id}`, { method: 'PATCH', body: { etapa: 'ganado' } })).status, 409, 'ya es cliente')
+    assert.equal((await api(`/clientes/${w.id}`, { method: 'PATCH', body: { etapa: 'ganado', fecha_implementacion: isoDay(7) } })).status, 409, 'ya es cliente')
     assert.equal((await api(`/clientes/${w.id}`, { method: 'PATCH', body: { etapa: 'perdido', motivo_perdida: 'x' } })).status, 409)
 
-    const l = await mkPosible('Pipe Pierde', { valor_estimado: 800, etapa: 'negociacion', probabilidad: 90 })
+    const l = await mkPosible('Pipe Pierde', { valor_estimado: 800, etapa: 'propuesta_en_armado', probabilidad: 90 })
     assert.equal((await api(`/clientes/${l.id}`, { method: 'PATCH', body: { etapa: 'perdido' } })).status, 400, 'sin motivo')
     assert.equal((await api(`/clientes/${l.id}`, { method: 'PATCH', body: { etapa: 'perdido', motivo_perdida: 'Precio', probabilidad: 30 } })).status, 400, 'perdido es 0')
     const lost = await api(`/clientes/${l.id}`, { method: 'PATCH', body: { etapa: 'perdido', motivo_perdida: 'Precio' } })
@@ -1188,23 +1191,23 @@ describe('CRM: pipeline', () => {
     // el motivo solo existe en "perdido"
     assert.equal((await api(`/clientes/${w.id}`, { method: 'PATCH', body: { motivo_perdida: 'x' } })).status, 400)
     // reabrir
-    const re = await api(`/clientes/${l.id}`, { method: 'PATCH', body: { etapa: 'contactado' } })
+    const re = await api(`/clientes/${l.id}`, { method: 'PATCH', body: { etapa: 'visita_agendada' } })
     assert.equal(re.status, 200, JSON.stringify(re.body))
-    assert.equal(re.body.etapa, 'contactado')
-    assert.equal(re.body.probabilidad, 25)
+    assert.equal(re.body.etapa, 'visita_agendada')
+    assert.equal(re.body.probabilidad, 20)
     assert.equal(re.body.motivo_perdida, null)
   })
 
-  it('estado "activo" sobre un posible = ganado; "posible" sobre un cliente = nuevo; estado y etapa contradictorios => 400', async () => {
+  it('estado "activo" sobre un posible = ganado; "posible" sobre un cliente = prospecto; estado y etapa contradictorios => 400', async () => {
     const p = await mkPosible('Pipe Estado')
-    assert.equal((await api(`/clientes/${p.id}`, { method: 'PATCH', body: { estado: 'activo', etapa: 'nuevo' } })).status, 400)
-    const a = await api(`/clientes/${p.id}`, { method: 'PATCH', body: { estado: 'activo' } })
+    assert.equal((await api(`/clientes/${p.id}`, { method: 'PATCH', body: { estado: 'activo', etapa: 'prospecto', fecha_implementacion: isoDay(3) } })).status, 400)
+    const a = await api(`/clientes/${p.id}`, { method: 'PATCH', body: { estado: 'activo', fecha_implementacion: isoDay(3) } })
     assert.equal(a.body.etapa, 'ganado')
     assert.equal(a.body.probabilidad, 100)
     const old = (await api('/clientes', { body: { nombre: 'Pipe Viejo' } })).body
     assert.equal(old.etapa, null)
     const b = await api(`/clientes/${old.id}`, { method: 'PATCH', body: { estado: 'posible' } })
-    assert.equal(b.body.etapa, 'nuevo')
+    assert.equal(b.body.etapa, 'prospecto')
     assert.equal(b.body.probabilidad, 10)
   })
 
@@ -1230,13 +1233,13 @@ describe('CRM: pipeline', () => {
   it('GET /pipeline: totales y ponderados por etapa, ganados/perdidos aparte, fríos con 14 días', async () => {
     const before = (await api('/pipeline')).body
     assert.equal(before.dias_frio, 14)
-    assert.deepEqual(before.etapas.map((e: any) => e.etapa), ['nuevo', 'contactado', 'propuesta', 'negociacion'])
-    const prop = before.etapas.find((e: any) => e.etapa === 'propuesta')
-    const a = await mkPosible('Pipe Resumen A', { etapa: 'propuesta', valor_estimado: 1000 }) // 50 % => 500
-    const b = await mkPosible('Pipe Resumen B', { etapa: 'propuesta', valor_estimado: 333.33, probabilidad: 33 }) // 109.9989 => 110
-    await mkPosible('Pipe Resumen C', { etapa: 'propuesta' }) // sin valor
+    assert.deepEqual(before.etapas.map((e: any) => e.etapa), ['prospecto', 'visita_agendada', 'visita_realizada', 'propuesta_en_armado', 'propuesta_presentada'])
+    const prop = before.etapas.find((e: any) => e.etapa === 'propuesta_en_armado')
+    const a = await mkPosible('Pipe Resumen A', { etapa: 'propuesta_en_armado', valor_estimado: 1000 }) // 50 % => 500
+    const b = await mkPosible('Pipe Resumen B', { etapa: 'propuesta_en_armado', valor_estimado: 333.33, probabilidad: 33 }) // 109.9989 => 110
+    await mkPosible('Pipe Resumen C', { etapa: 'propuesta_en_armado' }) // sin valor
     const after = (await api('/pipeline')).body
-    const p2 = after.etapas.find((e: any) => e.etapa === 'propuesta')
+    const p2 = after.etapas.find((e: any) => e.etapa === 'propuesta_en_armado')
     assert.equal(p2.cantidad, prop.cantidad + 3)
     assert.equal(p2.valor_total, sumOf([prop.valor_total, 1000, 333.33]))
     assert.equal(p2.valor_ponderado, sumOf([prop.valor_ponderado, 500, 110]))
@@ -1262,14 +1265,15 @@ describe('CRM: pipeline', () => {
     assert.equal((await api(`/clientes/${a.id}`)).body.frio, false)
     // cambiar de etapa NO calienta
     await admin.query("UPDATE clients SET created_at = now() - interval '30 days' WHERE id = $1", [b.id])
-    await api(`/clientes/${b.id}`, { method: 'PATCH', body: { etapa: 'negociacion' } })
+    await api(`/clientes/${b.id}`, { method: 'PATCH', body: { etapa: 'visita_realizada' } })
     assert.ok((await api('/pipeline')).body.frios.some((f: any) => f.id === b.id))
   })
 
   it('filtro etapa en /clientes y validación', async () => {
-    const r = await api('/clientes?etapa=propuesta&per_page=100')
+    const r = await api('/clientes?etapa=propuesta_en_armado&per_page=100')
     assert.equal(r.status, 200)
-    assert.ok(r.body.data.length >= 3 && r.body.data.every((c: any) => c.etapa === 'propuesta'))
+    assert.ok(r.body.data.length >= 3 && r.body.data.every((c: any) => c.etapa === 'propuesta_en_armado'))
+    assert.equal((await api('/clientes?etapa=propuesta&per_page=100')).body.meta.total, r.body.meta.total, 'el alias viejo filtra igual')
     assert.equal((await api('/clientes?etapa=nada')).status, 400)
   })
 })
@@ -1344,10 +1348,10 @@ describe('CRM: bitácora', () => {
 
   it('las entradas automáticas de etapa no se editan ni se borran (409) y desde la bitácora se ven marcadas', async () => {
     const p = await mkPosible('Bitácora Etapa')
-    await api(`/clientes/${p.id}`, { method: 'PATCH', body: { etapa: 'contactado' } })
+    await api(`/clientes/${p.id}`, { method: 'PATCH', body: { etapa: 'visita_agendada' } })
     const e = (await api(`/clientes/${p.id}/interacciones?tipo=etapa`)).body.data[0]
     assert.equal(e.automatica, true)
-    assert.equal(e.resumen, 'Nuevo → Contactado')
+    assert.equal(e.resumen, 'Prospecto → Visita agendada')
     assert.equal((await api(`/interacciones/${e.id}`, { method: 'PATCH', body: { resumen: 'Mentira' } })).status, 409)
     assert.equal((await apiD(`/interacciones/${e.id}`, { method: 'DELETE' })).status, 409)
     assert.equal((await api(`/clientes/${p.id}/interacciones?tipo=etapa`)).body.data.length, 1)
@@ -1629,12 +1633,12 @@ describe('CRM: permisos y MCP', () => {
 
   it('MCP: ficha, pipeline y bitácora de punta a punta; los errores de negocio llegan como isError', async () => {
     const created = data(await tool('hayai_cliente_crear', { nombre: 'MCP Prospecto', estado: 'posible', telefono: '0412-1112233', etiquetas: ['mcp'], origen: 'meta_ads', valor_estimado: 500, proxima_accion: 'Enviar propuesta', proxima_accion_fecha: isoDay(-1) }))
-    assert.equal(created.etapa, 'nuevo')
+    assert.equal(created.etapa, 'prospecto')
     assert.equal(created.origen, 'meta_ads')
     assert.equal(created.seguimiento_vencido, true)
-    const upd = data(await tool('hayai_cliente_actualizar', { id: created.id, etapa: 'propuesta' }))
-    assert.equal(upd.etapa, 'propuesta')
-    assert.equal(upd.probabilidad, 10)
+    const upd = data(await tool('hayai_cliente_actualizar', { id: created.id, etapa: 'propuesta_en_armado' }))
+    assert.equal(upd.etapa, 'propuesta_en_armado')
+    assert.equal(upd.probabilidad, 50)
     const i = data(await tool('hayai_interaccion_registrar', { cliente_id: created.id, tipo: 'whatsapp', resumen: 'Mandé la propuesta' }, KEY_J))
     assert.equal(i.registrada_por, 'Jorbi')
     const list = data(await tool('hayai_interacciones_listar', { cliente_id: created.id }))
@@ -1680,16 +1684,16 @@ describe('CRM: web (sesión)', () => {
 
   it('PATCH /clients/:id/ficha: traduce camelCase, devuelve el cliente de la lista, rechaza campos desconocidos y vacíos', async () => {
     const p = (await web('/prospects', { body: { name: 'Web CRM', avatar: 'nova', project: { name: 'Web', icon: 'box', owner: 'Elis' } } })).body.client
-    assert.equal(p.stage, 'nuevo')
+    assert.equal(p.stage, 'prospecto')
     const r = await web(`/clients/${p.id}/ficha`, {
       method: 'PATCH',
-      body: { phone: '0414-7778899', email: 'WEB@crm.com', contactName: 'Ana', tags: ['Nuevo', 'nuevo'], source: 'meta_ads', stage: 'contactado', estValue: 900, probability: 30, expectedClose: isoDay(15), nextAction: 'Llamar', nextActionDate: isoDay(1) },
+      body: { phone: '0414-7778899', email: 'WEB@crm.com', contactName: 'Ana', tags: ['Nuevo', 'nuevo'], source: 'meta_ads', stage: 'visita_agendada', estValue: 900, probability: 30, expectedClose: isoDay(15), nextAction: 'Llamar', nextActionDate: isoDay(1) },
     })
     assert.equal(r.status, 200, JSON.stringify(r.body))
     assert.equal(r.body.phone, '0414-7778899')
     assert.equal(r.body.email, 'web@crm.com')
     assert.deepEqual(r.body.tags, ['nuevo'])
-    assert.equal(r.body.stage, 'contactado')
+    assert.equal(r.body.stage, 'visita_agendada')
     assert.equal(r.body.estValue, 900)
     assert.equal(r.body.probability, 30)
     assert.equal(r.body.nextActionDate, isoDay(1))
@@ -1899,6 +1903,52 @@ describe('Actividad del equipo', () => {
     assert.equal(r.sin_leer, 0)
     const bad = (await rpc('hayai_actividad_listar', { tipo: 'nada' })).body.result
     assert.equal(bad.isError, true)
+  })
+
+  it('cobros y pipeline avisan: cobro cobrado, cambio de etapa, ganado y perdido (texto con el dueño de la llave, una sola vez)', async () => {
+    const c = (await api('/clientes', { body: { nombre: 'Aviso Cobros', cobros: [{ fecha: isoDay(-1), monto: 120, concepto: 'Mensualidad' }, { fecha: isoDay(5), monto: 50.5, concepto: 'Extra' }] } })).body
+    const pagos = c.movimientos.filter((m: any) => m.tipo === 'pago')
+    const base = await ultimo()
+    // marcar cobrado avisa; repetirlo no (ya estaba cobrado); cambiar el concepto de uno pendiente tampoco
+    assert.equal((await api(`/pagos/${pagos[0].id}`, { method: 'PATCH', body: { estado: 'cobrado' } })).status, 200)
+    await api(`/pagos/${pagos[0].id}`, { method: 'PATCH', body: { estado: 'cobrado' } })
+    await api(`/pagos/${pagos[1].id}`, { method: 'PATCH', body: { concepto: 'Extra 2' } })
+    let ev = await nuevos(base)
+    assert.deepEqual(ev.map((e) => e.tipo), ['cobro_cobrado'])
+    assert.equal(ev[0].texto, 'Leandro registró el cobro de $120 a Aviso Cobros')
+    assert.equal(ev[0].cliente_id, c.id)
+    // "marcar cobrado" por la herramienta dedicada y un cobro creado ya cobrado también avisan, con decimales
+    const b2 = await ultimo()
+    const mcp = (name: string, args: unknown) =>
+      http(`${ROOT}/mcp`, { key: KEY, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } } })
+    assert.equal((await mcp('hayai_pago_marcar_cobrado', { id: pagos[1].id })).body.result.isError, undefined)
+    ev = await nuevos(b2)
+    assert.equal(ev[0]?.texto, 'Leandro registró el cobro de $50.50 a Aviso Cobros')
+    const b3 = await ultimo()
+    await api(`/clientes/${c.id}/pagos`, { body: { fecha: isoDay(0), monto: 10, concepto: 'Suelto', estado: 'cobrado' } })
+    assert.equal((await nuevos(b3))[0]?.texto, 'Leandro registró el cobro de $10 a Aviso Cobros')
+
+    // etapas: cada cambio avisa "movió a X (De → A)"; ganar y perder tienen su propio texto
+    const p = await mkPosible('Aviso Etapas')
+    const b4 = await ultimo()
+    await api(`/clientes/${p.id}`, { method: 'PATCH', body: { etapa: 'visita_agendada' } })
+    await api(`/clientes/${p.id}`, { method: 'PATCH', body: { etapa: 'visita_agendada' } }) // sin cambio: no avisa
+    ev = await nuevos(b4)
+    assert.deepEqual(ev.map((e) => e.texto), ['Leandro movió a Aviso Etapas (Prospecto → Visita agendada)'])
+    assert.equal(ev[0].tipo, 'cambio_etapa')
+    const b5 = await ultimo()
+    await api(`/clientes/${p.id}`, { method: 'PATCH', body: { etapa: 'ganado', fecha_implementacion: isoDay(2) } })
+    ev = await nuevos(b5)
+    assert.deepEqual(ev.map((e) => [e.tipo, e.texto]), [['cliente_ganado', 'Leandro ganó a Aviso Etapas: ya es cliente']])
+    const l = await mkPosible('Aviso Perdido')
+    const b6 = await ultimo()
+    assert.equal((await api(`/clientes/${l.id}`, { method: 'PATCH', body: { etapa: 'perdido' } })).status, 400)
+    assert.deepEqual(await nuevos(b6), [], 'una etapa rechazada no deja aviso')
+    await api(`/clientes/${l.id}`, { method: 'PATCH', body: { etapa: 'perdido', motivo_perdida: 'Precio' } })
+    ev = await nuevos(b6)
+    assert.deepEqual(ev.map((e) => [e.tipo, e.texto]), [['cliente_perdido', 'Leandro marcó como perdido a Aviso Perdido (Precio)']])
+    const { rows } = await admin.query("SELECT via FROM activity WHERE kind = 'cliente_perdido' ORDER BY id DESC LIMIT 1")
+    assert.equal(rows[0].via, 'api:growi')
   })
 })
 

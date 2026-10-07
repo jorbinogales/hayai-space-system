@@ -33,6 +33,8 @@ export interface Client {
   archived?: boolean
   /** semilla del avatar blob */
   avatar: string
+  /** telefono de la ficha (lo usa la factura para abrir el chat de WhatsApp del cliente) */
+  phone?: string | null
   /** desglose de la inicial */
   items: Item[]
   movements: Movement[]

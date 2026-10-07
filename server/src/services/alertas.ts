@@ -3,7 +3,7 @@
 // Vencida = cuota pendiente con fecha anterior a hoy (hora de Caracas). Se excluyen clientes archivados (Finanzas sigue contandolos).
 import { z } from 'zod'
 import { pool, tx } from '../db.ts'
-import { COLD_DAYS, daysBetween, OPEN_STAGES } from '../crm.ts'
+import { COLD_DAYS, daysBetween, loadStages } from '../crm.ts'
 import { dayISO, op, pageShape, paged, r2, todayISO } from './common.ts'
 
 const LECTURAS_DIAS = 90
@@ -133,16 +133,19 @@ export const notificacionesLeer = op(
 // ---------- pipeline ----------
 export const pipelineResumen = op(z.strictObject({}), async () => {
   const hoy = todayISO()
+  const stages = (await loadStages(pool)).filter((s) => s.kind === 'abierta' && s.active)
   const { rows } = await pool.query(
     `SELECT c.id, c.name, c.pipeline_stage AS stage, c.est_value, c.probability, c.created_at, c.next_action_date,
             (SELECT max(i.occurred_at) FROM interactions i WHERE i.client_id = c.id AND i.kind <> 'etapa') AS last_contact
      FROM clients c WHERE c.pipeline_stage IS NOT NULL AND c.archived_at IS NULL ORDER BY c.created_at, c.id`,
   )
   const cents = (n: number | null) => Math.round((n ?? 0) * 100)
-  const etapas = OPEN_STAGES.map((etapa) => {
-    const xs = rows.filter((r) => r.stage === etapa)
+  const etapas = stages.map((st) => {
+    const xs = rows.filter((r) => r.stage === st.key)
     return {
-      etapa,
+      etapa: st.key,
+      nombre: st.label,
+      probabilidad: st.probability,
       cantidad: xs.length,
       valor_total: xs.reduce((s, r) => s + cents(r.est_value), 0) / 100,
       // valor x probabilidad: lo que se espera cerrar. Se redondea una sola vez, al final, para no acumular error.
@@ -150,7 +153,8 @@ export const pipelineResumen = op(z.strictObject({}), async () => {
       sin_valor: xs.filter((r) => r.est_value === null).length,
     }
   })
-  const abiertos = rows.filter((r) => (OPEN_STAGES as readonly string[]).includes(r.stage))
+  const openKeys = new Set(stages.map((x) => x.key))
+  const abiertos = rows.filter((r) => openKeys.has(r.stage))
   const group = (stage: string) => {
     const xs = rows.filter((r) => r.stage === stage)
     return { cantidad: xs.length, valor_total: xs.reduce((s, r) => s + cents(r.est_value), 0) / 100 }

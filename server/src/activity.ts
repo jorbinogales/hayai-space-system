@@ -1,10 +1,10 @@
-// Registro de actividad del equipo (cliente nuevo, tarea nueva, tarea completada). Hoja del grafo de imports a proposito
+// Registro de actividad del equipo (cliente nuevo, tarea nueva, tarea completada, cobros y cambios de etapa). Hoja del grafo de imports a proposito
 // (solo tipos de pg): lo usan routes/ y services/, y estos ya se importan entre si.
 // Se llama DENTRO de la transaccion del cambio: el INSERT y el pg_notify se confirman (o se deshacen) con el. Asi no hay
 // avisos de algo que no paso, ni algo que pasa sin aviso.
 import type { Pool, PoolClient } from 'pg'
 
-export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada'] as const
+export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido'] as const
 export type ActivityKind = (typeof KINDS)[number]
 
 export const CHANNEL = 'activity'
@@ -15,7 +15,7 @@ export type ActivityInput = {
   actorId: string
   /** Nombre del cliente o titulo de la tarea. */
   subject: string
-  /** Tareas: nombre del proyecto. */
+  /** Tareas: nombre del proyecto. Cobros: el monto. Etapas: 'De → A' con los nombres de las etapas. */
   detail?: string | null
   clientId?: string | null
   projectId?: string | null
@@ -47,6 +47,14 @@ export function activityText(kind: ActivityKind, actor: string, subject: string,
       return `${actor} añadió la tarea «${subject}»${detail ? ` en ${detail}` : ''}`
     case 'tarea_completada':
       return `${actor} completó la tarea «${subject}»${detail ? ` de ${detail}` : ''}`
+    case 'cobro_cobrado':
+      return `${actor} registró el cobro${detail ? ` de ${detail}` : ''} a ${subject}`
+    case 'cambio_etapa':
+      return `${actor} movió a ${subject}${detail ? ` (${detail})` : ''}`
+    case 'cliente_ganado':
+      return `${actor} ganó a ${subject}: ya es cliente`
+    case 'cliente_perdido':
+      return `${actor} marcó como perdido a ${subject}${detail ? ` (${detail})` : ''}`
   }
 }
 

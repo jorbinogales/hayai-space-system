@@ -62,7 +62,7 @@ const CRM = {
   createdAt: '<ts>',
   phone: null, email: null, contactName: null, contactRole: null, address: null, notes: null, tags: [], source: null,
   stage: null, estValue: null, probability: null, expectedClose: null, lostReason: null, stageChangedAt: null,
-  nextAction: null, nextActionDate: null, lastContactAt: null,
+  nextAction: null, nextActionDate: null, lastContactAt: null, socials: [], implementationDate: null,
 }
 const CRM_KEYS = Object.keys(CRM)
 
@@ -672,7 +672,7 @@ describe('datos', () => {
     assert.equal(r.status, 201, JSON.stringify(r.body))
     assert.deepEqual(Object.keys(r.body).sort(), ['client', 'project', 'task'])
     const { client, project, task } = r.body
-    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, archived: false, ...CRM, stage: 'nuevo', probability: 10, stageChangedAt: '<ts>', items: [], movements: [] })
+    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, archived: false, ...CRM, stage: 'prospecto', probability: 10, stageChangedAt: '<ts>', items: [], movements: [] })
     assert.deepEqual(shape(project), {
       id: '<uuid>', name: 'Web Futuro', icon: 'globe', owner: 'Leandro', client: 'Futuro SA', clientId: '<uuid>', status: 'planeacion', due: '2020-03-01', archived: false, clientArchived: false,
     })
@@ -699,7 +699,8 @@ describe('datos', () => {
     // convert: prospect=false, conserva su proyecto; la segunda vez => 409
     const conv = await call(`/clients/${client.id}/convert`, { cookie, method: 'POST' })
     assert.equal(conv.status, 200, JSON.stringify(conv.body))
-    assert.deepEqual(shape(conv.body), { ...shape(client), prospect: false, stage: 'ganado', probability: 100, stageChangedAt: '<ts>' })
+    assert.match(conv.body.implementationDate, /^\d{4}-\d\d-\d\d$/, 'la pantalla actual no pide el día de implementación: queda hoy')
+    assert.deepEqual(shape(conv.body), { ...shape(client), prospect: false, stage: 'ganado', probability: 100, stageChangedAt: '<ts>', implementationDate: conv.body.implementationDate })
     assert.deepEqual((await call('/projects', { cookie })).body.find((p: any) => p.id === project.id), project)
     const twice = await call(`/clients/${client.id}/convert`, { cookie, method: 'POST' })
     assert.equal(twice.status, 409)

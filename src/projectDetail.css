@@ -1,0 +1,215 @@
+/* Detalle de proyecto. Tema Space: ambar #ef9d25, noche #16110b, crema #f4ebdd, oro #ffd27a.
+   Capa PLANA sobre el planeta de Proyectos (el 3D queda debajo, tapado). */
+
+/* con el detalle abierto, lo de la lista queda fuera de la vista y del orden de tabulacion */
+.projects.has-detail .plist,
+.projects.has-detail .clients-left,
+.projects.has-detail .zoom { visibility: hidden; pointer-events: none; }
+
+.pd-flat {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  overflow: hidden;
+  pointer-events: auto;
+  background: radial-gradient(70% 70% at 55% 25%, #ebe0cf 0%, #e1d0b9 55%, #cdb597 100%);
+  color: var(--ink);
+  animation: pdIn 0.35s var(--ease) backwards;
+}
+@keyframes pdIn { from { opacity: 0; transform: translateY(6px); } }
+/* lo que se desplaza queda bajo la barra superior */
+.pd-scroll {
+  position: absolute;
+  inset: 92px 0 0 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px var(--pad) 56px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(22, 17, 11, 0.3) transparent;
+}
+.pd-wrap { display: grid; gap: 22px; max-width: 1280px; margin: 0 auto; align-content: start; }
+
+.pd-back {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 14px 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(246, 238, 226, 0.78);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  color: var(--ink);
+  font-size: 0.9rem;
+  cursor: pointer;
+  box-shadow: 0 8px 20px -14px rgba(60, 40, 15, 0.5);
+  transition: background var(--t-hover) var(--ease), transform var(--t-hover) var(--ease);
+}
+.pd-back:hover { background: rgba(252, 246, 236, 0.95); transform: translateX(-2px); }
+.pd-back:focus-visible { outline: 2px solid var(--night); outline-offset: 3px; }
+
+/* ---------- cabecera ---------- */
+.pd-head { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 14px 32px; }
+.pd-title { display: grid; gap: 8px; min-width: 0; }
+.pd-eyebrow { margin: 0; font-size: 0.7rem; letter-spacing: 0.34em; font-weight: 500; color: var(--ink-2); }
+.pd-sub { margin: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; font-size: 0.86rem; color: var(--ink-2); }
+.pd-who { display: inline-flex; align-items: center; gap: 6px; }
+.pd-who b { color: var(--ink); font-weight: 600; }
+.pd-who em { font-style: normal; font-size: 0.76rem; color: var(--ink-2); }
+.pd-head h1 { margin: 0; font: 700 clamp(2rem, 3.2vw + 0.6rem, 2.75rem) / 1.05 var(--display); letter-spacing: -0.02em; max-width: 24ch; overflow-wrap: anywhere; }
+.pd-head-side { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.pd-state { padding: 6px 14px; border-radius: 999px; background: rgba(44, 122, 87, 0.16); color: #1f6445; font-size: 0.74rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
+.pd-state.st-entrega { background: rgba(239, 157, 37, 0.28); color: #5e3800; }
+.pd-state.st-planeacion, .pd-state.st-pausado { background: rgba(22, 17, 11, 0.09); color: var(--ink-2); }
+.pd-state.st-completado { background: var(--night); color: #ffd27a; }
+
+.pd-err { margin: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 14px; background: rgba(190, 59, 31, 0.1); box-shadow: inset 0 0 0 1px rgba(190, 59, 31, 0.3); color: #7d2512; font-size: 0.88rem; }
+
+/* ---------- rejilla y tarjetas ---------- */
+.pd-grid { display: grid; grid-template-columns: minmax(0, 8fr) minmax(0, 4fr); gap: 28px; align-items: start; }
+.pd-col { display: grid; gap: 20px; min-width: 0; align-content: start; }
+.pd-card { display: grid; gap: 12px; padding: 22px 26px; border-radius: 20px; background: rgba(255, 255, 255, 0.66); box-shadow: inset 0 0 0 1px rgba(22, 17, 11, 0.08); min-width: 0; }
+.pd-card.is-dark { background: linear-gradient(180deg, #221b13, #16110b); color: #f4ebdd; box-shadow: 0 20px 40px -24px rgba(0, 0, 0, 0.7); }
+.pd-ch { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.pd-ch h2 { margin: 0; font-size: 0.7rem; letter-spacing: 0.2em; text-transform: uppercase; font-weight: 600; color: var(--ink-2); }
+.pd-card.is-dark .pd-ch h2 { color: #ffd27a; }
+.pd-count { font-size: 0.8rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.pd-card.is-dark .pd-count { color: rgba(244, 235, 221, 0.7); }
+.pd-desc { margin: 0; font-size: 0.95rem; line-height: 1.65; max-width: 64ch; white-space: pre-line; overflow-wrap: anywhere; }
+.pd-empty { margin: 0; font-size: 0.88rem; line-height: 1.55; color: var(--ink-2); }
+.pd-empty.is-dark { color: rgba(244, 235, 221, 0.7); }
+.pd-note { margin: 0; font-size: 0.82rem; line-height: 1.5; color: var(--ink-2); }
+.pd-note.is-dark { color: rgba(244, 235, 221, 0.75); }
+
+.pd-skel { display: grid; gap: 16px; }
+.pd-skel i { display: block; height: 150px; border-radius: 20px; background: linear-gradient(100deg, rgba(255, 255, 255, 0.35) 30%, rgba(255, 255, 255, 0.6) 50%, rgba(255, 255, 255, 0.35) 70%) 0 0 / 220% 100%; animation: pdShimmer 1.4s linear infinite; }
+@keyframes pdShimmer { to { background-position: -220% 0; } }
+
+/* ---------- botones y enlaces ---------- */
+.pd-pill { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 0 14px; border: 0; border-radius: 999px; background: var(--amber); color: var(--night); font: 600 0.8rem / 1 var(--sans); cursor: pointer; transition: background var(--t-hover) var(--ease), transform var(--t-hover) var(--ease), opacity var(--t-hover) var(--ease); }
+.pd-pill:hover:not(:disabled) { background: #f6a93a; transform: translateY(-1px); }
+.pd-pill:disabled { opacity: 0.45; cursor: default; }
+.pd-pill.is-ghost { background: rgba(22, 17, 11, 0.08); color: var(--ink); }
+.pd-pill.is-ghost:hover:not(:disabled) { background: rgba(22, 17, 11, 0.14); }
+.pd-pill:focus-visible, .pd-ibtn:focus-visible, .pd-add:focus-visible { outline: 2px solid var(--night); outline-offset: 2px; }
+.pd-card.is-dark .pd-pill:focus-visible, .pd-card.is-dark .pd-ibtn:focus-visible, .pd-card.is-dark .pd-add:focus-visible { outline-color: var(--amber); }
+.pd-pill.is-ghost.on-dark, .pd-card.is-dark .pd-pill.is-ghost { background: rgba(244, 235, 221, 0.12); color: #f4ebdd; }
+.pd-link { padding: 0; border: 0; background: none; color: #7a4700; font: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.pd-link.is-strong { font-size: 0.95rem; color: var(--ink); text-decoration-color: rgba(22, 17, 11, 0.35); }
+.pd-link:focus-visible { outline: 2px solid var(--night); outline-offset: 2px; border-radius: 4px; }
+.pd-ibtn { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: rgba(22, 17, 11, 0.08); color: var(--ink); cursor: pointer; transition: background var(--t-hover) var(--ease), opacity var(--t-hover) var(--ease); }
+.pd-ibtn:hover:not(:disabled) { background: rgba(22, 17, 11, 0.16); }
+.pd-ibtn:disabled { opacity: 0.35; cursor: default; }
+.pd-ibtn.is-faint { width: 28px; height: 28px; background: none; opacity: 0.45; }
+.pd-ibtn.is-faint:hover, .pd-ibtn.is-faint:focus-visible { opacity: 1; background: rgba(22, 17, 11, 0.1); }
+.pd-ibtn.is-next svg { transform: scaleX(-1); }
+.pd-card.is-dark .pd-ibtn { background: rgba(244, 235, 221, 0.12); color: #f4ebdd; }
+.pd-card.is-dark .pd-ibtn:hover:not(:disabled) { background: rgba(244, 235, 221, 0.22); }
+.pd-add { justify-self: start; display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 14px 0 10px; border: 1.5px dashed rgba(22, 17, 11, 0.35); border-radius: 999px; background: none; color: var(--ink); font: 600 0.8rem / 1 var(--sans); cursor: pointer; }
+.pd-add:hover { background: rgba(22, 17, 11, 0.06); }
+.pd-add.is-dark { border-color: rgba(244, 235, 221, 0.4); color: #f4ebdd; }
+.pd-add.is-dark:hover { background: rgba(244, 235, 221, 0.1); }
+
+/* ---------- hoja de ruta ---------- */
+.pd-road-scroll { overflow-x: auto; margin: 0 -8px; padding: 4px 8px 6px; scrollbar-width: thin; scrollbar-color: rgba(244, 235, 221, 0.3) transparent; }
+.pd-road { list-style: none; margin: 0; padding: 0; position: relative; display: grid; grid-template-columns: repeat(var(--n), minmax(132px, 1fr)); gap: 12px; }
+.pd-line { position: absolute; left: 12px; right: 12px; top: 11px; height: 2px; background: rgba(244, 235, 221, 0.18); pointer-events: none; }
+.pd-line.is-fill { right: auto; background: var(--amber); transition: width 0.4s var(--ease); }
+.pd-stop { position: relative; min-width: 0; }
+.pd-stop button { display: grid; justify-items: start; align-content: start; gap: 10px; width: 100%; padding: 0 6px 8px 0; border: 0; background: none; text-align: left; color: inherit; cursor: pointer; border-radius: 10px; }
+.pd-stop button:focus-visible { outline: 2px solid var(--amber); outline-offset: 4px; }
+.pd-stop strong { font-size: 0.88rem; line-height: 1.3; color: rgba(244, 235, 221, 0.78); overflow-wrap: anywhere; }
+.pd-stop small { font-size: 0.76rem; color: rgba(244, 235, 221, 0.55); font-variant-numeric: tabular-nums; }
+.pd-stop.is-hecho strong { color: #f4ebdd; }
+.pd-stop.is-en_curso strong { color: #ffd27a; font-weight: 700; }
+.pd-stop button:hover strong { color: #fff; }
+.pd-stop.is-sel button { box-shadow: 0 2px 0 0 var(--amber); border-radius: 0; }
+.pd-node { position: relative; z-index: 1; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #16110b; flex: none; }
+.pd-node.is-done { background: var(--amber); color: var(--night); }
+.pd-node.is-now { box-shadow: 0 0 0 3px #ffd27a; }
+.pd-node.is-now i { width: 8px; height: 8px; border-radius: 50%; background: #ffd27a; }
+.pd-node.is-todo { box-shadow: inset 0 0 0 2px rgba(244, 235, 221, 0.3); }
+
+/* editor del hito y formularios en linea (sobre fondo oscuro) */
+.pd-edit { display: grid; gap: 12px; padding: 14px 16px; border-radius: 14px; background: rgba(244, 235, 221, 0.07); }
+.pd-edit-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 190px); gap: 12px; align-items: end; }
+.pd-edit-row.is-actions { grid-template-columns: auto auto; justify-content: space-between; align-items: center; gap: 10px; }
+.pd-edit label { display: grid; gap: 5px; }
+.pd-edit label > span { font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600; color: rgba(244, 235, 221, 0.65); }
+.pd-edit input { width: 100%; min-width: 0; padding: 9px 11px; border: 1px solid rgba(244, 235, 221, 0.22); border-radius: 12px; background: rgba(255, 255, 255, 0.06); color: #f4ebdd; color-scheme: dark; font: inherit; font-size: 0.9rem; }
+.pd-edit input:focus { outline: 2px solid var(--amber); outline-offset: 0; border-color: transparent; }
+.pd-seg { display: inline-flex; padding: 3px; border-radius: 999px; background: rgba(244, 235, 221, 0.1); }
+.pd-seg button { min-height: 30px; padding: 0 12px; border: 0; border-radius: 999px; background: none; color: rgba(244, 235, 221, 0.75); font: 600 0.78rem / 1 var(--sans); cursor: pointer; }
+.pd-seg button:hover:not(.is-on) { background: rgba(244, 235, 221, 0.1); }
+.pd-seg button.is-on { background: var(--amber); color: var(--night); }
+.pd-seg button:focus-visible { outline: 2px solid #ffd27a; outline-offset: 2px; }
+.pd-mini { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+
+/* ---------- listas (pendientes y tareas) ---------- */
+.pd-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.pd-list li { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 6px 0; border-bottom: 1px solid rgba(22, 17, 11, 0.07); font-size: 0.92rem; }
+.pd-list li:last-child { border-bottom: 0; }
+.pd-box { flex: none; display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: none; box-shadow: inset 0 0 0 2px rgba(22, 17, 11, 0.4); color: #ffd27a; cursor: pointer; transition: background var(--t-hover) var(--ease); }
+.pd-box:hover { background: rgba(22, 17, 11, 0.08); }
+.pd-box[aria-checked='true'] { background: var(--night); box-shadow: none; }
+.pd-box:focus-visible { outline: 2px solid var(--night); outline-offset: 3px; }
+.pd-text { flex: 1; min-width: 0; padding: 4px 0; border: 0; background: none; text-align: left; font: inherit; color: var(--ink); cursor: text; overflow-wrap: anywhere; }
+.pd-text:hover:not(.is-static) { text-decoration: underline dotted; text-underline-offset: 3px; }
+.pd-text:focus-visible { outline: 2px solid var(--night); outline-offset: 2px; border-radius: 4px; }
+.pd-text.is-static { cursor: default; }
+.pd-list li.is-done .pd-text { color: var(--ink-2); text-decoration: line-through; }
+.pd-inline { flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid rgba(22, 17, 11, 0.25); border-radius: 10px; background: #fffaf2; color: var(--ink); font: inherit; }
+.pd-inline:focus { outline: 2px solid var(--amber); outline-offset: 0; border-color: transparent; }
+.pd-chip { flex: none; padding: 2px 9px; border-radius: 999px; background: rgba(239, 157, 37, 0.28); color: #5e3800; font-size: 0.72rem; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pd-chip.is-quiet { background: rgba(22, 17, 11, 0.08); color: var(--ink-2); }
+.pd-chip.is-late { background: rgba(190, 59, 31, 0.14); color: #a02f16; }
+.pd-new { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 6px; }
+.pd-new input { flex: 1 1 200px; min-width: 0; padding: 9px 12px; border: 1px solid rgba(22, 17, 11, 0.2); border-radius: 12px; background: #fffaf2; color: var(--ink); font: inherit; font-size: 0.9rem; }
+.pd-new input[type='date'] { flex: 0 1 160px; }
+.pd-new input:focus { outline: 2px solid var(--amber); outline-offset: 0; border-color: transparent; }
+
+/* ---------- datos y avance ---------- */
+.pd-dl { margin: 0; display: grid; gap: 14px; }
+.pd-dl > div { display: grid; gap: 3px; }
+.pd-dl dt { font-size: 0.76rem; color: var(--ink-2); }
+.pd-dl dd { margin: 0; font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pd-dl dd.is-late { color: #a02f16; }
+.pd-pct { margin: 0; font: 700 clamp(2.4rem, 2.4vw + 1.2rem, 2.75rem) / 1 var(--display); color: #ffd27a; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.pd-bar { height: 8px; border-radius: 999px; background: rgba(244, 235, 221, 0.16); overflow: hidden; }
+.pd-bar i { display: block; height: 100%; border-radius: 999px; background: var(--amber); transition: width 0.5s var(--ease); }
+.pd-internal { display: grid; gap: 6px; padding: 18px 22px; border-radius: 20px; border: 1.5px dashed rgba(22, 17, 11, 0.3); }
+.pd-internal strong { font-size: 0.9rem; }
+.pd-internal span { font-size: 0.82rem; line-height: 1.5; color: var(--ink-2); }
+
+/* ---------- hoja de edicion: el area de texto, con el mismo trato que los campos ---------- */
+.sheet textarea { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid rgba(244, 235, 221, 0.2); border-radius: 12px; background: rgba(255, 255, 255, 0.06); color: #f4ebdd; color-scheme: dark; font: inherit; font-size: 0.95rem; line-height: 1.5; resize: vertical; }
+.sheet textarea:focus { outline: 2px solid var(--amber); outline-offset: 0; border-color: transparent; }
+.sheet textarea::placeholder { color: rgba(244, 235, 221, 0.4); }
+
+/* ---------- adaptable ---------- */
+@media (max-width: 1000px) {
+  .pd-grid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+}
+@media (max-width: 700px) {
+  .pd-card { padding: 18px 18px; }
+  .pd-edit-row { grid-template-columns: minmax(0, 1fr); }
+  .pd-edit-row.is-actions { grid-template-columns: minmax(0, 1fr); }
+  .pd-road { grid-template-columns: repeat(var(--n), minmax(120px, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pd-flat { animation: none; }
+  .pd-line.is-fill, .pd-bar i, .pd-pill, .pd-back { transition: none; }
+  .pd-skel i { animation: none; }
+}
+
+/* ---------- tarjeta de la lista: toda la tarjeta abre el detalle (el titulo es el boton) ---------- */
+.pcard-p h2 .p-open { padding: 0; border: 0; background: none; text-align: left; font: inherit; color: inherit; cursor: pointer; overflow-wrap: anywhere; }
+.pcard-p h2 .p-open::after { content: ''; position: absolute; inset: 0; border-radius: 20px; }
+.pcard-p h2 .p-open:focus-visible { outline: none; }
+.pcard-p h2 .p-open:focus-visible::after { outline: 2px solid var(--night); outline-offset: 2px; }
+.pcard-p .p-edit { position: relative; z-index: 1; }
+.pcard-p { cursor: pointer; }
+.st-pausado .p-state { background: rgba(22, 17, 11, 0.09); color: var(--ink-2); }
+.st-completado .p-state { background: var(--night); color: #ffd27a; }

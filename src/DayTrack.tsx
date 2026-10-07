@@ -25,7 +25,7 @@ export function dayItems(clients: Client[], tasks: Task[], projects: Project[], 
     .filter((t) => t.due && !t.done)
     .flatMap((t): DayItem[] => {
       const p = projects.find((x) => x.id === t.projectId)
-      return p?.clientId ? [{ id: `t-${t.id}`, kind: 'visita', clientId: p.clientId, date: t.due!, title: clients.find((c) => c.id === p.clientId)?.name ?? p.client, sub: t.title }] : []
+      return p?.clientId ? [{ id: `t-${t.id}`, kind: 'visita', clientId: p.clientId, date: t.due!, title: clients.find((c) => c.id === p.clientId)?.name ?? p.client ?? '', sub: t.title }] : []
     })
   return [...pay, ...visits]
 }
@@ -68,7 +68,7 @@ export default function DayTrack({
     const lines = items
       .filter((i) => i.kind === 'pago' && i.clientId === p.clientId && i.date.startsWith(month))
       .sort((a, b) => a.date.localeCompare(b.date))
-      .map((i) => ({ date: i.date, concept: i.sub, amount: i.amount ?? 0 }))
+      .map((i) => ({ id: i.id, date: i.date, concept: i.sub, amount: i.amount ?? 0 }))
     return { clientId: p.clientId, client, month, lines, phone }
   }
 

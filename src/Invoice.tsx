@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import Cobro from './Cobro'
 import { Icon } from './ui'
 import { fmtDate, money, todayISO } from './store'
 
 export interface InvoiceLine {
+  /** id del cobro (pago) de la línea: con él se abre el detalle del cobro; las líneas agregadas a mano no lo tienen */
+  id?: string
   /** YYYY-MM-DD */
   date: string
   concept: string
@@ -127,6 +130,7 @@ export default function Invoice({ data: initial, onClose }: { data: InvoiceData;
   // los datos se pueden corregir antes de imprimir o compartir; los cambios son solo de esta factura, no tocan los cobros
   const [data, setData] = useState(initial)
   const [edit, setEdit] = useState(false)
+  const [cobroId, setCobroId] = useState<string | null>(null)
   const setLine = (i: number, patch: Partial<InvoiceLine>) => setData((d) => ({ ...d, lines: d.lines.map((l, j) => (j === i ? { ...l, ...patch } : l)) }))
   const close = useRef(onClose)
   close.current = onClose
@@ -213,6 +217,11 @@ export default function Invoice({ data: initial, onClose }: { data: InvoiceData;
                       <span className="inv-date">{fmtDate(l.date)}</span>
                       <span className="inv-concept">{l.concept}</span>
                       <b>{money(l.amount)}</b>
+                      {l.id && (
+                        <button type="button" className="inv-open" onClick={() => setCobroId(l.id!)} aria-label={`Ver el detalle del cobro ${l.concept}`} title="Ver el detalle del cobro">
+                          <Icon name="arrow" size={13} />
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -237,6 +246,7 @@ export default function Invoice({ data: initial, onClose }: { data: InvoiceData;
           </button>
         </footer>
       </div>
+      {cobroId && <Cobro id={cobroId} onClose={() => setCobroId(null)} />}
     </div>,
     document.body,
   )

@@ -7,12 +7,22 @@ import { avatarFor, useProjects, STATUS_LABEL } from './projectData'
 import { addTask, removeTask, taskCounts, toggleTask, useTasks, type Task } from './taskData'
 import { reduced } from './warp'
 import { fmtDate, todayISO } from './store'
+import { isInternalProject, useInternalFilter } from './nav'
+import { InternalChip } from './InternalChip'
 
 /** Pantalla Tareas: el planeta a un costado y, a la derecha, un tablero "Por hacer / Completadas" para el proyecto elegido. */
 export default function Tasks({ onBack }: { onBack: () => void }) {
   const { world } = useCosmos()
-  const projects = useProjects()
-  const tasks = useTasks()
+  const allProjects = useProjects()
+  const allTasks = useTasks()
+  // atajo interno del Hub: solo proyectos de HAYAI (sin cliente) y sus tareas
+  const internal = useInternalFilter()
+  const projects = useMemo(() => (internal ? allProjects.filter(isInternalProject) : allProjects), [internal, allProjects])
+  const tasks = useMemo(() => {
+    if (!internal) return allTasks
+    const ids = new Set(projects.map((p) => p.id))
+    return allTasks.filter((x) => ids.has(x.projectId))
+  }, [internal, allTasks, projects])
   const [sel, setSel] = useState(projects[0]?.id ?? '')
   const [title, setTitle] = useState('')
   const [due, setDue] = useState('') // fecha agendada opcional (p.ej. una visita)
@@ -76,6 +86,7 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
           <header className="plist-head">
             <h1>Tareas</h1>
             <div className="plist-side">
+              {internal && <InternalChip label="Solo internas" />}
               <p>
                 <span>
                   <b>{total.pendientes}</b> por hacer
@@ -89,7 +100,13 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
 
           <div className="tk-body">
             <nav className="tk-rail" aria-label="Proyectos" ref={rail}>
-              {projects.length === 0 && <p className="empty-note">No hay proyectos todavía. Crea uno en el planeta Proyectos para empezar a anotar tareas.</p>}
+              {projects.length === 0 && (
+                <p className="empty-note">
+                  {internal
+                    ? 'HAYAI aún no tiene proyectos internos (sin cliente). Crea uno en el planeta Proyectos sin elegir cliente, o quita el filtro para ver las tareas de los clientes.'
+                    : 'No hay proyectos todavía. Crea uno en el planeta Proyectos para empezar a anotar tareas.'}
+                </p>
+              )}
               {projects.map((p) => {
                 const c = taskCounts(tasks.filter((x) => x.projectId === p.id))
                 const all = c.pendientes + c.completadas
@@ -121,7 +138,7 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
                   <div>
                     <h2>{project.name}</h2>
                     <p>
-                      {project.client} · {STATUS_LABEL[project.status]}
+                      {project.client || 'HAYAI (interno)'} · {STATUS_LABEL[project.status]}
                     </p>
                   </div>
                   <Blobvatar seed={avatarFor(project.owner)} size={34} />

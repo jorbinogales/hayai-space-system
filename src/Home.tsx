@@ -10,12 +10,14 @@ import { Icon, ZoomControls } from './ui'
 import type { Screen } from './App'
 import { CORE_R, PLANETS, type PlanetKey } from './world'
 import { useCosmos } from './Cosmos'
+import { setInternal } from './nav'
+import './hub.css'
 
 /** Capa HTML del Home: tarjetas de cada planeta + marca del nucleo, que siguen a los objetos 3D. Solo se ve con `shown`. */
 export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Screen) => void }) {
   const { world, hot, setHot } = useCosmos()
   const cards = useRef<(HTMLElement | null)[]>([])
-  const mark = useRef<HTMLParagraphElement | null>(null)
+  const mark = useRef<HTMLButtonElement | null>(null)
   const sm = summary(useClients())
   const pc = projectCounts(useProjects())
   const expenses = useExpenses()
@@ -72,18 +74,37 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
     }
   }, [world])
 
+  // al volver al core (o entrar desde el core) no queda ningun filtro interno pegado de los atajos del Hub
+  useEffect(() => {
+    if (shown) setInternal(false)
+  }, [shown])
+
   const open = (k: PlanetKey) => {
     if (!shown || false) return
     setHot(null)
+    setInternal(false)
     onOpen(k)
   }
 
   return (
     <main className={`screen layer home${shown ? '' : ' warping'}`}>
       <div className="overlay">
-        <p className="core-mark" ref={mark} aria-label="HAYAI">
+        <button
+          type="button"
+          className="core-mark"
+          ref={mark}
+          aria-label="Hub central"
+          title="Hub central"
+          tabIndex={shown ? 0 : -1}
+          onClick={() => {
+            if (!shown) return
+            setHot(null)
+            setInternal(false)
+            onOpen('hub')
+          }}
+        >
           HAYAI
-        </p>
+        </button>
         {PLANETS.map((p, i) => {
           const d =
             p.key === 'clientes'

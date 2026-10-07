@@ -6,6 +6,8 @@ import Projects from './Projects'
 import Expenses from './Expenses'
 import Finances from './Finances'
 import Tasks from './Tasks'
+import Hub from './Hub'
+import Marketing from './Marketing'
 import { Topbar } from './ui'
 import { Warp } from './warp'
 import Boot from './Boot'
@@ -21,10 +23,12 @@ import { clearAllDrafts, setDraftOwner, startUpdates, stopUpdates } from './upda
 import { UpdateHost } from './UpdateUI'
 import Versions from './Versions'
 
-export type Screen = 'home' | 'clientes' | 'proyectos' | 'gastos' | 'finanzas' | 'tareas'
+export type Screen = 'home' | 'clientes' | 'proyectos' | 'gastos' | 'finanzas' | 'tareas' | 'hub' | 'marketing'
+/** Pantallas planas: se montan encima del cosmos sin viaje 3D (el mundo se queda en el Home, tapado por la pantalla). */
+export const isFlat = (s: Screen) => s === 'hub' || s === 'marketing'
 const fromHash = (): Screen => {
   const h = location.hash.slice(1).split('/')[0]
-  return h === 'clientes' || h === 'proyectos' || h === 'gastos' || h === 'finanzas' || h === 'tareas' ? h : 'home'
+  return h === 'clientes' || h === 'proyectos' || h === 'gastos' || h === 'finanzas' || h === 'tareas' || h === 'hub' || h === 'marketing' ? h : 'home'
 }
 
 export default function App() {
@@ -37,7 +41,7 @@ export default function App() {
   const [integrations, setIntegrations] = useState(false)
   const [vault, setVault] = useState(false)
   // un unico mundo 3D para todas las pantallas: navegar mueve objetos dentro de la misma escena
-  const world = useMemo(() => createWorld(route === 'home' ? null : route), [])
+  const world = useMemo(() => createWorld(route === 'home' || isFlat(route) ? null : (route as Exclude<Screen, 'home' | 'hub' | 'marketing'>)), [])
 
   useEffect(() => {
     world.onArrive = (at) => setUi(at)
@@ -85,6 +89,12 @@ export default function App() {
   const navigate = (s: Screen, setHash = true) => {
     if (world.busy() || s === route) return
     if (setHash) location.hash = s === 'home' ? '' : s
+    // las pantallas planas (hub, marketing) no viajan: se muestran al instante sobre el cosmos
+    if (isFlat(s) || (isFlat(route) && s === 'home')) {
+      setRoute(s)
+      setUi(s)
+      return
+    }
     setRoute(s)
     setUi(null)
     world.go(s === 'home' ? null : s)
@@ -106,6 +116,8 @@ export default function App() {
         {ui === 'gastos' && <Expenses onBack={() => navigate('home')} />}
         {ui === 'finanzas' && <Finances onBack={() => navigate('home')} />}
         {ui === 'tareas' && <Tasks onBack={() => navigate('home')} />}
+        {ui === 'hub' && <Hub onBack={() => navigate('home')} onOpen={navigate} />}
+        {ui === 'marketing' && <Marketing onBack={() => navigate('hub')} />}
       </Cosmos>
       {session && (
         <Topbar

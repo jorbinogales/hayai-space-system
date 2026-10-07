@@ -6,7 +6,9 @@ import CalendarView, { type CalEvent } from './Calendar'
 import NewExpense from './NewExpense'
 import { useDragScroll } from './drag'
 import { fmtDate, money, todayISO } from './store'
-import { avatarFor } from './projectData'
+import { avatarFor, useAllProjects } from './projectData'
+import { isInternalExpense, useInternalFilter } from './nav'
+import { InternalChip } from './InternalChip'
 import { monthSummary, removeExpense, useExpenses, type Expense } from './expenseData'
 import { reduced, useDive } from './warp'
 
@@ -15,7 +17,11 @@ const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 
 /** Pantalla Gastos: el planeta a un costado y, a la derecha, el calendario de gastos del mes (o del anio) y el historico en linea de tiempo. */
 export default function Expenses({ onBack }: { onBack: () => void }) {
   const { world, setDeep } = useCosmos()
-  const expenses = useExpenses()
+  const allExpenses = useExpenses()
+  const allProjects = useAllProjects()
+  // atajo interno del Hub: solo gastos generales o de proyectos sin cliente
+  const internal = useInternalFilter()
+  const expenses = useMemo(() => (internal ? allExpenses.filter((x) => isInternalExpense(x, allProjects)) : allExpenses), [internal, allExpenses, allProjects])
   const [tab, setTab] = useState<'cal' | 'hist'>('cal')
   const [form, setForm] = useState(false)
   const [exiting, setExiting] = useState(false)
@@ -72,6 +78,7 @@ export default function Expenses({ onBack }: { onBack: () => void }) {
           <header className="plist-head">
             <h1>Gastos</h1>
             <div className="plist-side">
+              {internal && <InternalChip label="Solo internos" />}
               <p>
                 <span>
                   <b>{money(sm.total)}</b> este mes
@@ -105,6 +112,7 @@ export default function Expenses({ onBack }: { onBack: () => void }) {
               </div>
             ) : (
               <div className="g-body g-hist" key="hist" ref={hist}>
+                {groups.length === 0 && <p className="empty-note dark">{internal ? 'No hay gastos internos todavía. Quita el filtro para ver los gastos de los clientes.' : 'Aún no hay gastos registrados.'}</p>}
                 {groups.map(([ym, list]) => (
                   <section key={ym}>
                     <h3>

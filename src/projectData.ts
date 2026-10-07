@@ -5,8 +5,8 @@ import { createList } from './cache'
 import { loadExpenses } from './expenseData'
 import { loadTasks } from './taskData'
 
-export type ProjectStatus = 'activo' | 'entrega' | 'planeacion'
-export const STATUS_LABEL: Record<ProjectStatus, string> = { activo: 'Activo', entrega: 'En entrega', planeacion: 'Por visitar' }
+export type ProjectStatus = 'activo' | 'entrega' | 'planeacion' | 'pausado' | 'completado'
+export const STATUS_LABEL: Record<ProjectStatus, string> = { activo: 'Activo', entrega: 'En entrega', planeacion: 'Por visitar', pausado: 'Pausado', completado: 'Completado' }
 
 export interface Project {
   id: string
@@ -15,11 +15,13 @@ export interface Project {
   name: string
   /** icono representativo del proyecto */
   icon: IconName
-  /** astronauta responsable (nombre) */
+  /** descripcion libre del proyecto (la edita el detalle) */
+  description?: string | null
+  /** astronauta responsable (nombre): el responsable real del proyecto */
   owner: string
-  /** cliente (nombre e id) */
-  client: string
-  clientId: string
+  /** cliente (nombre e id); null en un proyecto interno de HAYAI (sin cliente) */
+  client: string | null
+  clientId: string | null
   status: ProjectStatus
   /** fecha de entrega, YYYY-MM-DD */
   due?: string | null
@@ -57,8 +59,8 @@ export async function addProject(d: ProjectDraft): Promise<Project> {
   return p
 }
 
-export type ProjectPatch = Partial<Omit<ProjectDraft, 'due'>> & { due?: string | null }
-/** Edita un proyecto (nombre, icono, cliente, responsable, estado, fecha de entrega). */
+export type ProjectPatch = Partial<Omit<ProjectDraft, 'due' | 'clientId'>> & { due?: string | null; /** null = proyecto interno de HAYAI (sin cliente) */ clientId?: string | null; description?: string | null }
+/** Edita un proyecto (nombre, descripcion, icono, cliente, responsable, estado, fecha de entrega). */
 export async function updateProject(id: string, d: ProjectPatch, ifMatch?: string): Promise<Project> {
   const p = await api.patch<Project>(`/projects/${id}`, d, { ifMatch })
   projects.update((cur) => cur.map((x) => (x.id === id ? p : x)))

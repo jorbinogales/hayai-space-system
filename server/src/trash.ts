@@ -39,7 +39,7 @@ const rows = async (c: PoolClient, sql: string, params: unknown[]) =>
   (await c.query(`SELECT to_jsonb(t) AS j FROM (${sql}) t`, params)).rows.map((r) => r.j as Row)
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
-const money = (n: unknown) => `$${Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 })}`
+const money = (n: unknown) => `$${Number(n).toLocaleString('es-VE', { minimumFractionDigits: Number.isInteger(Number(n)) ? 0 : 2, maximumFractionDigits: 2 })}`
 
 /** Lee la fila y su descendencia (bloqueando la fila). null si no existe. */
 async function snapshot(c: PoolClient, entity: Entity, entityId: string): Promise<Snapshot | null> {

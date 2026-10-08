@@ -94,7 +94,7 @@ export function Notifications() {
           <Icon name="bell" />
           {total > 0 && (
             <span className="badge count" aria-hidden="true">
-              {total > 9 ? '9+' : total}
+              {total > 99 ? '99+' : total}
             </span>
           )}
         </button>

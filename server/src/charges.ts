@@ -40,8 +40,10 @@ export function expandCharge(x: { date: string; amount: number; concept: string;
 export async function insertCharges(c: Db, clientId: string, userId: string, rows: ChargeRow[]) {
   if (!rows.length) return
   await c.query(
-    `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, series_id, series_index, series_total, created_at)
-     SELECT $1, t.d, t.c, t.a, 'pago', t.s, $10, t.sid, t.si, t.st, now() + t.n * interval '1 microsecond'
+    // un cobro que nace cobrado lo recibió quien lo registra (se puede cambiar a mano después)
+    `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, series_id, series_index, series_total, created_at, received_by, received_by_source)
+     SELECT $1, t.d, t.c, t.a, 'pago', t.s, $10::uuid, t.sid, t.si, t.st, now() + t.n * interval '1 microsecond',
+            CASE WHEN t.s = 'cobrado' THEN $10::uuid END, CASE WHEN t.s = 'cobrado' THEN 'manual' END
      FROM unnest($2::date[], $3::text[], $4::numeric[], $5::text[], $6::uuid[], $7::smallint[], $8::smallint[], $9::bigint[])
           AS t(d, c, a, s, sid, si, st, n)`,
     [

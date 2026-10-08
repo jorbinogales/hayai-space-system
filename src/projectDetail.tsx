@@ -305,7 +305,7 @@ function Roadmap({ projectId, items, reload, patch, onError }: { projectId: stri
       </header>
 
       {items.length === 0 ? (
-        <p className="pd-empty is-dark">Todavía no hay hitos. Agrega el primero (por ejemplo «Levantamiento» o «Entrega») y el avance del proyecto sale de ahí.</p>
+        <p className="pd-empty is-dark">Aún no hay hitos. Agrega el primero (p. ej. «Levantamiento») y de ahí sale el avance.</p>
       ) : (
         <div className="pd-road-scroll">
           <ol className="pd-road" style={{ ['--n' as string]: items.length }}>

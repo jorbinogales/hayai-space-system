@@ -9,7 +9,7 @@ import { HttpError } from './util.ts'
 export type PaymentPatch = { fecha?: string; monto?: number; concepto?: string; estado?: 'pendiente' | 'cobrado' } & Detalle
 
 /** Monto para el texto del aviso: "$120" o "$120.50". */
-export const moneyLabel = (n: number) => `$${Number.isInteger(n) ? n : n.toFixed(2)}`
+export const moneyLabel = (n: number) => `$${n.toLocaleString('es-VE', { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 })}`
 
 /**
  * Edita un pago. Si pasa de pendiente a cobrado deja el aviso 'cobro_cobrado' (cliente, monto). La inicial solo admite el
@@ -33,6 +33,9 @@ export async function patchPayment(actor: { id: string; via?: string }, paymentI
        WHERE id = $1 RETURNING amount, status`,
       [paymentId, p.fecha ?? null, p.monto ?? null, p.concepto ?? null, p.estado ?? null],
     )
+    // al pasar a cobrado, lo recibió quien lo marca (si nadie lo fijó antes; un recibido_por explícito manda y se escribe abajo)
+    if (row.status !== 'cobrado' && rows[0].status === 'cobrado' && p.recibido_por === undefined)
+      await c.query(`UPDATE payments SET received_by = $2, received_by_source = 'manual' WHERE id = $1 AND received_by IS NULL`, [paymentId, actor.id])
     if (hasDetalle(p) || p.monto !== undefined) await writeDetalle(c, paymentId, pickDetalle(p), { amountChanged: p.monto !== undefined && Number(p.monto) !== Number(row.amount) })
     if (row.status !== 'cobrado' && rows[0].status === 'cobrado')
       await recordActivity(c, {

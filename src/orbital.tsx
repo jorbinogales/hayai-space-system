@@ -436,7 +436,7 @@ function OrbitalBody({ model, clients, openId, onPick, onSwitch, onProspect }: {
       </div>
 
       <div className="ob-side">
-        <p className="ob-lead">Cada punto es un posible cliente. Mientras más cerca del planeta, más cerca de ganarse. El centro son los clientes que ya son nuestros.</p>
+        <p className="ob-lead">Cada punto es un posible cliente: mientras más cerca del planeta, más cerca de ganarse.</p>
 
         {lead && leadStage ? (
           <article className="ob-card" aria-live="polite">

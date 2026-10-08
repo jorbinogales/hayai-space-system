@@ -1,21 +1,44 @@
 // Feed de oportunidades (planeta HAYAI / Hub): lo que las máquinas y los agentes ENCONTRARON. No es la bitácora (lo que el equipo
-// HIZO): aquí cada hallazgo es una tarjeta que se convierte en algo (posible cliente, tarea, proyecto), se revisa o se descarta.
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { ApiError, isConflict } from './api'
+// HIZO): aquí cada hallazgo es una tarjeta que se convierte en algo (posible cliente, tarea, proyecto), se revisa, se descarta o se guarda.
+//
+// Dos piezas: `FeedEntry` (la tarjeta compacta que vive en la página del Hub) y `FeedScreen` (la vista propia del feed, #hub/feed).
+// Revisar, descartar y guardar son PERSONALES; convertir es GLOBAL (lo ve todo el equipo).
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { ApiError } from './api'
+import { refreshAlerts } from './live'
 import { SOURCE_LABEL } from './clientLog'
 import {
   FEED_ESTADO_LABEL,
   FEED_TIPOS,
   FEED_TIPO_LABEL,
+  accionPrincipal,
+  categoriaLabel,
+  closeFeed,
+  contactoDe,
   convertFeed,
+  cortar,
+  fmtN,
+  fuenteLabel,
+  hayContacto,
+  isGrowi,
+  isRec,
   loadFeed,
   loadFeedItem,
   markFeed,
   onFeedFocus,
+  openFeed,
+  origenUrl,
   publishFeed,
+  publishNuevos,
+  safeUrl,
+  saveFeed,
   takeFeedFocus,
+  urlLabel,
   useFeedTick,
+  useKnownNuevos,
+  vistaDe,
   type ConvertBody,
+  type EnlaceContacto,
   type FeedConversion,
   type FeedEstado,
   type FeedFilters,
@@ -23,9 +46,11 @@ import {
   type FeedItem,
   type FeedMeta,
   type FeedTipo,
+  type MiEstado,
 } from './feedData'
 import { go } from './nav'
 import { loadProjects, useProjects } from './projectData'
+import { useSession } from './session'
 import { loadClients } from './store'
 import { loadTasks } from './taskData'
 import { ago } from './time'
@@ -33,51 +58,19 @@ import { Icon } from './ui'
 import './feed.css'
 
 const PER_PAGE = 20
-/** cuántas páginas ya cargadas se vuelven a pedir en una recarga en vivo (el resto se conserva tal cual) */
+/** cuántas páginas ya cargadas se vuelven a pedir en una recarga (el resto se conserva tal cual) */
 const REFRESH_PAGES = 5
 const SOURCES = ['referido', 'instagram', 'whatsapp', 'facebook', 'meta_ads', 'web', 'visita_frio', 'evento', 'otro']
 const STAGE_LABEL: Record<string, string> = { prospecto: 'Prospecto captado', visita_agendada: 'Visita agendada', visita_realizada: 'Visita realizada', propuesta_en_armado: 'Propuesta en armado', propuesta_presentada: 'Segunda visita' }
 
 // ---------- helpers de presentación ----------
-const plural = (n: number, one: string, many: string) => `${n.toLocaleString('es-VE')} ${n === 1 ? one : many}`
-const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s)
+const plural = (n: number, one: string, many: string) => `${fmtN(n)} ${n === 1 ? one : many}`
 const msg = (e: unknown, fallback: string) => (e instanceof Error ? e.message : fallback)
 const fullDate = (iso: string) => new Date(iso).toLocaleString('es-VE', { dateStyle: 'long', timeStyle: 'short' })
 const reduced = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
-
-const FUENTES: Record<string, string> = {
-  'radar-hayai': 'Radar HAYAI',
-  'cazador-summit': 'Cazador Summit',
-  'video-auditorias': 'Video-auditorías',
-  'espia-pos': 'Espía POS',
-  'leads-tibios': 'Leads tibios',
-  'demo-first': 'Demo-first',
-}
-/** Nombre legible de la fuente (el slug que manda el servidor, humanizado). */
-export function fuenteLabel(fuente: string, by?: { nombre: string }): string {
-  if (FUENTES[fuente]) return FUENTES[fuente]
-  if (fuente === 'manual') return by ? `Manual · ${by.nombre}` : 'Manual'
-  const muse = /^muse-(.+)$/.exec(fuente)
-  if (muse) return `Muse de ${cap(muse[1].replace(/[-_.]+/g, ' '))}`
-  return cap(fuente.replace(/[-_.]+/g, ' ').trim())
-}
-
-// ---------- lectura tolerante de `datos` (forma libre: se muestra lo que haya y el resto se ignora) ----------
-const isRec = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
-const scalar = (v: unknown): string | null => (typeof v === 'string' ? v.trim() || null : typeof v === 'number' && Number.isFinite(v) ? v.toLocaleString('es-VE') : typeof v === 'boolean' ? (v ? 'Sí' : 'No') : null)
+const scalar = (v: unknown): string | null => (typeof v === 'string' ? v.trim() || null : typeof v === 'number' && Number.isFinite(v) ? fmtN(v) : typeof v === 'boolean' ? (v ? 'Sí' : 'No') : null)
 const listOf = (v: unknown): string[] => (Array.isArray(v) ? v.map(scalar).filter((x): x is string => !!x) : scalar(v) ? [scalar(v)!] : [])
-/** Solo enlaces http(s): lo demás (javascript:, data:...) nunca llega a un href. */
-const safeUrl = (v: unknown): string | null => {
-  if (typeof v !== 'string' || !/^https?:\/\//i.test(v.trim())) return null
-  try {
-    const u = new URL(v.trim())
-    return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : null
-  } catch {
-    return null
-  }
-}
-const urlLabel = (href: string) => href.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '')
-const keyLabel = (k: string) => cap(k.replace(/[_-]+/g, ' '))
+const keyLabel = (k: string) => k.replace(/[_-]+/g, ' ').replace(/^./, (c) => c.toUpperCase())
 
 interface Negocio {
   nombre: string | null
@@ -107,13 +100,9 @@ function detailOf(it: FeedItem) {
   const urls = listOf(d.urls)
     .map(safeUrl)
     .filter((x): x is string => !!x)
-  const contacto = [
-    ['Teléfono', scalar(d.telefono)],
-    ['Correo', scalar(d.email)],
-    ['Origen', scalar(d.origen)],
-  ].filter((x): x is [string, string] => !!x[1])
-  const out = { negocio: negocioOf(d), fugas: listOf(d.fugas), guion: scalar(d.guion), urls, metricas, contacto }
-  const any = !!out.negocio || out.fugas.length > 0 || !!out.guion || urls.length > 0 || metricas.length > 0 || contacto.length > 0
+  const origen = scalar(d.origen)
+  const out = { negocio: negocioOf(d), fugas: listOf(d.fugas), guion: scalar(d.guion), urls, metricas, origen }
+  const any = !!out.negocio || out.fugas.length > 0 || !!out.guion || urls.length > 0 || metricas.length > 0 || !!origen
   return { ...out, any }
 }
 
@@ -127,15 +116,52 @@ const TIPO_PATH: Record<FeedTipo, string> = {
   proyecto: 'M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3ZM4 7.5l8 4.5 8-4.5M12 12v9',
 }
 function TipoIcon({ tipo, size = 14 }: { tipo: FeedTipo; size?: number }) {
+  return <Svg d={TIPO_PATH[tipo]} size={size} />
+}
+const PATH = {
+  bookmark: 'M6.5 3h11a1.5 1.5 0 0 1 1.5 1.5V21l-7-4.4L5 21V4.5A1.5 1.5 0 0 1 6.5 3Z',
+  mail: 'M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1ZM3.5 6.5 12 13l8.5-6.5',
+  phone: 'M5 3.5h3.2l1.6 4.2-2 1.3a11 11 0 0 0 5.2 5.2l1.3-2 4.2 1.6V17a2.5 2.5 0 0 1-2.5 2.5A14.5 14.5 0 0 1 2.5 6 2.5 2.5 0 0 1 5 3.5Z',
+  whatsapp: 'M20 11.6A8.1 8.1 0 0 1 8 18.7L4 20l1.3-3.9A8.1 8.1 0 1 1 20 11.6ZM9.3 8.6c.2 3 2.7 5.6 5.8 6l1.2-1.4-2-1-.9.6a4.4 4.4 0 0 1-2.3-2.3l.6-.9-1-2Z',
+  external: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5',
+  globe: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM3 12h18M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9Z',
+  instagram: 'M7.5 3h9A4.5 4.5 0 0 1 21 7.5v9a4.5 4.5 0 0 1-4.5 4.5h-9A4.5 4.5 0 0 1 3 16.5v-9A4.5 4.5 0 0 1 7.5 3ZM12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6ZM17.2 6.8h.01',
+  facebook: 'M14.5 21v-7.5H17l.5-3h-3V8.8c0-.9.3-1.5 1.6-1.5H17.6V4.6c-.3 0-1.2-.1-2.3-.1-2.3 0-3.8 1.4-3.8 3.9v2.1H9v3h2.5V21',
+  link: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1-1',
+  eye: 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12ZM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z',
+} as const
+function Svg({ d, size = 14, fill = false }: { d: string; size?: number; fill?: boolean }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d={TIPO_PATH[tipo]} />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={fill ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d={d} />
     </svg>
   )
 }
+const LINK_ICON: Record<EnlaceContacto['tipo'], string> = { web: PATH.globe, instagram: PATH.instagram, facebook: PATH.facebook, enlace: PATH.link }
+
+/** Sello de Growi: el castor paciente y el tejón valiente, reducidos a una estampa sobria (aro, franjas de tejón y un punto de miel). */
+function GrowiSeal() {
+  return (
+    <span className="fd-growi" title="Lo encontró Growi">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true" focusable="false">
+        <circle cx="12" cy="12" r="9.6" />
+        <path d="M9.2 4.6v6M14.8 4.6v6" strokeWidth="2.4" />
+        <path d="M8.6 14.2h.01M15.4 14.2h.01" strokeWidth="2.6" />
+        <path d="M10.4 17.4h3.2" />
+      </svg>
+      Growi
+    </span>
+  )
+}
+
 const CONVERSION_LABEL: Record<FeedConversion, string> = { posible_cliente: 'posible cliente', tarea: 'tarea', proyecto: 'proyecto' }
+const DEST_LABEL: Record<FeedConversion, string> = { posible_cliente: 'Posible cliente', tarea: 'Tarea', proyecto: 'Proyecto' }
 const OPEN_LABEL: Record<FeedConversion, string> = { posible_cliente: 'Abrir cliente', tarea: 'Abrir tareas', proyecto: 'Abrir proyectos' }
-/** El tipo que mejor encaja con cada hallazgo marca la acción principal (las demás siguen a un toque). */
+const DESTINOS: FeedConversion[] = ['posible_cliente', 'tarea', 'proyecto']
+/** «Convertir en posible cliente» solo tiene sentido en prospectos y oportunidades; en lo demás: crear tarea o proyecto. */
+const destinosDe = (t: FeedTipo): FeedConversion[] => (t === 'prospecto' || t === 'oportunidad' ? DESTINOS : DESTINOS.filter((k) => k !== 'posible_cliente'))
+const CREAR_LABEL: Record<FeedConversion, string> = { posible_cliente: 'Posible cliente', tarea: 'Crear tarea', proyecto: 'Crear proyecto' }
+/** El destino que mejor encaja con cada hallazgo viene preseleccionado (los otros siguen a un toque). */
 const PRIMARY: Record<FeedTipo, FeedConversion> = { prospecto: 'posible_cliente', alerta: 'tarea', noticia: 'tarea', idea: 'proyecto', oportunidad: 'proyecto', proyecto: 'proyecto' }
 
 function openConverted(c: { a: FeedConversion; id: string | null }) {
@@ -208,7 +234,7 @@ function Detalle({ it, d }: { it: FeedItem; d: ReturnType<typeof detailOf> }) {
       )}
       {d.fugas.length > 0 && (
         <div>
-          <h4 className="fd-lbl">Fugas detectadas · {d.fugas.length}</h4>
+          <h4 className="fd-lbl">Fugas detectadas · {fmtN(d.fugas.length)}</h4>
           <ul className="fd-leaks">
             {d.fugas.map((f, i) => (
               <li key={i}>{f}</li>
@@ -251,14 +277,12 @@ function Detalle({ it, d }: { it: FeedItem; d: ReturnType<typeof detailOf> }) {
           </dl>
         </div>
       )}
-      {d.contacto.length > 0 && (
+      {d.origen && (
         <dl className="fd-kv is-grid">
-          {d.contacto.map(([k, v]) => (
-            <div key={k}>
-              <dt>{k}</dt>
-              <dd>{v}</dd>
-            </div>
-          ))}
+          <div>
+            <dt>Origen</dt>
+            <dd>{d.origen}</dd>
+          </div>
         </dl>
       )}
       <p className="fd-foot">
@@ -268,28 +292,67 @@ function Detalle({ it, d }: { it: FeedItem; d: ReturnType<typeof detailOf> }) {
   )
 }
 
-// ---------- resumen con "ver más" ----------
+// ---------- contacto ----------
+const external = { target: '_blank', rel: 'noopener noreferrer' } as const
+function Contacto({ it }: { it: FeedItem }) {
+  const c = useMemo(() => contactoDe(it.datos), [it.datos])
+  const main = accionPrincipal(c)
+  if (!hayContacto(c)) return null
+  // lo que el botón principal ya muestra no se repite abajo
+  const otherTels = c.tels.filter((t) => t.display !== main?.detalle)
+  const mails = c.correos.filter((m) => main?.tipo !== 'email' || m !== main.detalle)
+  const links = c.enlaces.slice(0, 4)
+  const has = otherTels.length + mails.length + links.length > 0
+  return (
+    <div className="fd-contact" role="group" aria-label={`Contacto: ${it.titulo}`}>
+      {main && (
+        <a className="fd-btn is-contact" href={main.href} {...(main.tipo === 'whatsapp' ? external : {})} aria-label={`${main.tipo === 'whatsapp' ? 'Escribir por WhatsApp a' : main.tipo === 'llamar' ? 'Llamar al' : 'Enviar correo a'} ${main.detalle}`}>
+          <Svg d={main.tipo === 'whatsapp' ? PATH.whatsapp : main.tipo === 'llamar' ? PATH.phone : PATH.mail} size={16} />
+          {main.label}
+          <span className="fd-btn-sub">{main.detalle}</span>
+        </a>
+      )}
+      {has && (
+        <ul className="fd-reach">
+          {otherTels.map((t) => (
+            <li key={t.tel}>
+              <a href={t.tel} aria-label={`Llamar al ${t.display}`}>
+                <Svg d={PATH.phone} size={13} />
+                {t.display}
+              </a>
+            </li>
+          ))}
+          {mails.map((m) => (
+            <li key={m}>
+              <a href={`mailto:${m}`} aria-label={`Enviar correo a ${m}`}>
+                <Svg d={PATH.mail} size={13} />
+                <span>{m}</span>
+              </a>
+            </li>
+          ))}
+          {links.map((l) => (
+            <li key={l.href}>
+              <a href={l.href} {...external}>
+                <Svg d={LINK_ICON[l.tipo]} size={13} />
+                <span>{l.label}</span>
+                <span className="fd-sr"> (se abre en otra pestaña)</span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+// ---------- resumen cortado en palabra completa, con "ver más" ----------
 function Summary({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
-  const [over, setOver] = useState(false)
-  const el = useRef<HTMLParagraphElement>(null)
-  useLayoutEffect(() => {
-    const n = el.current
-    if (!n) return
-    const measure = () => {
-      if (!open) setOver(n.scrollHeight > n.clientHeight + 1)
-    }
-    measure()
-    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null
-    ro?.observe(n)
-    return () => ro?.disconnect()
-  }, [text, open])
+  const c = useMemo(() => cortar(text), [text])
   return (
     <div className="fd-sum">
-      <p ref={el} className={open ? 'is-open' : ''}>
-        {text}
-      </p>
-      {(over || open) && (
+      <p>{open || !c.cortado ? text : c.texto}</p>
+      {c.cortado && (
         <button type="button" className="fd-link" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
           {open ? 'Ver menos' : 'Ver más'}
         </button>
@@ -315,6 +378,23 @@ const escape = (close: () => void) => (e: React.KeyboardEvent) => {
   }
 }
 
+/** Responsable: los socios (nombres que llegan del Hub); por defecto, quien tiene la sesión. */
+function ResponsableField({ owners, me, value, onChange }: { owners: string[]; me: string; value: string; onChange: (v: string) => void }) {
+  const opts = useMemo(() => [...new Set([me, ...owners].filter(Boolean))], [me, owners])
+  return (
+    <label>
+      <span>Responsable</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        {opts.map((n) => (
+          <option key={n} value={n}>
+            {n === me ? `${n} (tú)` : n}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 function AjustarForm({ it, busy, onClose, onSubmit, id }: PanelProps & { it: FeedItem; id: string; onSubmit: (b: ConvertBody) => void }) {
   const fromItem = typeof it.datos.origen === 'string' && SOURCES.includes(it.datos.origen) ? it.datos.origen : 'otro'
   const [nombre, setNombre] = useState(nombreSugerido(it).slice(0, 80))
@@ -330,7 +410,7 @@ function AjustarForm({ it, busy, onClose, onSubmit, id }: PanelProps & { it: Fee
     <form className="fd-form" id={id} onSubmit={submit} onKeyDown={escape(onClose)} aria-label="Ajustar el posible cliente">
       <fieldset disabled={busy}>
         <label>
-          <span>Nombre del posible cliente</span>
+          <span>Nombre</span>
           <input ref={first} value={nombre} maxLength={80} required onChange={(e) => setNombre(e.target.value)} />
         </label>
         <label>
@@ -344,14 +424,13 @@ function AjustarForm({ it, busy, onClose, onSubmit, id }: PanelProps & { it: Fee
           </select>
         </label>
         <label>
-          <span>Notas</span>
+          <span>Notas (opcional)</span>
           <textarea value={notas} rows={3} maxLength={4000} onChange={(e) => setNotas(e.target.value)} />
-          <small>Opcional. Si la dejas vacía se guardan el resumen del hallazgo, sus fugas y el guion.</small>
         </label>
       </fieldset>
       <div className="fd-actions">
         <button type="submit" className="fd-btn is-primary" disabled={busy || !nombre.trim()}>
-          {busy ? 'Convirtiendo…' : 'Convertir en posible cliente'}
+          {busy ? 'Convirtiendo…' : 'Convertir'}
         </button>
         <button type="button" className="fd-btn" onClick={onClose} disabled={busy}>
           Cancelar
@@ -361,61 +440,100 @@ function AjustarForm({ it, busy, onClose, onSubmit, id }: PanelProps & { it: Fee
   )
 }
 
-function TareaForm({ it, busy, onClose, onSubmit, id }: PanelProps & { it: FeedItem; id: string; onSubmit: (b: ConvertBody, proyecto: string) => void }) {
+function TareaForm({ it, owners, me, busy, onClose, onSubmit, id }: PanelProps & { it: FeedItem; owners: string[]; me: string; id: string; onSubmit: (b: ConvertBody, proyecto: string) => void }) {
   const projects = useProjects().filter((p) => p.status !== 'completado')
   const internos = projects.filter((p) => !p.clientId)
   const deClientes = projects.filter((p) => p.clientId)
   const [titulo, setTitulo] = useState(it.titulo.slice(0, 160))
   const [proyecto, setProyecto] = useState('')
   const [vence, setVence] = useState('')
+  const [resp, setResp] = useState(me || owners[0] || '')
   const first = useFirstFocus<HTMLInputElement>()
   const submit = (e: FormEvent) => {
     e.preventDefault()
     if (!titulo.trim() || busy) return
     const p = projects.find((x) => x.id === proyecto)
-    onSubmit({ a: 'tarea', titulo: titulo.trim(), ...(proyecto ? { proyecto_id: proyecto } : {}), ...(vence ? { vence } : {}) }, p ? p.name : 'HAYAI interno')
+    onSubmit({ a: 'tarea', titulo: titulo.trim(), ...(resp ? { responsable: resp } : {}), ...(proyecto ? { proyecto_id: proyecto } : {}), ...(vence ? { vence } : {}) }, p ? p.name : 'HAYAI interno')
   }
   return (
-    <form className="fd-form" id={id} onSubmit={submit} onKeyDown={escape(onClose)} aria-label="Crear una tarea">
+    <form className="fd-form" id={id} onSubmit={submit} onKeyDown={escape(onClose)} aria-label="Ajustar la tarea">
       <fieldset disabled={busy}>
         <label>
-          <span>Título de la tarea</span>
+          <span>Título</span>
           <input ref={first} value={titulo} maxLength={160} required onChange={(e) => setTitulo(e.target.value)} />
         </label>
         <div className="fd-two">
-          <label>
-            <span>Proyecto</span>
-            <select value={proyecto} onChange={(e) => setProyecto(e.target.value)}>
-              <option value="">HAYAI interno (sin cliente)</option>
-              {internos.length > 0 && (
-                <optgroup label="Proyectos internos de HAYAI">
-                  {internos.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {deClientes.length > 0 && (
-                <optgroup label="Proyectos de clientes">
-                  {deClientes.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} · {p.client}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
-          </label>
+          <ResponsableField owners={owners} me={me} value={resp} onChange={setResp} />
           <label>
             <span>Vence (opcional)</span>
             <input type="date" value={vence} onChange={(e) => setVence(e.target.value)} />
           </label>
         </div>
+        <label>
+          <span>Proyecto</span>
+          <select value={proyecto} onChange={(e) => setProyecto(e.target.value)}>
+            <option value="">HAYAI interno (sin cliente)</option>
+            {internos.length > 0 && (
+              <optgroup label="Proyectos internos de HAYAI">
+                {internos.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {deClientes.length > 0 && (
+              <optgroup label="Proyectos de clientes">
+                {deClientes.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} · {p.client}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </label>
       </fieldset>
       <div className="fd-actions">
         <button type="submit" className="fd-btn is-primary" disabled={busy || !titulo.trim()}>
-          {busy ? 'Creando…' : 'Crear tarea'}
+          {busy ? 'Creando…' : 'Convertir'}
+        </button>
+        <button type="button" className="fd-btn" onClick={onClose} disabled={busy}>
+          Cancelar
+        </button>
+      </div>
+    </form>
+  )
+}
+
+function ProyectoForm({ it, owners, me, busy, onClose, onSubmit, id }: PanelProps & { it: FeedItem; owners: string[]; me: string; id: string; onSubmit: (b: ConvertBody) => void }) {
+  const [nombre, setNombre] = useState(nombreSugerido(it).slice(0, 80))
+  const [resp, setResp] = useState(me || owners[0] || '')
+  const [descripcion, setDescripcion] = useState('')
+  const first = useFirstFocus<HTMLInputElement>()
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    if (!nombre.trim() || busy) return
+    onSubmit({ a: 'proyecto', nombre: nombre.trim(), ...(resp ? { responsable: resp } : {}), ...(descripcion.trim() ? { descripcion: descripcion.trim() } : {}) })
+  }
+  return (
+    <form className="fd-form" id={id} onSubmit={submit} onKeyDown={escape(onClose)} aria-label="Ajustar el proyecto">
+      <fieldset disabled={busy}>
+        <div className="fd-two">
+          <label>
+            <span>Nombre</span>
+            <input ref={first} value={nombre} maxLength={80} required onChange={(e) => setNombre(e.target.value)} />
+          </label>
+          <ResponsableField owners={owners} me={me} value={resp} onChange={setResp} />
+        </div>
+        <label>
+          <span>Descripción (opcional)</span>
+          <textarea value={descripcion} rows={3} maxLength={4000} onChange={(e) => setDescripcion(e.target.value)} />
+        </label>
+      </fieldset>
+      <div className="fd-actions">
+        <button type="submit" className="fd-btn is-primary" disabled={busy || !nombre.trim()}>
+          {busy ? 'Creando…' : 'Convertir'}
         </button>
         <button type="button" className="fd-btn" onClick={onClose} disabled={busy}>
           Cancelar
@@ -438,8 +556,8 @@ function DescartarForm({ busy, onClose, onSubmit, id }: PanelProps & { id: strin
       <fieldset disabled={busy}>
         <label>
           <span>Motivo (opcional)</span>
-          <input ref={first} value={motivo} maxLength={200} aria-describedby={hint} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej. Ya lo trabajamos con otro canal" />
-          <small id={hint}>{motivo.length}/200 · Queda en el hallazgo para que el equipo sepa por qué.</small>
+          <input ref={first} value={motivo} maxLength={200} aria-describedby={hint} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej. Ya lo trabajamos por otro canal" />
+          <small id={hint}>{motivo.length}/200</small>
         </label>
       </fieldset>
       <div className="fd-actions">
@@ -455,8 +573,8 @@ function DescartarForm({ busy, onClose, onSubmit, id }: PanelProps & { id: strin
 }
 
 // ---------- tarjeta ----------
-type Panel = 'ajustar' | 'tarea' | 'descartar' | null
-type Busy = 'posible_cliente' | 'tarea' | 'proyecto' | 'revisado' | 'descartar' | 'nuevo' | null
+type Panel = 'ajustar' | 'descartar' | null
+type Busy = 'convertir' | 'revisado' | 'descartar' | 'nuevo' | 'guardar' | null
 interface Done {
   a: FeedConversion
   nombre?: string
@@ -466,23 +584,29 @@ interface Done {
 interface CardProps {
   it: FeedItem
   hit: boolean
+  owners: string[]
+  me: string
   onItem: (it: FeedItem) => void
   onGone: (id: string) => void
 }
 
-const FeedCard = memo(function FeedCard({ it, hit, onItem, onGone }: CardProps) {
+const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }: CardProps) {
   const [panel, setPanel] = useState<Panel>(null)
+  const [dest, setDest] = useState<FeedConversion>(PRIMARY[it.tipo])
   const [busy, setBusy] = useState<Busy>(null)
   const [note, setNote] = useState<{ tone: 'ok' | 'warn'; text: string } | null>(null)
   const [err, setErr] = useState('')
   const [done, setDone] = useState<Done | null>(null)
   const [open, setOpen] = useState(false)
+  const [said, setSaid] = useState('')
   const lock = useRef(false)
   const triggers = useRef<Partial<Record<Exclude<Panel, null>, HTMLButtonElement | null>>>({})
   const doneRef = useRef<HTMLDivElement>(null)
   const noteRef = useRef<HTMLParagraphElement>(null)
   const detail = detailOf(it)
+  const origen = origenUrl(it.datos)
   const converted = it.estado === 'convertido'
+  const vista = vistaDe(it)
   const pid = `fd-${it.id}`
 
   useEffect(() => {
@@ -518,12 +642,9 @@ const FeedCard = memo(function FeedCard({ it, hit, onItem, onGone }: CardProps) 
     setNote(null)
     try {
       await fn()
+      void refreshAlerts().catch(() => {}) // revisar, descartar o convertir cambia lo que la campana avisa
     } catch (e) {
-      if (isConflict(e)) {
-        setNote({ tone: 'warn', text: 'Este hallazgo cambió mientras lo mirabas. Ya lo actualicé; revísalo y vuelve a intentarlo.' })
-        setPanel(null)
-        await refetch()
-      } else if (e instanceof ApiError && e.status === 409) {
+      if (e instanceof ApiError && e.status === 409) {
         setNote({ tone: 'warn', text: 'Alguien ya lo convirtió. Te muestro en qué quedó.' })
         setPanel(null)
         await refetch()
@@ -540,7 +661,7 @@ const FeedCard = memo(function FeedCard({ it, hit, onItem, onGone }: CardProps) 
   }
 
   const convert = (kind: FeedConversion, body: ConvertBody, proyecto?: string) =>
-    act(kind, async () => {
+    act('convertir', async () => {
       const r = await convertFeed(it, body)
       const det = r.creado.detalle
       const etapa = typeof det.etapa === 'string' ? (STAGE_LABEL[det.etapa] ?? 'Prospecto captado') : 'Prospecto captado'
@@ -551,39 +672,54 @@ const FeedCard = memo(function FeedCard({ it, hit, onItem, onGone }: CardProps) 
       const refresh = kind === 'posible_cliente' ? [loadClients()] : kind === 'tarea' ? [loadTasks(), loadProjects()] : [loadProjects()]
       void Promise.allSettled(refresh)
     })
+  /** «Convertir»: un toque, con lo pre-llenado (la tarea queda a nombre de quien convierte). */
+  const quick = () => void convert(dest, dest === 'tarea' ? { a: 'tarea', ...(me ? { responsable: me } : {}) } : { a: dest }, dest === 'tarea' ? 'HAYAI interno' : undefined)
 
-  const mark = (estado: 'nuevo' | 'revisado' | 'descartado', motivo?: string) =>
-    act(estado === 'descartado' ? 'descartar' : estado, async () => {
+  const mark = (estado: MiEstado, motivo?: string) =>
+    act(estado === 'descartado' ? 'descartar' : estado === 'revisado' ? 'revisado' : 'nuevo', async () => {
       const n = await markFeed(it, estado, motivo)
       setPanel(null)
       setNote({ tone: 'ok', text: estado === 'nuevo' ? 'Volvió a nuevo.' : estado === 'revisado' ? 'Marcado como revisado.' : 'Descartado.' })
       onItem(n)
     })
 
-  const primary = PRIMARY[it.tipo]
+  const save = () =>
+    act('guardar', async () => {
+      const n = await saveFeed(it, !it.guardado)
+      setSaid(n.guardado ? 'Guardado' : 'Quitado de guardados')
+      onItem(n)
+    })
+
   const isBusy = busy !== null
-  const btn = (kind: FeedConversion) => `fd-btn${primary === kind ? ' is-primary' : ''}`
 
   return (
-    <li id={`fd-item-${it.id}`} className={`fd-card is-${it.estado} t-${it.tipo}${hit ? ' is-hit' : ''}`}>
+    <li id={`fd-item-${it.id}`} className={`fd-card is-${vista} t-${it.tipo}${hit ? ' is-hit' : ''}`}>
       <article aria-labelledby={`fd-t-${it.id}`} aria-busy={isBusy}>
         <header className="fd-ch">
-          <span className={`fd-badge t-${it.tipo}`}>
-            <TipoIcon tipo={it.tipo} />
-            {FEED_TIPO_LABEL[it.tipo]}
-          </span>
-          <span className={`fd-state is-${it.estado}`}>
-            {it.estado === 'nuevo' && <i aria-hidden="true" />}
-            {it.estado === 'revisado' && <Icon name="check" size={12} />}
-            {FEED_ESTADO_LABEL[it.estado]}
-          </span>
+          <div className="fd-ch-l">
+            <span className={`fd-badge t-${it.tipo}`}>
+              <TipoIcon tipo={it.tipo} />
+              {FEED_TIPO_LABEL[it.tipo]}
+            </span>
+            {it.categoria && <span className="fd-cat">{categoriaLabel(it.categoria)}</span>}
+          </div>
+          <div className="fd-ch-r">
+            <span className={`fd-state is-${vista}`} title={vista === 'revisado' || vista === 'descartado' ? 'Solo tú lo ves así' : undefined}>
+              {vista === 'nuevo' && <i aria-hidden="true" />}
+              {vista === 'revisado' && <Icon name="check" size={12} />}
+              {FEED_ESTADO_LABEL[vista]}
+            </span>
+            <button type="button" className={`fd-save${it.guardado ? ' is-on' : ''}`} aria-pressed={it.guardado} aria-label={`Guardar: ${it.titulo}`} title={it.guardado ? 'Quitar de guardados (solo tú lo ves)' : 'Guardar (solo tú lo ves)'} disabled={busy === 'guardar'} onClick={() => void save()}>
+              <Svg d={PATH.bookmark} size={18} fill={it.guardado} />
+            </button>
+          </div>
         </header>
 
         <h3 id={`fd-t-${it.id}`} className="fd-title" tabIndex={-1}>
           {it.titulo}
         </h3>
         <p className="fd-meta">
-          <span className="fd-src">{fuenteLabel(it.fuente, it.publicado_por)}</span>
+          {isGrowi(it.fuente) ? <GrowiSeal /> : <span className="fd-src">{fuenteLabel(it.fuente, it.publicado_por)}</span>}
           <span aria-hidden="true"> · </span>
           <time dateTime={it.fecha} title={fullDate(it.fecha)}>
             {ago(it.fecha)}
@@ -591,12 +727,20 @@ const FeedCard = memo(function FeedCard({ it, hit, onItem, onGone }: CardProps) 
         </p>
 
         {it.resumen && <Summary text={it.resumen} />}
-        {it.estado === 'descartado' && (
+        {origen && (
+          <a className="fd-btn is-ghost fd-origin" href={origen} {...external}>
+            Ver origen <Svg d={PATH.external} size={13} />
+            <span className="fd-sr"> (se abre en otra pestaña)</span>
+          </a>
+        )}
+        {vista === 'descartado' && (
           <p className="fd-why">
-            <b>Descartado{it.revisado_por ? ` por ${it.revisado_por}` : ''}</b>
-            {it.motivo_descarte ? `: ${it.motivo_descarte}` : '. Sin motivo anotado.'}
+            <b>Lo descartaste</b>
+            {it.motivo_descarte ? `: ${it.motivo_descarte}` : '.'}
           </p>
         )}
+
+        <Contacto it={it} />
 
         {detail.any && (
           <>
@@ -624,6 +768,9 @@ const FeedCard = memo(function FeedCard({ it, hit, onItem, onGone }: CardProps) 
             {err}
           </p>
         )}
+        <span className="fd-sr" role="status">
+          {said}
+        </span>
 
         {converted ? (
           <div ref={doneRef} tabIndex={-1} className="fd-done" role="status">
@@ -631,23 +778,24 @@ const FeedCard = memo(function FeedCard({ it, hit, onItem, onGone }: CardProps) 
               <Icon name="check" size={16} />
             </span>
             <p>
-              {done ? (
-                <>
-                  <b>Quedó como {CONVERSION_LABEL[done.a]}</b>
-                  {done.a === 'posible_cliente' && <> en «{done.etapa}»</>}
-                  {done.a === 'tarea' && done.proyecto && <> en «{done.proyecto}»</>}
-                  {done.a === 'proyecto' && done.nombre && <> «{done.nombre}»</>}
-                </>
-              ) : (
-                <>
-                  <b>Convertido en {it.convertido ? CONVERSION_LABEL[it.convertido.a] : 'algo real'}</b>
-                  {it.revisado_por && (
-                    <small>
-                      {it.revisado_por}
-                      {it.revisado_el ? ` · ${ago(it.revisado_el)}` : ''}
-                    </small>
-                  )}
-                </>
+              <span>
+                <b>Convertido en {it.convertido ? CONVERSION_LABEL[it.convertido.a] : 'algo real'}</b>
+                {it.convertido?.por && <> por {it.convertido.por}</>}
+                {it.convertido?.el && (
+                  <>
+                    {' · '}
+                    <time dateTime={it.convertido.el} title={fullDate(it.convertido.el)}>
+                      {ago(it.convertido.el)}
+                    </time>
+                  </>
+                )}
+              </span>
+              {done && (
+                <small>
+                  {done.a === 'posible_cliente' && <>Quedó en «{done.etapa}»</>}
+                  {done.a === 'tarea' && done.proyecto && <>Quedó en «{done.proyecto}»</>}
+                  {done.a === 'proyecto' && done.nombre && <>Quedó como «{done.nombre}»</>}
+                </small>
               )}
             </p>
             {it.convertido && (
@@ -658,56 +806,53 @@ const FeedCard = memo(function FeedCard({ it, hit, onItem, onGone }: CardProps) 
           </div>
         ) : (
           <>
-            <div className="fd-acts" role="group" aria-label={`Convertir: ${it.titulo}`}>
-              <div className="fd-split">
-                <button type="button" className={btn('posible_cliente')} disabled={isBusy} onClick={() => void convert('posible_cliente', { a: 'posible_cliente' })}>
-                  {busy === 'posible_cliente' ? 'Convirtiendo…' : 'Convertir en posible cliente'}
+            <div className="fd-conv" role="group" aria-label={`Convertir: ${it.titulo}`}>
+              <div className="fd-dest" role="radiogroup" aria-label="Convertir en">
+                <span className="fd-dest-l" aria-hidden="true">
+                  {destinosDe(it.tipo).length === 3 ? 'Convertir en' : 'Crear'}
+                </span>
+                {destinosDe(it.tipo).map((k) => (
+                  <label key={k} className={dest === k ? 'is-on' : ''}>
+                    <input type="radio" name={`${pid}-dest`} value={k} checked={dest === k} disabled={isBusy} onChange={() => setDest(k)} />
+                    <span>{destinosDe(it.tipo).length === 3 ? DEST_LABEL[k] : CREAR_LABEL[k]}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="fd-acts">
+                <button type="button" className="fd-btn is-primary" disabled={isBusy} onClick={quick}>
+                  {busy === 'convertir' ? 'Convirtiendo…' : 'Convertir'}
                 </button>
                 <button
                   type="button"
-                  className="fd-adjust"
+                  className="fd-btn"
                   ref={(n) => void (triggers.current.ajustar = n)}
                   disabled={isBusy}
                   aria-expanded={panel === 'ajustar'}
                   aria-controls={`${pid}-aj`}
-                  aria-label={`Ajustar antes de convertir en posible cliente: ${it.titulo}`}
                   onClick={() => toggle('ajustar')}
                 >
-                  Ajustar…
+                  Convertir con ajustes
                 </button>
               </div>
-              <button
-                type="button"
-                className={btn('tarea')}
-                ref={(n) => void (triggers.current.tarea = n)}
-                disabled={isBusy}
-                aria-expanded={panel === 'tarea'}
-                aria-controls={`${pid}-ta`}
-                onClick={() => toggle('tarea')}
-              >
-                <Icon name="check" size={14} /> Crear tarea
-              </button>
-              <button type="button" className={btn('proyecto')} disabled={isBusy} onClick={() => void convert('proyecto', { a: 'proyecto' })}>
-                <Icon name="folder" size={14} /> {busy === 'proyecto' ? 'Creando…' : 'Crear proyecto'}
-              </button>
             </div>
 
-            {panel === 'ajustar' && <AjustarForm it={it} id={`${pid}-aj`} busy={busy === 'posible_cliente'} onClose={() => closePanel()} onSubmit={(b) => void convert('posible_cliente', b)} />}
-            {panel === 'tarea' && <TareaForm it={it} id={`${pid}-ta`} busy={busy === 'tarea'} onClose={() => closePanel()} onSubmit={(b, p) => void convert('tarea', b, p)} />}
+            {panel === 'ajustar' && dest === 'posible_cliente' && <AjustarForm it={it} id={`${pid}-aj`} busy={busy === 'convertir'} onClose={() => closePanel()} onSubmit={(b) => void convert('posible_cliente', b)} />}
+            {panel === 'ajustar' && dest === 'tarea' && <TareaForm it={it} owners={owners} me={me} id={`${pid}-aj`} busy={busy === 'convertir'} onClose={() => closePanel()} onSubmit={(b, p) => void convert('tarea', b, p)} />}
+            {panel === 'ajustar' && dest === 'proyecto' && <ProyectoForm it={it} owners={owners} me={me} id={`${pid}-aj`} busy={busy === 'convertir'} onClose={() => closePanel()} onSubmit={(b) => void convert('proyecto', b)} />}
             {panel === 'descartar' && <DescartarForm id={`${pid}-de`} busy={busy === 'descartar'} onClose={() => closePanel()} onSubmit={(m) => void mark('descartado', m)} />}
 
             <div className="fd-triage" role="group" aria-label={`Revisar: ${it.titulo}`}>
-              {it.estado === 'nuevo' && (
+              {it.mi_estado === 'nuevo' && (
                 <button type="button" className="fd-quiet" disabled={isBusy} onClick={() => void mark('revisado')}>
                   {busy === 'revisado' ? 'Marcando…' : 'Marcar revisado'}
                 </button>
               )}
-              {it.estado !== 'nuevo' && (
+              {it.mi_estado !== 'nuevo' && (
                 <button type="button" className="fd-quiet" disabled={isBusy} onClick={() => void mark('nuevo')}>
                   {busy === 'nuevo' ? 'Volviendo…' : 'Volver a nuevo'}
                 </button>
               )}
-              {it.estado !== 'descartado' && (
+              {it.mi_estado !== 'descartado' && (
                 <button
                   type="button"
                   className="fd-quiet"
@@ -720,6 +865,9 @@ const FeedCard = memo(function FeedCard({ it, hit, onItem, onGone }: CardProps) 
                   Descartar
                 </button>
               )}
+              <span className="fd-mine">
+                <Svg d={PATH.eye} size={12} /> Solo tú lo ves así
+              </span>
             </div>
           </>
         )}
@@ -745,7 +893,7 @@ function Proponer({ onClose, onPublished }: { onClose: () => void; onPublished: 
     setErr('')
     if (!titulo.trim()) return setErr('Escribe un título.')
     const link = enlace.trim() ? safeUrl(enlace) : null
-    if (enlace.trim() && !link) return setLinkErr('El enlace debe empezar por http:// o https://')
+    if (enlace.trim() && !link) return setLinkErr('Debe empezar por http:// o https://')
     setLinkErr('')
     lock.current = true
     setBusy(true)
@@ -761,8 +909,7 @@ function Proponer({ onClose, onPublished }: { onClose: () => void; onPublished: 
   }
   return (
     <form className="fd-form fd-propose" id="fd-propose" onSubmit={(e) => void submit(e)} onKeyDown={escape(onClose)} aria-labelledby="fd-propose-h" noValidate>
-      <h3 id="fd-propose-h">Proponer algo al feed</h3>
-      <p className="fd-form-lede">Una idea, un negocio que viste o una noticia que le sirve al equipo. Queda publicada con tu nombre.</p>
+      <h3 id="fd-propose-h">Proponer algo</h3>
       <fieldset disabled={busy}>
         <label>
           <span>Título</span>
@@ -801,7 +948,7 @@ function Proponer({ onClose, onPublished }: { onClose: () => void; onPublished: 
       )}
       <div className="fd-actions">
         <button type="submit" className="fd-btn is-primary" disabled={busy || !titulo.trim()}>
-          {busy ? 'Publicando…' : 'Publicar en el feed'}
+          {busy ? 'Publicando…' : 'Publicar'}
         </button>
         <button type="button" className="fd-btn" onClick={onClose} disabled={busy}>
           Cancelar
@@ -817,9 +964,12 @@ interface Filters {
   estado: EstadoSel
   tipo: FeedTipo | ''
   fuente: string
+  /** '' = todas, 'sin_categoria' o el nombre de la categoría */
+  categoria: string
+  guardado: boolean
   q: string
 }
-const DEFAULTS: Filters = { estado: 'nuevo', tipo: '', fuente: '', q: '' }
+const DEFAULTS: Filters = { estado: 'nuevo', tipo: '', fuente: '', categoria: '', guardado: false, q: '' }
 const ESTADO_TABS: { key: EstadoSel; label: string }[] = [
   { key: 'nuevo', label: 'Nuevos' },
   { key: 'revisado', label: 'Revisados' },
@@ -827,8 +977,15 @@ const ESTADO_TABS: { key: EstadoSel; label: string }[] = [
   { key: 'convertido', label: 'Convertidos' },
   { key: 'todos', label: 'Todos' },
 ]
-const sameFilters = (a: Filters, b: Filters) => a.estado === b.estado && a.tipo === b.tipo && a.fuente === b.fuente && a.q === b.q
-const toQuery = (f: Filters): FeedFilters => ({ ...(f.estado !== 'todos' ? { estado: f.estado } : {}), ...(f.tipo ? { tipo: f.tipo } : {}), ...(f.fuente ? { fuente: f.fuente } : {}), ...(f.q ? { q: f.q } : {}) })
+const sameFilters = (a: Filters, b: Filters) => a.estado === b.estado && a.tipo === b.tipo && a.fuente === b.fuente && a.categoria === b.categoria && a.guardado === b.guardado && a.q === b.q
+const toQuery = (f: Filters): FeedFilters => ({
+  ...(f.estado !== 'todos' ? { estado: f.estado } : {}),
+  ...(f.tipo ? { tipo: f.tipo } : {}),
+  ...(f.fuente ? { fuente: f.fuente } : {}),
+  ...(f.categoria ? { categoria: f.categoria } : {}),
+  ...(f.guardado ? { guardado: true } : {}),
+  ...(f.q ? { q: f.q } : {}),
+})
 
 /** Une lo recién pedido con lo que ya se veía: lo nuevo manda, y lo que el usuario tocó o aún no se recargó se queda donde estaba. */
 function merge(prev: FeedItem[], fresh: FeedItem[], covered: number, kept: Map<string, FeedItem>): FeedItem[] {
@@ -860,8 +1017,26 @@ function Skeleton() {
   )
 }
 
-// ---------- el bloque ----------
-export default function Feed({ seed }: { seed?: { nuevos: number; total: number } }) {
+/** Avisa cuando el centinela está a la vista dentro del contenedor que se desplaza (el scroll de la pantalla), con un colchón para cargar antes de llegar. */
+function useSentinel(onHit: () => void, enabled: boolean, version: unknown) {
+  const ref = useRef<HTMLDivElement>(null)
+  const cb = useRef(onHit)
+  cb.current = onHit
+  useEffect(() => {
+    const el = ref.current
+    if (!el || !enabled) return
+    if (typeof IntersectionObserver !== 'function') return void cb.current()
+    // se vuelve a observar tras cada carga: si el centinela sigue a la vista (lista corta), dispara otra vez
+    const io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && cb.current(), { root: el.closest('.hb-scroll'), rootMargin: '0px 0px 520px 0px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [enabled, version])
+  return ref
+}
+
+// ---------- la vista del feed ----------
+export function FeedScreen({ owners }: { owners: string[] }) {
+  const me = useSession()?.name ?? ''
   const [f, setF] = useState<Filters>(DEFAULTS)
   const [qInput, setQInput] = useState('')
   const [items, setItems] = useState<FeedItem[]>([])
@@ -876,6 +1051,7 @@ export default function Feed({ seed }: { seed?: { nuevos: number; total: number 
   const [proposing, setProposing] = useState(false)
   const [hit, setHit] = useState<string | null>(null)
   const [lost, setLost] = useState(false)
+  const [loadedMsg, setLoadedMsg] = useState('')
 
   const seq = useRef(0)
   const fRef = useRef(f)
@@ -884,12 +1060,15 @@ export default function Feed({ seed }: { seed?: { nuevos: number; total: number 
   itemsRef.current = items
   const pagesRef = useRef(loadedPages)
   pagesRef.current = loadedPages
+  const metaRef = useRef(meta)
+  metaRef.current = meta
   const kept = useRef(new Map<string, FeedItem>())
   const focusId = useRef<string | null>(null)
-  const focusNew = useRef<string | null>(null) // primera tarjeta que trajo «Cargar más»: recibe el foco
+  const moreLock = useRef(false)
   const hitTimer = useRef(0)
-  const section = useRef<HTMLElement>(null)
+  const refreshTimer = useRef(0)
   const heading = useRef<HTMLHeadingElement>(null)
+  const filtersEl = useRef<HTMLDivElement>(null)
   const proposeBtn = useRef<HTMLButtonElement>(null)
 
   /** Pide la primera página (con 'refresh', también las que ya estaban cargadas) sin vaciar lo que se ve. */
@@ -902,12 +1081,21 @@ export default function Feed({ seed }: { seed?: { nuevos: number; total: number 
       .then((rs) => {
         if (mine !== seq.current) return
         const fresh = rs.flatMap((r) => r.data)
+        const prevTotal = metaRef.current?.total ?? 0
         setMeta(rs[0].meta)
+        publishNuevos(rs[0].meta.nuevos)
         setItems((prev) => (mode === 'refresh' ? merge(prev, fresh, pages * PER_PAGE, kept.current) : fresh))
         setPinned((p) => (p ? (fresh.find((x) => x.id === p.id) ?? p) : p))
         if (mode === 'filters') setLoadedPages(1)
+        // si la lista del servidor encogió y hay páginas más allá de lo refrescado, la siguiente página se pide un poco antes (se repite en vez de saltarse)
+        else if (pagesRef.current > pages && rs[0].meta.total < prevTotal) setLoadedPages((p) => Math.max(pages, p - Math.ceil((prevTotal - rs[0].meta.total) / PER_PAGE)))
         setError('')
         setMoreErr('')
+        // un filtro nuevo vuelve al inicio de la lista (salvo que se esté llevando a una tarjeta concreta)
+        if (mode === 'filters' && !focusId.current) {
+          const top = filtersEl.current
+          if (top && top.getBoundingClientRect().top < 0) top.scrollIntoView({ block: 'start', behavior: 'auto' })
+        }
       })
       .catch((e: unknown) => {
         if (mine === seq.current) setError(msg(e, 'No se pudo cargar el feed.'))
@@ -919,12 +1107,18 @@ export default function Feed({ seed }: { seed?: { nuevos: number; total: number 
       })
   }, [])
   const refresh = useCallback(() => fetchFirst('refresh'), [fetchFirst])
+  /** Varios cambios seguidos (guardar, revisar...) se juntan en una sola recarga. */
+  const refreshSoon = useCallback(() => {
+    window.clearTimeout(refreshTimer.current)
+    refreshTimer.current = window.setTimeout(refresh, 350)
+  }, [refresh])
+  useEffect(() => () => window.clearTimeout(refreshTimer.current), [])
 
   // filtros: cada cambio vuelve a pedir la primera página (lo anterior sigue a la vista hasta que llegue)
   useEffect(() => {
     kept.current.clear()
     fetchFirst('filters')
-  }, [f.estado, f.tipo, f.fuente, f.q, fetchFirst])
+  }, [f.estado, f.tipo, f.fuente, f.categoria, f.guardado, f.q, fetchFirst])
 
   // búsqueda con retardo
   useEffect(() => {
@@ -932,7 +1126,7 @@ export default function Feed({ seed }: { seed?: { nuevos: number; total: number 
     return () => window.clearTimeout(t)
   }, [qInput])
 
-  // en vivo: llegó algo al feed -> se vuelve a pedir (el scroll y los formularios abiertos no se tocan: nada se vuelve a montar)
+  // en vivo: llegó algo al feed -> se vuelve a pedir lo cargado hasta ahora (el scroll y los formularios abiertos no se tocan: nada se vuelve a montar)
   const tick = useFeedTick()
   const lastTick = useRef(tick)
   useEffect(() => {
@@ -959,18 +1153,18 @@ export default function Feed({ seed }: { seed?: { nuevos: number; total: number 
       setLost(false)
       setPinned(it)
       setQInput('')
-      const next: Filters = { ...DEFAULTS, estado: it.estado }
+      const next: Filters = { ...DEFAULTS, estado: vistaDe(it) }
       if (sameFilters(next, fRef.current)) refresh()
       else setF(next)
     },
     [refresh],
   )
 
-  // la campana: al montar y estando ya en el Hub
+  // lo que pidió la campana: al abrir la vista y estando ya en ella
   useEffect(() => {
+    heading.current?.focus({ preventScroll: true })
     const apply = (fc: FeedFocus | null) => {
       if (!fc) return
-      section.current?.scrollIntoView({ block: 'start', behavior: reduced() ? 'auto' : 'smooth' })
       if (fc.itemId) {
         const id = fc.itemId
         loadFeedItem(id)
@@ -980,7 +1174,7 @@ export default function Feed({ seed }: { seed?: { nuevos: number; total: number 
             applyFilters(DEFAULTS)
           })
       } else {
-        applyFilters({ estado: fc.filters?.estado ?? 'nuevo', tipo: fc.filters?.tipo ?? '', fuente: fc.filters?.fuente ?? '', q: '' })
+        applyFilters({ ...DEFAULTS, estado: fc.filters?.estado ?? 'nuevo', tipo: fc.filters?.tipo ?? '', fuente: fc.filters?.fuente ?? '' })
         heading.current?.focus({ preventScroll: true })
       }
     }
@@ -988,7 +1182,15 @@ export default function Feed({ seed }: { seed?: { nuevos: number; total: number 
     return onFeedFocus(() => apply(takeFeedFocus()))
   }, [reveal, applyFilters])
 
-  const shown = pinned && !items.some((x) => x.id === pinned.id) ? [pinned, ...items] : items
+  // al salir de la vista, el foco vuelve a la tarjeta de acceso del Hub
+  useEffect(
+    () => () => {
+      requestAnimationFrame(() => document.getElementById('fd-entry')?.focus({ preventScroll: true }))
+    },
+    [],
+  )
+
+  const shown = useMemo(() => (pinned && !items.some((x) => x.id === pinned.id) ? [pinned, ...items] : items), [pinned, items])
 
   // tras cargar: baja hasta la tarjeta pedida, la resalta ~2,5 s y deja el foco en su título
   useEffect(() => {
@@ -1006,207 +1208,266 @@ export default function Feed({ seed }: { seed?: { nuevos: number; total: number 
     hitTimer.current = window.setTimeout(() => setHit(null), 2500)
   }, [shown, fetching, firstLoad])
   useEffect(() => () => window.clearTimeout(hitTimer.current), [])
-  useEffect(() => {
-    const id = focusNew.current
-    if (!id) return
-    const el = document.getElementById(`fd-t-${id}`)
-    if (!el) return
-    focusNew.current = null
-    el.focus({ preventScroll: true })
-  }, [items])
 
   const replaceItem = useCallback(
     (it: FeedItem) => {
       kept.current.set(it.id, it)
       setItems((l) => l.map((x) => (x.id === it.id ? it : x)))
       setPinned((p) => (p && p.id === it.id ? it : p))
-      refresh() // los contadores (nuevos, por tipo, por estado) salen del servidor
+      refreshSoon() // los contadores (nuevos, guardados, por tipo, por estado) salen del servidor
     },
-    [refresh],
+    [refreshSoon],
   )
   const gone = useCallback(
     (id: string) => {
       kept.current.delete(id)
       setItems((l) => l.filter((x) => x.id !== id))
       setPinned((p) => (p && p.id === id ? null : p))
-      refresh()
+      refreshSoon()
     },
-    [refresh],
+    [refreshSoon],
   )
 
+  // ---- scroll infinito: páginas de 20, lo ya cargado no se vuelve a pedir ----
   const nextPage = loadedPages + 1
-  const hasMore = !!meta && nextPage <= Math.ceil(meta.total / PER_PAGE)
-  const more = async () => {
-    if (moreBusy || !meta) return
+  const hasMore = !!meta && loadedPages * PER_PAGE < meta.total
+  const more = useCallback(async () => {
+    const m = metaRef.current
+    if (moreLock.current || !m) return
     const mine = seq.current
-    const page = nextPage
+    const page = pagesRef.current + 1
+    if ((page - 1) * PER_PAGE >= m.total) return
+    moreLock.current = true
     setMoreBusy(true)
     setMoreErr('')
     try {
-      const r = await loadFeed({ ...toQuery(f), page, per_page: PER_PAGE })
+      const r = await loadFeed({ ...toQuery(fRef.current), page, per_page: PER_PAGE })
       if (mine !== seq.current) return
+      // los avisos en vivo corren la lista: lo que ya estaba cargado no se duplica
       const have = new Set(itemsRef.current.map((x) => x.id))
       const add = r.data.filter((x) => !have.has(x.id))
-      setItems((l) => [...l, ...add])
+      setItems((l) => {
+        const ids = new Set(l.map((x) => x.id))
+        return [...l, ...add.filter((x) => !ids.has(x.id))]
+      })
       setMeta(r.meta)
+      publishNuevos(r.meta.nuevos)
       setLoadedPages(page)
-      if (add[0]) focusNew.current = add[0].id
+      if (add.length) setLoadedMsg(`${plural(add.length, 'hallazgo más', 'hallazgos más')}`)
     } catch (e) {
       setMoreErr(msg(e, 'No se pudieron cargar más.'))
     } finally {
+      moreLock.current = false
       setMoreBusy(false)
     }
-  }
+  }, [])
+  const sentinel = useSentinel(() => void more(), hasMore && !firstLoad && !fetching && !moreErr && shown.length > 0, `${items.length}:${loadedPages}:${moreBusy}`)
 
   // ---- derivados ----
-  const nuevos = meta?.nuevos ?? seed?.nuevos ?? null
-  const totalAll = meta ? Object.values(meta.por_estado).reduce((a, b) => a + b, 0) : (seed?.total ?? null)
-  const extra = !!(f.tipo || f.fuente || f.q)
+  const nuevos = meta?.nuevos ?? null
+  const totalAll = meta ? Object.values(meta.por_estado).reduce((a, b) => a + b, 0) : null
+  const extra = !!(f.tipo || f.fuente || f.categoria || f.q)
   const fuentes = meta ? (f.fuente && !meta.fuentes.some((x) => x.fuente === f.fuente) ? [...meta.fuentes, { fuente: f.fuente, total: 0, nuevos: 0 }] : meta.fuentes) : []
-  const results = !meta ? '' : shown.length === 0 ? 'Sin resultados' : shown.length < meta.total ? `${shown.length.toLocaleString('es-VE')} de ${plural(meta.total, 'resultado', 'resultados')}` : plural(meta.total, 'resultado', 'resultados')
+  const categorias = meta?.categorias ?? []
+  const showCat = !!meta && (categorias.length > 0 || !!f.categoria)
+  const results = !meta ? '' : shown.length === 0 ? 'Sin resultados' : shown.length < meta.total ? `${fmtN(shown.length)} de ${plural(meta.total, 'resultado', 'resultados')}` : plural(meta.total, 'resultado', 'resultados')
 
   const empty = !firstLoad && !error && shown.length === 0
-  const showFilters = !(totalAll === 0 && !extra && !firstLoad && !error)
+  const showFilters = !(totalAll === 0 && !extra && !f.guardado && !firstLoad && !error)
+  const end = !hasMore && !firstLoad && !error && shown.length > 0
+
+  const toggleSaved = () =>
+    setF((c) => {
+      const on = !c.guardado
+      // al mirar guardados se ven todos (también los ya revisados); al soltarlo vuelve a «Nuevos»
+      return { ...c, guardado: on, estado: on ? 'todos' : c.estado === 'todos' ? 'nuevo' : c.estado }
+    })
 
   return (
-    <section ref={section} className="hb-block fd-block" aria-labelledby="hb-feed" aria-busy={firstLoad}>
-      <header className="hb-bh fd-head">
-        <div className="fd-head-main">
-          <h2 id="hb-feed" ref={heading} tabIndex={-1}>
-            <Icon name="radar" size={16} /> Feed de oportunidades
-          </h2>
-          <p className="fd-lede">Lo que encontraron las máquinas y los agentes. Lo que hizo el equipo está en la bitácora.</p>
-        </div>
-        <div className="fd-head-side">
-          <p className={`fd-count${nuevos === 0 ? ' is-clear' : ''}`} aria-label={nuevos === null ? 'Contando nuevos' : nuevos === 0 ? 'Al día, no hay nuevos' : plural(nuevos, 'nuevo', 'nuevos')}>
-            {nuevos === null ? (
-              <span className="fd-count-skel" aria-hidden="true" />
-            ) : nuevos === 0 ? (
-              <>
-                <Icon name="check" size={15} /> <span>Al día</span>
-              </>
-            ) : (
-              <>
-                <strong>{nuevos.toLocaleString('es-VE')}</strong> <span>{nuevos === 1 ? 'nuevo' : 'nuevos'}</span>
-              </>
+    <main className="screen layer hub-screen fd-screen" aria-label="Feed de oportunidades">
+      <div className="hb-scroll">
+        <div className="hb-wrap">
+          <button className="hb-back" onClick={closeFeed}>
+            <Icon name="back" size={16} />
+            Volver al Hub
+          </button>
+
+          <header className="hb-head fd-phead">
+            <div>
+              <p className="hb-eyebrow">Planeta HAYAI · Feed</p>
+              <h1 id="hb-feed" ref={heading} tabIndex={-1}>
+                Feed de oportunidades
+              </h1>
+              <p className="fd-lede">Revisar, descartar y guardar: solo tú lo ves. Lo convertido lo ve todo el equipo.</p>
+            </div>
+            <div className="fd-head-side">
+              <p className={`fd-count${nuevos === 0 ? ' is-clear' : ''}`} aria-label={nuevos === null ? 'Contando nuevos' : nuevos === 0 ? 'Al día, no hay nuevos' : plural(nuevos, 'nuevo', 'nuevos')}>
+                {nuevos === null ? (
+                  <span className="fd-count-skel" aria-hidden="true" />
+                ) : nuevos === 0 ? (
+                  <>
+                    <Icon name="check" size={15} /> <span>Al día</span>
+                  </>
+                ) : (
+                  <>
+                    <strong>{fmtN(nuevos)}</strong> <span>{nuevos === 1 ? 'nuevo' : 'nuevos'}</span>
+                  </>
+                )}
+              </p>
+              <button type="button" ref={proposeBtn} className="fd-btn is-dark" aria-expanded={proposing} aria-controls="fd-propose" onClick={() => setProposing((p) => !p)}>
+                <Icon name="plus" size={14} /> Proponer algo
+              </button>
+            </div>
+          </header>
+
+          <section className="hb-block fd-block" aria-labelledby="hb-feed" aria-busy={firstLoad}>
+            <div className={`fd-bar${fetching && !firstLoad ? ' is-on' : ''}`} aria-hidden="true" />
+
+            {proposing && (
+              <Proponer
+                onClose={() => {
+                  setProposing(false)
+                  requestAnimationFrame(() => proposeBtn.current?.focus())
+                }}
+                onPublished={(it) => {
+                  setProposing(false)
+                  reveal(it)
+                }}
+              />
             )}
-          </p>
-          <button type="button" ref={proposeBtn} className="fd-btn is-dark" aria-expanded={proposing} aria-controls="fd-propose" onClick={() => setProposing((p) => !p)}>
-            <Icon name="plus" size={14} /> Proponer algo
-          </button>
-        </div>
-      </header>
 
-      <div className={`fd-bar${fetching && !firstLoad ? ' is-on' : ''}`} aria-hidden="true" />
+            {lost && (
+              <p className="fd-note is-warn" role="status">
+                Esa tarjeta ya no existe. Te dejo el feed completo.
+              </p>
+            )}
 
-      {proposing && (
-        <Proponer
-          onClose={() => {
-            setProposing(false)
-            requestAnimationFrame(() => proposeBtn.current?.focus())
-          }}
-          onPublished={(it) => {
-            setProposing(false)
-            reveal(it)
-          }}
-        />
-      )}
+            {showFilters && (
+              <div className="fd-filters" role="group" aria-label="Filtros del feed" ref={filtersEl}>
+                <div className="fd-row">
+                  <div className="fd-seg" role="group" aria-label="Estado">
+                    {ESTADO_TABS.map((t) => {
+                      const n = meta ? (t.key === 'todos' ? Object.values(meta.por_estado).reduce((a, b) => a + b, 0) : meta.por_estado[t.key]) : null
+                      return (
+                        <button key={t.key} type="button" className={f.estado === t.key ? 'is-on' : ''} aria-pressed={f.estado === t.key} onClick={() => setF((c) => ({ ...c, estado: t.key }))}>
+                          {t.label} {n !== null && <em>{fmtN(n)}</em>}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <button type="button" className={`fd-chip fd-saved${f.guardado ? ' is-on' : ''}`} aria-pressed={f.guardado} onClick={toggleSaved}>
+                    <Svg d={PATH.bookmark} size={14} fill={f.guardado} />
+                    Guardados {meta && <em className={meta.guardados === 0 ? 'is-zero' : ''}>{fmtN(meta.guardados)}</em>}
+                  </button>
+                </div>
+                <div className="fd-chips" role="group" aria-label="Tipo de hallazgo">
+                  <button type="button" className={`fd-chip${f.tipo === '' ? ' is-on' : ''}`} aria-pressed={f.tipo === ''} aria-label={`Todos los tipos${meta ? `, ${plural(meta.nuevos, 'nuevo', 'nuevos')}` : ''}`} onClick={() => setF((c) => ({ ...c, tipo: '' }))}>
+                    Todos {meta && <em className={meta.nuevos === 0 ? 'is-zero' : ''}>{fmtN(meta.nuevos)}</em>}
+                  </button>
+                  {FEED_TIPOS.map((t) => {
+                    const n = meta?.por_tipo[t]?.nuevos
+                    return (
+                      <button key={t} type="button" className={`fd-chip t-${t}${f.tipo === t ? ' is-on' : ''}`} aria-pressed={f.tipo === t} aria-label={`${FEED_TIPO_LABEL[t]}${n !== undefined ? `, ${plural(n, 'nuevo', 'nuevos')}` : ''}`} onClick={() => setF((c) => ({ ...c, tipo: c.tipo === t ? '' : t }))}>
+                        <TipoIcon tipo={t} size={13} />
+                        {FEED_TIPO_LABEL[t]} {n !== undefined && <em className={n === 0 ? 'is-zero' : ''}>{fmtN(n)}</em>}
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className={`fd-find${showCat ? ' has-cat' : ''}`}>
+                  <label className="fd-field">
+                    <span className="fd-sr">Fuente</span>
+                    <select value={f.fuente} onChange={(e) => setF((c) => ({ ...c, fuente: e.target.value }))}>
+                      <option value="">Todas las fuentes</option>
+                      {fuentes.map((x) => (
+                        <option key={x.fuente} value={x.fuente}>
+                          {fuenteLabel(x.fuente)} · {plural(x.nuevos, 'nuevo', 'nuevos')}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {showCat && (
+                    <label className="fd-field">
+                      <span className="fd-sr">Categoría</span>
+                      <select value={f.categoria} onChange={(e) => setF((c) => ({ ...c, categoria: e.target.value }))}>
+                        <option value="">Todas las categorías</option>
+                        {categorias.map((x) => (
+                          <option key={x.categoria} value={x.categoria}>
+                            {categoriaLabel(x.categoria)} · {fmtN(x.total)}
+                          </option>
+                        ))}
+                        {(meta?.sin_categoria ?? 0) > 0 && <option value="sin_categoria">Sin categoría · {fmtN(meta!.sin_categoria)}</option>}
+                      </select>
+                    </label>
+                  )}
+                  <label className="fd-field fd-search">
+                    <span className="fd-sr">Buscar en título y resumen</span>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                      <path d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14ZM20 20l-3.5-3.5" />
+                    </svg>
+                    <input type="search" value={qInput} maxLength={100} placeholder="Buscar" onChange={(e) => setQInput(e.target.value)} />
+                  </label>
+                </div>
+              </div>
+            )}
 
-      {lost && (
-        <p className="fd-note is-warn" role="status">
-          No encontramos esa tarjeta; puede que ya no exista. Te dejo el feed completo.
-        </p>
-      )}
-
-      {showFilters && (
-        <div className="fd-filters" role="group" aria-label="Filtros del feed">
-          <div className="fd-seg" role="group" aria-label="Estado">
-            {ESTADO_TABS.map((t) => {
-              const n = meta ? (t.key === 'todos' ? Object.values(meta.por_estado).reduce((a, b) => a + b, 0) : meta.por_estado[t.key]) : null
-              return (
-                <button key={t.key} type="button" className={f.estado === t.key ? 'is-on' : ''} aria-pressed={f.estado === t.key} onClick={() => setF((c) => ({ ...c, estado: t.key }))}>
-                  {t.label} {n !== null && <em>{n.toLocaleString('es-VE')}</em>}
-                </button>
-              )
-            })}
-          </div>
-          <div className="fd-chips" role="group" aria-label="Tipo de hallazgo">
-            <button type="button" className={`fd-chip${f.tipo === '' ? ' is-on' : ''}`} aria-pressed={f.tipo === ''} aria-label={`Todos los tipos${meta ? `, ${plural(meta.nuevos, 'nuevo', 'nuevos')}` : ''}`} onClick={() => setF((c) => ({ ...c, tipo: '' }))}>
-              Todos {meta && <em className={meta.nuevos === 0 ? 'is-zero' : ''}>{meta.nuevos.toLocaleString('es-VE')}</em>}
-            </button>
-            {FEED_TIPOS.map((t) => {
-              const n = meta?.por_tipo[t]?.nuevos
-              return (
-                <button key={t} type="button" className={`fd-chip t-${t}${f.tipo === t ? ' is-on' : ''}`} aria-pressed={f.tipo === t} aria-label={`${FEED_TIPO_LABEL[t]}${n !== undefined ? `, ${plural(n, 'nuevo', 'nuevos')}` : ''}`} onClick={() => setF((c) => ({ ...c, tipo: c.tipo === t ? '' : t }))}>
-                  <TipoIcon tipo={t} size={13} />
-                  {FEED_TIPO_LABEL[t]} {n !== undefined && <em className={n === 0 ? 'is-zero' : ''}>{n.toLocaleString('es-VE')}</em>}
-                </button>
-              )
-            })}
-          </div>
-          <div className="fd-find">
-            <label className="fd-field">
-              <span className="fd-sr">Fuente</span>
-              <select value={f.fuente} onChange={(e) => setF((c) => ({ ...c, fuente: e.target.value }))}>
-                <option value="">Todas las fuentes</option>
-                {fuentes.map((x) => (
-                  <option key={x.fuente} value={x.fuente}>
-                    {fuenteLabel(x.fuente)} · {plural(x.nuevos, 'nuevo', 'nuevos')}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="fd-field fd-search">
-              <span className="fd-sr">Buscar en título y resumen</span>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-                <path d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14ZM20 20l-3.5-3.5" />
-              </svg>
-              <input type="search" value={qInput} maxLength={100} placeholder="Buscar en título y resumen" onChange={(e) => setQInput(e.target.value)} />
-            </label>
-          </div>
-        </div>
-      )}
-
-      <p className={`fd-results${empty ? ' fd-sr' : ''}`} role="status" aria-live="polite">
-        {results}
-      </p>
-
-      {error && (
-        <div className="hb-alert fd-alert" role="alert">
-          <p>
-            {meta ? 'No pudimos actualizar el feed; ves lo último que cargó.' : 'No pudimos cargar el feed.'} <small>{error}</small>
-          </p>
-          <button type="button" className="fd-btn is-ghost" onClick={() => (meta ? refresh() : fetchFirst('filters'))}>
-            Reintentar
-          </button>
-        </div>
-      )}
-
-      {firstLoad && !error && <Skeleton />}
-
-      {empty && <Empty f={f} extra={extra} initial={totalAll === 0} onPropose={() => setProposing(true)} onFilters={setF} onClear={() => applyFilters({ ...f, tipo: '', fuente: '', q: '' })} />}
-
-      {shown.length > 0 && (
-        <ul className="fd-list">
-          {shown.map((it) => (
-            <FeedCard key={it.id} it={it} hit={hit === it.id} onItem={replaceItem} onGone={gone} />
-          ))}
-        </ul>
-      )}
-
-      {hasMore && shown.length > 0 && (
-        <div className="fd-more">
-          <button type="button" className="fd-btn" onClick={() => void more()} disabled={moreBusy}>
-            {moreBusy ? 'Cargando…' : `Cargar más · ${plural(Math.max(0, (meta?.total ?? 0) - items.length), 'restante', 'restantes')}`}
-          </button>
-          {moreErr && (
-            <p className="hb-err" role="alert">
-              {moreErr}
+            <p className={`fd-results${empty ? ' fd-sr' : ''}`} role="status" aria-live="polite">
+              {results}
             </p>
-          )}
+
+            {error && (
+              <div className="hb-alert fd-alert" role="alert">
+                <p>
+                  {meta ? 'No pudimos actualizar el feed; ves lo último que cargó.' : 'No pudimos cargar el feed.'} <small>{error}</small>
+                </p>
+                <button type="button" className="fd-btn is-ghost" onClick={() => (meta ? refresh() : fetchFirst('filters'))}>
+                  Reintentar
+                </button>
+              </div>
+            )}
+
+            {firstLoad && !error && <Skeleton />}
+
+            {empty && <Empty f={f} extra={extra} initial={totalAll === 0} onPropose={() => setProposing(true)} onFilters={setF} onClear={() => applyFilters({ ...f, tipo: '', fuente: '', categoria: '', guardado: false, q: '' })} />}
+
+            {shown.length > 0 && (
+              <ul className="fd-list">
+                {shown.map((it) => (
+                  <FeedCard key={it.id} it={it} hit={hit === it.id} owners={owners} me={me} onItem={replaceItem} onGone={gone} />
+                ))}
+              </ul>
+            )}
+
+            {shown.length > 0 && (
+              <div className="fd-end">
+                {hasMore && <div ref={sentinel} className="fd-sentinel" aria-hidden="true" data-next={nextPage} />}
+                {moreBusy && (
+                  <p className="fd-loading">
+                    <span className="fd-spin" aria-hidden="true" /> Cargando más…
+                  </p>
+                )}
+                {moreErr && (
+                  <div className="fd-more-err" role="alert">
+                    <p className="hb-err">{moreErr}</p>
+                    <button type="button" className="fd-btn" onClick={() => void more()}>
+                      Reintentar
+                    </button>
+                  </div>
+                )}
+                {end && (
+                  <p className="fd-done-list">
+                    Hasta aquí llegamos <span aria-hidden="true">🚀</span>
+                  </p>
+                )}
+                <span className="fd-sr" role="status">
+                  {loadedMsg}
+                </span>
+              </div>
+            )}
+          </section>
         </div>
-      )}
-    </section>
+      </div>
+    </main>
   )
 }
 
@@ -1215,31 +1476,18 @@ function Empty({ f, extra, initial, onPropose, onFilters, onClear }: { f: Filter
   if (initial)
     return (
       <div className="fd-empty is-initial">
-        <h3>Todavía no ha llegado nada al feed</h3>
-        <p>Aquí aparece lo que se encuentra por fuera del equipo. Llega por tres caminos:</p>
-        <ul>
-          <li>
-            <b>Growi</b> publica después de cada corrida de Gumloop (radar, cazador, video-auditorías).
-          </li>
-          <li>
-            El <b>Muse de cada socio</b> puede enviar lo que encuentre mientras trabaja.
-          </li>
-          <li>
-            Tú mismo, con <b>«Proponer algo»</b>.
-          </li>
-        </ul>
+        <h3>Aún no llega nada</h3>
+        <p>Aquí caen los hallazgos de Growi, de los Muse y los que propongas.</p>
         <button type="button" className="fd-btn is-primary" onClick={onPropose}>
           <Icon name="plus" size={14} /> Proponer algo
         </button>
       </div>
     )
-  if (extra)
+  if (f.guardado || extra)
     return (
       <div className="fd-empty">
-        <h3>Nada coincide con esos filtros</h3>
-        <p>
-          No hay {f.estado === 'todos' ? 'hallazgos' : `hallazgos ${FEED_ESTADO_LABEL[f.estado].toLowerCase()}s`} con esa combinación de tipo, fuente y búsqueda.
-        </p>
+        <h3>{f.guardado && !extra ? 'Nada guardado' : 'Nada coincide'}</h3>
+        <p>{f.guardado && !extra ? 'Toca el marcador de una tarjeta para guardarla.' : 'Prueba con otros filtros.'}</p>
         <button type="button" className="fd-btn is-primary" onClick={onClear}>
           Quitar filtros
         </button>
@@ -1251,7 +1499,7 @@ function Empty({ f, extra, initial, onPropose, onFilters, onClear }: { f: Filter
         <h3>
           <Icon name="check" size={18} /> Estás al día
         </h3>
-        <p>No hay nada nuevo. Mira los revisados o lo descartado.</p>
+        <p>No queda nada nuevo.</p>
         <div className="fd-actions">
           <button type="button" className="fd-btn" onClick={() => onFilters((c) => ({ ...c, estado: 'revisado' }))}>
             Ver revisados
@@ -1264,11 +1512,58 @@ function Empty({ f, extra, initial, onPropose, onFilters, onClear }: { f: Filter
     )
   return (
     <div className="fd-empty">
-      <h3>Aquí no hay nada {f.estado === 'todos' ? 'todavía' : `${FEED_ESTADO_LABEL[f.estado].toLowerCase()}`}</h3>
-      <p>{f.estado === 'revisado' ? 'Lo que marques como revisado queda aquí.' : f.estado === 'descartado' ? 'Lo que descartes queda aquí, con su motivo.' : 'Lo que conviertas en cliente, tarea o proyecto queda aquí.'}</p>
+      <h3>Aquí no hay nada {f.estado === 'todos' ? 'todavía' : `${FEED_ESTADO_LABEL[f.estado as FeedEstado].toLowerCase()}`}</h3>
+      <p>{f.estado === 'revisado' ? 'Lo que marques como revisado queda aquí.' : f.estado === 'descartado' ? 'Lo que descartes queda aquí.' : 'Lo que se convierta en cliente, tarea o proyecto queda aquí.'}</p>
       <button type="button" className="fd-btn" onClick={() => onFilters((c) => ({ ...c, estado: 'todos' }))}>
-        Ver todo el feed
+        Ver todo
       </button>
     </div>
   )
 }
+
+// ---------- la tarjeta de acceso (vive en la página del Hub) ----------
+export function FeedEntry({ seed }: { seed?: { nuevos: number; total: number } }) {
+  const known = useKnownNuevos()
+  const nuevos = known ?? seed?.nuevos ?? null
+  const tick = useFeedTick()
+  const first = useRef(true)
+  // llegó algo en vivo: se actualiza el contador (barato: una página de un solo ítem)
+  useEffect(() => {
+    if (first.current) return void (first.current = false)
+    const t = window.setTimeout(() => {
+      loadFeed({ per_page: 1, estado: 'nuevo' })
+        .then((r) => publishNuevos(r.meta.nuevos))
+        .catch(() => {})
+    }, 900)
+    return () => window.clearTimeout(t)
+  }, [tick])
+  return (
+    <button type="button" id="fd-entry" className="fd-entry" onClick={() => openFeed()} aria-label={nuevos === null ? 'Feed de oportunidades' : `Feed de oportunidades, ${nuevos === 0 ? 'al día' : plural(nuevos, 'nuevo', 'nuevos')}`}>
+      <span className="fd-entry-ico" aria-hidden="true">
+        <Icon name="radar" size={22} />
+      </span>
+      <span className="fd-entry-txt">
+        <strong>Feed de oportunidades</strong>
+        <small>Hallazgos de los agentes, listos para revisar.</small>
+      </span>
+      <span className={`fd-entry-count${nuevos === 0 ? ' is-clear' : ''}`} aria-hidden="true">
+        {nuevos === null ? (
+          <i className="fd-count-skel" />
+        ) : nuevos === 0 ? (
+          <>
+            <Icon name="check" size={14} /> Al día
+          </>
+        ) : (
+          <>
+            <b>{fmtN(nuevos)}</b> {nuevos === 1 ? 'nuevo' : 'nuevos'}
+          </>
+        )}
+      </span>
+      <span className="fd-entry-go" aria-hidden="true">
+        <Icon name="arrow" size={16} />
+      </span>
+    </button>
+  )
+}
+
+export default FeedEntry

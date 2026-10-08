@@ -113,8 +113,8 @@ clientsRouter.post('/', async (req, res) => {
     await insertItems(c, id, b.items)
     if (totalCents > 0) {
       await c.query(
-        `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by)
-         VALUES ($1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4)`,
+        `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, received_by, received_by_source)
+         VALUES ($1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4, $4, 'manual')`,
         [id, b.initialDate, totalCents / 100, userId],
       )
     }
@@ -179,8 +179,8 @@ clientsRouter.put('/:id/initial', async (req, res) => {
     await insertItems(c, clientId, b.items)
     if (totalCents > 0) {
       await c.query(
-        `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by)
-         VALUES ($1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4)
+        `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, received_by, received_by_source)
+         VALUES ($1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4, $4, 'manual')
          ON CONFLICT (client_id) WHERE kind = 'inicial' DO UPDATE SET date = EXCLUDED.date, amount = EXCLUDED.amount, status = 'cobrado'`,
         [clientId, b.date, totalCents / 100, req.user!.id],
       )

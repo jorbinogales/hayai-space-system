@@ -205,7 +205,7 @@ async function closeWithProposal(c: PoolClient, actorId: string, clientId: strin
       // Igual que la inicial de siempre: su desglose queda en los items del cliente y el cobro, cobrado.
       await insertItems(c, clientId, unicos.map((i) => ({ concept: i.qty > 1 ? `${i.concept} x${i.qty}` : i.concept, amount: (Math.round(i.unit_price * 100) * i.qty) / 100 })).filter((i) => i.amount > 0))
       await c.query(
-        `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by) VALUES ($1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4)
+        `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, received_by, received_by_source) VALUES ($1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4, $4, 'manual')
          ON CONFLICT (client_id) WHERE kind = 'inicial' DO UPDATE SET amount = payments.amount + EXCLUDED.amount`,
         [clientId, impl, unico / 100, actorId],
       )

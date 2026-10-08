@@ -61,7 +61,7 @@ async function calcular(userId: string): Promise<Alerta[]> {
        ORDER BY (string_to_array(v.version, '.'))[1]::int DESC, (string_to_array(v.version, '.'))[2]::int DESC, (string_to_array(v.version, '.'))[3]::int DESC LIMIT 1`,
       [ACTUALIZACION_DIAS],
     ),
-    feedAlertas(),
+    feedAlertas(userId),
   ])
   const read = new Set<string>(leidas.rows.map((r) => r.key))
   const out: Alerta[] = []
@@ -110,7 +110,7 @@ async function calcular(userId: string): Promise<Alerta[]> {
       fecha: r.date,
       dias: d,
       titulo: `${r.client}: ${concepto} vencida`,
-      detalle: `$${r.amount.toLocaleString('en-US', { maximumFractionDigits: 2 })} · venció hace ${dias(d)}`,
+      detalle: `$${r.amount.toLocaleString('es-VE', { minimumFractionDigits: Number.isInteger(r.amount) ? 0 : 2, maximumFractionDigits: 2 })} · venció hace ${dias(d)}`,
       cliente_id: r.client_id,
       cliente: r.client,
       monto: r.amount,

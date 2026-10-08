@@ -59,6 +59,10 @@ export function isNewer(a: string, b: string): boolean {
   for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0)
   return false
 }
+/** La versión con la que cargó esta pestaña (null hasta que el servidor la diga). */
+export const runningVersion = () => state.running
+/** Avisa cuando cambia algo del estado de versiones (live.ts lo usa para marcar como leída la alerta de lo ya instalado). */
+export const onUpdates = (f: () => void) => (subs.add(f), () => void subs.delete(f))
 /** Hay una versión más nueva que la que cargó esta pestaña. */
 export const updateAvailable = (s: State) => s.running !== null && s.latest !== null && isNewer(s.latest, s.running)
 

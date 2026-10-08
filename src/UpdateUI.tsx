@@ -98,7 +98,7 @@ function ReloadDialog() {
               </li>
             ))}
           </ul>
-          <p className="upd-note">Guardamos un borrador en este navegador cada pocos segundos y te lo ofrecemos al volver, pero lo último que escribiste puede quedar fuera.</p>
+          <p className="upd-note">Guardamos un borrador cada pocos segundos, pero lo último que escribiste puede quedar fuera.</p>
         </div>
         <footer>
           <button type="button" className="ghost" onClick={confirmReload}>

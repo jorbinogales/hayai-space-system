@@ -207,8 +207,8 @@ export const clienteCrear = op(
       await insertItems(c, cid, items)
       if (totalCents > 0) {
         await c.query(
-          `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by)
-           VALUES ($1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4)`,
+          `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, received_by, received_by_source)
+           VALUES ($1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4, $4, 'manual')`,
           [cid, b.fecha_inicial ?? todayISO(), totalCents / 100, actor.id],
         )
       }

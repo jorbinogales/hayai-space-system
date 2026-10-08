@@ -17,6 +17,11 @@ export function yearFinance(clients: Client[], expenses: Expense[]) {
   return { ingresos, gastos }
 }
 
+/** Lo que un cliente debe hoy (cobros pendientes, de cualquier fecha). */
+export const owed = (c: Client) => c.movements.filter((m) => m.status === 'pendiente').reduce((s, m) => s + m.amount, 0)
+/** Lo que se debe en total: el «por cobrar» de Finanzas y del planeta Clientes salen de aquí. */
+export const owedTotal = (clients: Client[]) => clients.reduce((s, c) => s + owed(c), 0)
+
 export interface ClientRow {
   id: string
   name: string
@@ -35,7 +40,7 @@ export function dashboard(clients: Client[], expenses: Expense[], projects: Proj
   const projectClient = new Map(projects.map((p) => [p.name, p.client]))
   const rows: ClientRow[] = clients.map((c) => {
     const recaudado = c.movements.filter((m) => m.status === 'cobrado' && inPeriod(m.date, period)).reduce((s, m) => s + m.amount, 0)
-    const pendiente = c.movements.filter((m) => m.status === 'pendiente' && inPeriod(m.date, period)).reduce((s, m) => s + m.amount, 0)
+    const pendiente = owed(c) // lo que se debe hoy no depende del periodo: es el mismo número del planeta Clientes
     const gastos = expenses
       .filter((x) => inPeriod(x.date, period) && ((x.scope === 'cliente' && x.ref === c.name) || (x.scope === 'proyecto' && x.ref && projectClient.get(x.ref) === c.name)))
       .reduce((s, x) => s + x.amount, 0)

@@ -104,6 +104,8 @@ export async function clienteDetalle(clientId: string) {
     contacto_cargo: c.contactRole,
     direccion: c.address,
     notas: c.notes,
+    // De qué ítem del feed salió (null si no vino de ahí). Se puede devolver con POST /feed/:id/deshacer { a: 'posible_cliente', devolver: true }.
+    del_feed: c.delFeed,
     // Las 10 mas recientes (de cualquier tipo, con las de etapa); el feed completo y paginado es /clientes/:id/interacciones.
     interacciones: { total: total.rows[0].n as number, recientes: recientes.rows.map(interaccionOut) },
     items: c.items.map((i) => ({ id: i.id, concepto: i.concept, monto: i.amount })),

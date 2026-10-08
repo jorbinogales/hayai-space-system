@@ -118,5 +118,7 @@ export interface ClientCrm {
   nextAction?: string | null
   nextActionDate?: string | null
   lastContactAt?: string | null
+  /** el ítem del feed del que salió (solo si se creó con «Convertir») */
+  delFeed?: { id: string; titulo: string; fuente: string; fecha: string } | null
 }
 export const crmOf = (c: Client): ClientCrm => c as Client & ClientCrm

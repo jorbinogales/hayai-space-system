@@ -3537,11 +3537,12 @@ describe('Historial de versiones (changelog)', () => {
   const hoy = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
   const publicar = (b: Record<string, unknown>, key = KEY) => api('/versiones', { key, body: b })
 
-  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6 y 1.7.0 vienen publicadas; la más nueva primero y marcada como actual', async () => {
+  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6, 1.6.7 y 1.7.0 vienen publicadas; la más nueva primero y marcada como actual', async () => {
     const r = await api('/versiones')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.7.0', true], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
-    const [v17, v166, , v16, v15, v10] = r.body.data
+    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.7.0', true], ['1.6.7', false], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
+    const [v17, v167, v166, , v16, v15, v10] = r.body.data
+    assert.deepEqual([v167.titulo, v167.autor, v167.fecha, v167.cambios.length], ['Órbita fina III', 'Equipo HAYAI', '2026-10-08', 4])
     assert.deepEqual([v166.titulo, v166.autor, v166.fecha, v166.cambios.length], ['Órbita fina II', 'Equipo HAYAI', '2026-10-08', 7])
     assert.deepEqual([v17.titulo, v17.autor, v17.fecha, v17.cambios.length], ['Chat interno', 'Equipo HAYAI', '2026-10-08', 5])
     assert.deepEqual([v16.titulo, v16.autor, v16.fecha, v16.cambios.length], ['Feed de oportunidades', 'Equipo HAYAI', '2026-10-08', 6])
@@ -3574,7 +3575,7 @@ describe('Historial de versiones (changelog)', () => {
 
   it('el orden es numérico (1.10.0 va después de 1.9.0) y la versión nueva siempre debe ser mayor que la actual', async () => {
     assert.equal((await publicar({ version: '1.10.0', cambios: ['x'] })).status, 201)
-    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.7.1', '1.7.0', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
+    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.7.1', '1.7.0', '1.6.7', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
     assert.equal((await api('/version')).body.version, '1.10.0')
     for (const v of ['1.10.0', '1.9.5', '1.4.0', '0.9.0']) {
       const r = await publicar({ version: v, cambios: ['x'] })
@@ -4096,9 +4097,8 @@ describe('Feed de oportunidades', () => {
     assert.equal(c.body.etapa, 'prospecto')
     assert.equal(c.body.origen, 'instagram')
     assert.equal(c.body.telefono, '+584141234567')
-    assert.match(c.body.notas, /Pedidos a mano/)
-    assert.match(c.body.notas, /Buenas, le escribo/)
     assert.match(c.body.notas, /cazador-summit/)
+    assert.doesNotMatch(c.body.notas, /Pedidos a mano|Buenas, le escribo|maps\.example/, 'la nota no vuelca fugas, guion ni enlaces: eso sigue en el ítem')
     const bit = (await api(`/clientes/${r.body.creado.id}/interacciones`)).body.data as any[]
     assert.ok(bit.some((x) => x.tipo === 'nota' && /feed de oportunidades \(cazador-summit\)/i.test(x.resumen)))
     // cada clase se crea una sola vez (repetirla da 409), pero el ítem ya convertido admite otras clases; su estado personal ya no cambia
@@ -4261,6 +4261,72 @@ describe('Feed de oportunidades', () => {
     assert.equal(u3.status, 200, JSON.stringify(u3.body))
     assert.deepEqual([u3.body.item.estado, u3.body.item.convertido.a, Object.keys(u3.body.item.creados)], ['convertido', 'proyecto', ['proyecto']])
     assert.equal((await api(`/tareas/${tt.body.creado.id}`)).status, 404)
+  })
+
+  it('v1.6.7 nota de conversión ordenada: «Del feed: fuente · fecha» + enlace al ítem, resumen corto y contacto en líneas', async () => {
+    const it = await pub({
+      titulo: 'Panadería La Espiga',
+      resumen: 'Hornea a diario y toma pedidos por WhatsApp sin ningún sistema.\n\n   Quiere ordenar los pedidos de sus clientes frecuentes.',
+      tipo: 'prospecto',
+      fuente: 'video-auditorias',
+      datos: { fugas: ['Pedidos a mano'], guion: 'Buenas, le escribo por…', contacto: { telefono: '+584141112233', whatsapp: '+584141112233', correo: 'espiga@example.com', instagram: '@laespiga' }, urls: ['https://maps.example/espiga'] },
+    })
+    const r = await api(`/feed/${it.body.id}/convertir`, { body: { a: 'posible_cliente' } })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    const notas = (await api(`/clientes/${r.body.creado.id}`)).body.notas as string
+    const [cab, resumen, contacto, ...mas] = notas.split('\n\n')
+    assert.match(cab, new RegExp(`^Del feed: video-auditorias · \\d{1,2} [a-zñ]+ \\d{4}\\nÍtem original: #hub/feed/${it.body.id}$`))
+    assert.equal(resumen, 'Resumen\nHornea a diario y toma pedidos por WhatsApp sin ningún sistema. Quiere ordenar los pedidos de sus clientes frecuentes.')
+    assert.equal(contacto, 'Contacto\nTeléfono: +584141112233\nWhatsApp: +584141112233\nCorreo: espiga@example.com\nInstagram: @laespiga')
+    assert.equal(mas.length, 0)
+    assert.doesNotMatch(notas, /Pedidos a mano|Buenas, le escribo|maps\.example/)
+    // sin resumen ni contacto: solo la cabecera
+    const vacio = await pub({ titulo: 'Sin datos', tipo: 'prospecto', fuente: 'manual' })
+    const v = await api(`/feed/${vacio.body.id}/convertir`, { body: { a: 'posible_cliente' } })
+    assert.equal((await api(`/clientes/${v.body.creado.id}`)).body.notas, (await api(`/clientes/${v.body.creado.id}`)).body.notas.split('\n\n')[0])
+    assert.match((await api(`/clientes/${v.body.creado.id}`)).body.notas, /^Del feed: manual · .+\nÍtem original: #hub\/feed\//)
+    // el teléfono/correo sueltos del ítem (datos.telefono / datos.email) también cuentan como contacto
+    const suelto = await pub({ titulo: 'Contacto suelto', resumen: 'Algo.', tipo: 'prospecto', fuente: 'manual', datos: { telefono: '+584125550000', email: 'a@b.co' } })
+    const sc = await api(`/feed/${suelto.body.id}/convertir`, { body: { a: 'posible_cliente' } })
+    assert.match((await api(`/clientes/${sc.body.creado.id}`)).body.notas, /Contacto\nTeléfono: \+584125550000\nCorreo: a@b\.co$/)
+  })
+
+  it('v1.6.7 devolver al feed: sin ventana de tiempo y para cualquier socio; solo un posible cliente que siga siéndolo; limpia lo que colgaba de él', async () => {
+    const it = await pub({ titulo: 'Para devolver al feed', tipo: 'prospecto', fuente: 'manual' })
+    const pc = await api(`/feed/${it.body.id}/convertir`, { body: { a: 'posible_cliente' } })
+    assert.equal(pc.status, 200)
+    // la ficha dice de qué hallazgo salió
+    const ficha = (await api(`/clientes/${pc.body.creado.id}`)).body
+    assert.deepEqual([ficha.del_feed.id, ficha.del_feed.titulo, ficha.del_feed.fuente], [it.body.id, 'Para devolver al feed', 'manual'])
+    // un cliente que NO salió de una conversión no trae del_feed
+    const otro = (await api('/clientes', { body: { nombre: 'Cliente sin feed', estado: 'posible' } })).body
+    assert.equal((await api(`/clientes/${otro.id}`)).body.del_feed, null)
+    // cuelga un proyecto del posible cliente, hecho desde el mismo ítem
+    const pr = await api(`/feed/${it.body.id}/convertir`, { body: { a: 'proyecto' } })
+    assert.equal(pr.status, 200, JSON.stringify(pr.body))
+    // pasada la ventana de 2 minutos, el «Deshacer» normal ya no sirve…
+    await admin.query(`UPDATE feed_item_vinculos SET created_at = now() - interval '1 hour' WHERE item_id = $1`, [it.body.id])
+    assert.equal((await api(`/feed/${it.body.id}/deshacer`, { body: { a: 'posible_cliente' } })).status, 409)
+    // …pero «devolver» sí, y lo puede hacer otro socio
+    assert.equal((await api(`/feed/${it.body.id}/deshacer`, { body: { a: 'tarea', devolver: true }, key: KEY_J })).status, 404, 'devolver solo existe para posible_cliente (aquí no hay tarea)')
+    assert.equal((await api(`/feed/${it.body.id}/deshacer`, { body: { a: 'proyecto', devolver: true } })).status, 400)
+    const ok = await api(`/feed/${it.body.id}/deshacer`, { body: { a: 'posible_cliente', devolver: true }, key: KEY_J })
+    assert.equal(ok.status, 200, JSON.stringify(ok.body))
+    assert.deepEqual([ok.body.item.estado, ok.body.item.convertido, ok.body.item.vinculo.estado, ok.body.item.creados], ['nuevo', null, 'sin_vinculo', {}], 'el proyecto se fue con el cliente a la papelera: el ítem queda limpio')
+    assert.equal((await api(`/clientes/${pc.body.creado.id}`)).status, 404)
+    assert.equal((await api(`/proyectos/${pr.body.creado.id}`)).status, 404)
+    assert.ok((await apiD('/papelera')).body.data.some((x: any) => x.nombre === 'Para devolver al feed'), 'sigue en la papelera 30 días')
+    // y se puede volver a convertir
+    assert.equal((await api(`/feed/${it.body.id}/convertir`, { body: { a: 'posible_cliente' } })).status, 200)
+    // ya promovido a cliente: no se devuelve
+    const it2 = await pub({ titulo: 'Ya es cliente', tipo: 'prospecto', fuente: 'manual' })
+    await api(`/feed/${it2.body.id}/convertir`, { body: { a: 'posible_cliente' } })
+    await api(`/feed/${it2.body.id}/convertir`, { body: { a: 'cliente' } })
+    const no = await api(`/feed/${it2.body.id}/deshacer`, { body: { a: 'posible_cliente', devolver: true } })
+    assert.equal(no.status, 409, JSON.stringify(no.body))
+    assert.equal((await api(`/feed/${it2.body.id}/deshacer`, { body: { a: 'posible_cliente', devolver: 'si' } })).status, 400)
+    // un ítem sin nada creado
+    assert.equal((await api(`/feed/${(await pub({ titulo: 'Nada creado', tipo: 'idea', fuente: 'manual' })).body.id}/deshacer`, { body: { a: 'posible_cliente', devolver: true } })).status, 404)
   })
 
   it('v1.6.6 propuesta desde el ítem: queda enlazada («✓ Creada»), el ítem pasa a convertido y la propuesta es válida también para un cliente activo', async () => {

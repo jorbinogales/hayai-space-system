@@ -12,7 +12,9 @@ import { ago } from './time'
 import { takeFichaIntent } from './nav'
 import NewProposal from './NewProposal'
 import { closeProposal, loadProposals, openProposal, useProposalRequest, useProposalsVersion, type Proposal } from './proposalData'
-import { notifyFeed } from './feedData'
+import { devolverAlFeed, notifyFeed, openFeed } from './feedData'
+import { refreshAlerts } from './live'
+import { loadProjects } from './projectData'
 import { pushToast } from './toast'
 import { loadClients } from './store'
 import { useFormGuard } from './updates'
@@ -91,7 +93,104 @@ function ProposalsCard({ c }: { c: Client }) {
   )
 }
 
-function FichaPanel({ c, stages, project, visit, onConvert }: { c: Client; stages: Stage[]; project?: Project | null; visit?: Task | null; onConvert?: (id: string) => void }) {
+/** Texto de notas con los enlaces a un ítem del feed (`#hub/feed/<id>`, los que deja «Convertir») como enlaces de verdad. */
+const FEED_LINK = /(#hub\/feed\/[0-9a-f-]{36})/gi
+function NoteText({ text }: { text: string }) {
+  const parts = text.split(FEED_LINK)
+  return (
+    <>
+      {parts.map((p, i) =>
+        i % 2 ? (
+          <a key={i} className="fx-feedlink" href={p} onClick={(e) => (e.preventDefault(), openFeed({ itemId: p.slice(-36) }))}>
+            Ver en el feed
+          </a>
+        ) : (
+          p
+        ),
+      )}
+    </>
+  )
+}
+
+/**
+ * De qué hallazgo del feed salió el cliente. En un posible cliente creado con «Convertir» trae «Devolver al feed»: la red de seguridad para
+ * cuando el «Deshacer» del aviso ya expiró (lo manda a la papelera y el ítem vuelve a «Nuevos»).
+ */
+function DelFeed({ c, onClose }: { c: Client; onClose: () => void }) {
+  const f = crmOf(c).delFeed
+  const [asking, setAsking] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const ask = useRef<HTMLButtonElement>(null)
+  if (!f) return null
+  const volver = async () => {
+    if (busy) return
+    setBusy(true)
+    setErr(null)
+    try {
+      await devolverAlFeed(f.id)
+      await Promise.all([loadClients(), loadProjects().catch(() => {})])
+      notifyFeed()
+      void refreshAlerts().catch(() => {})
+      pushToast({ text: 'Devuelto al feed', detail: `«${c.name}» volvió a Nuevos. Sigue en la papelera 30 días por si lo necesitas.`, tone: 'info', ms: 6000 })
+      onClose()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'No se pudo devolver al feed.')
+      setBusy(false)
+    }
+  }
+  return (
+    <section className="fx-card fx-origin" aria-label="Origen en el feed">
+      <h3>Del feed</h3>
+      <p className="fx-origin-line">
+        <b>{f.titulo}</b>
+        <small>
+          {f.fuente} · {fmtDate(dayOf(f.fecha), true)}
+        </small>
+      </p>
+      <p className="fx-origin-acts">
+        <button type="button" className="fx-linkbtn" onClick={() => openFeed({ itemId: f.id })}>
+          Ver el hallazgo
+        </button>
+        {c.prospect && !asking && (
+          <button type="button" ref={ask} className="fx-linkbtn is-warn" onClick={() => setAsking(true)}>
+            Devolver al feed
+          </button>
+        )}
+      </p>
+      {c.prospect && asking && (
+        <div className="fx-origin-ask" role="group" aria-label="Confirmar devolver al feed">
+          <p>
+            Se borra este posible cliente (con su bitácora, proyectos y propuestas) y el hallazgo vuelve a <b>Nuevos</b>. Queda 30 días en la papelera.
+          </p>
+          <div>
+            <button type="button" className="fx-linkbtn is-warn" disabled={busy} onClick={() => void volver()} autoFocus>
+              {busy ? 'Devolviendo…' : 'Sí, devolver'}
+            </button>
+            <button
+              type="button"
+              className="fx-linkbtn"
+              disabled={busy}
+              onClick={() => {
+                setAsking(false)
+                requestAnimationFrame(() => ask.current?.focus())
+              }}
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+      {err && (
+        <p className="fx-origin-err" role="alert">
+          {err}
+        </p>
+      )}
+    </section>
+  )
+}
+
+function FichaPanel({ c, stages, project, visit, onConvert, onClose }: { c: Client; stages: Stage[]; project?: Project | null; visit?: Task | null; onConvert?: (id: string) => void; onClose: () => void }) {
   const st = stats(c)
   const crm = crmOf(c)
   const today = todayISO()
@@ -106,6 +205,7 @@ function FichaPanel({ c, stages, project, visit, onConvert }: { c: Client; stage
 
   return (
     <>
+      <DelFeed c={c} onClose={onClose} />
       {c.prospect && (
         <div className="prospect-box">
           <section>
@@ -250,7 +350,9 @@ function FichaPanel({ c, stages, project, visit, onConvert }: { c: Client; stage
           {crm.notes && (
             <>
               <h3>Notas</h3>
-              <p className="fx-notes">{crm.notes}</p>
+              <p className="fx-notes">
+                <NoteText text={crm.notes} />
+              </p>
             </>
           )}
         </section>
@@ -660,7 +762,7 @@ export default function History({
             <div className="h-scroll" ref={scroll}>
               {TABS.map((t) => (
                 <div key={t.key} role="tabpanel" id={`fx-panel-${t.key}`} aria-labelledby={`fx-tab-${t.key}`} hidden={tab !== t.key} tabIndex={0} className="fx-panel">
-                  {t.key === 'ficha' && <FichaPanel c={c} stages={stages} project={project} visit={visit} onConvert={onConvert} />}
+                  {t.key === 'ficha' && <FichaPanel c={c} stages={stages} project={project} visit={visit} onConvert={onConvert} onClose={onClose} />}
                   {t.key === 'bitacora' && <LogPanel c={c} log={log} stages={stages} />}
                   {t.key === 'cobros' && <PaysPanel c={c} onOpen={setCobroId} onEdit={onEdit} />}
                   {t.key === 'proyectos' && <ProjectsPanel projects={projects} active={tab === 'proyectos'} />}

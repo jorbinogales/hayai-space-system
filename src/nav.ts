@@ -17,6 +17,26 @@ export function go(t: Target) {
   else location.hash = h
 }
 
+// ---------- intención al abrir la ficha de un cliente (v1.6.6) ----------
+// El feed lleva a la ficha ya en la pestaña que toca («Registrar cobro» → Cobros, con el cobro abierto). La ficha lo recoge una vez.
+export interface FichaIntent {
+  clientId: string
+  tab?: 'ficha' | 'bitacora' | 'cobros' | 'proyectos'
+  cobroId?: string | null
+}
+let fichaIntent: FichaIntent | null = null
+/** Deja dicho cómo debe abrirse la ficha de ese cliente; después se navega con `go`. */
+export const requestFicha = (i: FichaIntent) => void (fichaIntent = i)
+/** La ficha recoge (una sola vez) lo que se le pidió para ese cliente. */
+export function takeFichaIntent(clientId: string): FichaIntent | null {
+  const i = fichaIntent
+  if (i && i.clientId === clientId) {
+    fichaIntent = null
+    return i
+  }
+  return null
+}
+
 // ---------- vista de Finanzas: Resumen | Gastos ----------
 // Gastos vive DENTRO de Finanzas (ya no tiene planeta propio). El hash lo refleja: #finanzas y #finanzas/gastos (#gastos, el enlace
 // viejo, también cae aquí).

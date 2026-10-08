@@ -1,0 +1,37 @@
+/* Formulario «Nueva propuesta» y la lista de propuestas de la ficha. Hereda el tema oscuro de .sheet; solo añade lo propio. */
+.np-sheet { width: min(620px, 100%); }
+.np-for { margin: 0; font-size: 0.9rem; color: rgba(244, 235, 221, 0.78); }
+.np-for b { color: #ffd27a; }
+.np-rows { display: grid; gap: 12px; }
+.np-row { display: grid; gap: 10px; padding: 14px; border-radius: 16px; background: rgba(255, 255, 255, 0.04); box-shadow: inset 0 0 0 1px rgba(244, 235, 221, 0.12); }
+.np-row.is-base { box-shadow: inset 0 0 0 1px rgba(239, 157, 37, 0.45); }
+.np-kind { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.np-kind > span { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #ffd27a; }
+.np-rm { display: grid; place-items: center; width: 36px; height: 36px; margin: -6px -6px -6px 0; border: 0; border-radius: 50%; background: none; color: rgba(244, 235, 221, 0.7); cursor: pointer; }
+.np-rm:active { background: rgba(244, 235, 221, 0.16); }
+@media (hover: hover) { .np-rm:hover { background: rgba(244, 235, 221, 0.12); color: #f4ebdd; } }
+.np-add { display: flex; flex-wrap: wrap; gap: 8px; }
+.np-add .ghost { display: inline-flex; align-items: center; gap: 6px; }
+.np-notes { width: 100%; padding: 10px 12px; border: 1px solid rgba(244, 235, 221, 0.2); border-radius: 12px; background: rgba(255, 255, 255, 0.06); color: #f4ebdd; color-scheme: dark; font: inherit; font-size: 0.95rem; resize: vertical; }
+.np-notes:focus { outline: 2px solid var(--amber); border-color: transparent; }
+.np-total { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 0; padding: 12px 14px; border-radius: 14px; background: rgba(239, 157, 37, 0.1); }
+.np-total div { display: grid; gap: 2px; }
+.np-total dt { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(244, 235, 221, 0.68); }
+.np-total dd { margin: 0; font: 700 1.3rem / 1.1 var(--display); font-variant-numeric: tabular-nums; color: #ffd27a; }
+@media (max-width: 520px) { .np-sheet .two { grid-template-columns: 1fr; } }
+
+/* ---- propuestas en la ficha (tarjeta clara del cajón) ---- */
+.pr-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.history .pr-head > h3 { margin: 0; }
+.pr-new { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 14px; border: 0; border-radius: 999px; background: var(--amber); color: var(--night); font: 700 0.8rem / 1 var(--sans); cursor: pointer; }
+.pr-new:active { background: #de8f1c; }
+@media (hover: hover) { .pr-new:hover { background: #f6a93a; } }
+.pr-new:focus-visible { outline: 2px solid var(--night); outline-offset: 2px; }
+.pr-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.pr-list li { display: grid; gap: 2px; padding: 10px 12px; border-radius: 12px; background: rgba(255, 255, 255, 0.7); box-shadow: inset 0 0 0 1px rgba(22, 17, 11, 0.1); }
+.pr-list li.is-live { box-shadow: inset 0 0 0 1.5px rgba(239, 157, 37, 0.8); }
+.pr-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.pr-top b { font-weight: 700; }
+.pr-state { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-2); }
+.pr-list li.is-live .pr-state { color: #7a4700; }
+.pr-list small { font-size: 0.8rem; color: var(--ink-2); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }

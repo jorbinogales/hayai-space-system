@@ -12,7 +12,19 @@ export type FeedTipo = (typeof FEED_TIPOS)[number]
 export type FeedEstado = (typeof FEED_ESTADOS)[number]
 /** Estado PERSONAL del socio que consulta. */
 export type MiEstado = 'nuevo' | 'revisado' | 'descartado'
-export type FeedConversion = 'posible_cliente' | 'tarea' | 'proyecto'
+/** Lo que se puede crear a partir de un ítem (POST /feed/:id/convertir). La propuesta se arma desde la ficha del cliente (con `feed_item_id`). */
+export type FeedConversion = 'posible_cliente' | 'cliente' | 'tarea' | 'seguimiento' | 'proyecto'
+/** Todo lo que puede quedar enlazado a un ítem. */
+export type CreadoKind = FeedConversion | 'propuesta'
+/** v1.6.6: con qué cliente está vinculado el ítem (por conversión, por sus datos o por el nombre). */
+export type VinculoEstado = 'sin_vinculo' | 'posible_cliente' | 'cliente'
+export interface FeedVinculo {
+  estado: VinculoEstado
+  cliente_id: string | null
+  cliente: string | null
+  origen: 'conversion' | 'datos' | 'nombre' | null
+}
+export type Creados = Partial<Record<CreadoKind, { id: string | null; por: string | null; el: string | null }>>
 
 export const FEED_TIPO_LABEL: Record<FeedTipo, string> = {
   idea: 'Idea',
@@ -45,7 +57,11 @@ export interface FeedItem {
   fecha: string
   publicado_el: string
   /** GLOBAL: en qué se convirtió, quién y cuándo */
-  convertido: { a: FeedConversion; id: string | null; por: string | null; el: string | null } | null
+  convertido: { a: CreadoKind; id: string | null; por: string | null; el: string | null } | null
+  /** v1.6.6: el cliente al que apunta el ítem (decide «Convertir en posible cliente» / «en cliente» / «Crear propuesta») */
+  vinculo: FeedVinculo
+  /** v1.6.6: lo que ya se creó desde el ítem, por clase (tarea, proyecto, propuesta...): ahí el botón dice «✓ Creada» */
+  creados: Creados
   actualizado_el: string | null
 }
 /** Lo que el socio ve de un ítem: convertido (global) manda; si no, su estado personal. */
@@ -114,12 +130,93 @@ export interface ConvertBody {
   responsable?: string
   cliente_id?: string
   descripcion?: string
+  /** «cliente»: día de implementación (hoy por defecto) y, si el posible cliente tiene propuesta vigente, el esquema de cobro */
+  fecha_implementacion?: string
+  esquema_cobro?: { inicio_cobro: string; meses: number; unicos_cobrados: boolean }
 }
 export interface ConvertResult {
   item: FeedItem
   creado: { tipo: FeedConversion; id: string; detalle: Record<string, unknown> }
 }
-export const convertFeed = (it: FeedItem, b: ConvertBody) => api.post<ConvertResult>(`/feed/${it.id}/convertir`, b)
+export const convertFeed = (it: Pick<FeedItem, 'id'>, b: ConvertBody) => api.post<ConvertResult>(`/feed/${it.id}/convertir`, b)
+/** «Deshacer» del aviso «Listo ✓»: solo quien lo creó y en los 2 minutos siguientes. Lo creado va a la papelera. */
+export const undoFeed = (it: Pick<FeedItem, 'id'>, a: Exclude<CreadoKind, 'propuesta'>) => api.post<{ item: FeedItem; deshecho: string }>(`/feed/${it.id}/deshacer`, { a })
+
+// ---------- botones inteligentes (v1.6.6): qué acciones tiene cada tarjeta y cuál va destacada ----------
+export const ES_LEAD: FeedTipo[] = ['prospecto', 'oportunidad']
+/**
+ * «Convertir» según el vínculo: sin vincular → posible cliente; vinculado a un posible cliente → cliente (lo promueve);
+ * vinculado a un cliente activo → nada. Solo prospectos y oportunidades: en ideas, noticias y alertas no se muestra.
+ */
+export function conversionDe(it: Pick<FeedItem, 'tipo' | 'vinculo'>): 'posible_cliente' | 'cliente' | null {
+  if (!ES_LEAD.includes(it.tipo)) return null
+  return it.vinculo.estado === 'sin_vinculo' ? 'posible_cliente' : it.vinculo.estado === 'posible_cliente' ? 'cliente' : null
+}
+/** «Crear propuesta»: oportunidades ya vinculadas a un cliente (posible o activo). */
+export const puedeProponer = (it: Pick<FeedItem, 'tipo' | 'vinculo'>) => it.tipo === 'oportunidad' && it.vinculo.estado !== 'sin_vinculo' && !!it.vinculo.cliente_id
+
+const DATOS_COBRO = ['cobro_id', 'pago_id', 'cuota_id', 'cuota']
+const TEXTO_COBRO = /\b(cuota|vencimiento|vence|vencid[oa]|cobro|mensualidad)\b/i
+const idDe = (v: unknown): string | null => (typeof v === 'string' && /^[0-9a-f-]{36}$/i.test(v.trim()) ? v.trim() : null)
+/** Una alerta de cuota o vencimiento: trae el cobro en sus datos o lo dice en el título. */
+export const esAlertaDeCobro = (it: Pick<FeedItem, 'tipo' | 'titulo' | 'datos'>) =>
+  it.tipo === 'alerta' && (DATOS_COBRO.some((k) => it.datos[k] != null) || TEXTO_COBRO.test(it.titulo))
+/** A dónde lleva «Registrar cobro»: el cobro (si el ítem lo trae) y/o el cliente. Sin ninguno de los dos no hay botón. */
+export function destinoCobro(it: Pick<FeedItem, 'datos' | 'vinculo'>): { cobroId: string | null; clienteId: string | null } | null {
+  const cobroId = idDe(it.datos.cobro_id) ?? idDe(it.datos.pago_id) ?? idDe(it.datos.cuota_id)
+  const clienteId = it.vinculo.cliente_id ?? idDe(it.datos.cliente_id)
+  return cobroId || clienteId ? { cobroId, clienteId } : null
+}
+const txt = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null)
+/** Concepto con el que se prellena la propuesta, si el ítem lo trae. */
+export const conceptoDe = (d: Record<string, unknown>): string | null => txt(d.concepto) ?? txt(d.propuesta) ?? txt(d.producto) ?? txt(d.servicio) ?? txt(d.oferta)
+
+export type AccionId = 'contacto' | 'posible_cliente' | 'cliente' | 'propuesta' | 'cobro' | 'proyecto' | 'tarea' | 'seguimiento' | 'origen'
+const hechoDe: Partial<Record<AccionId, CreadoKind>> = { propuesta: 'propuesta', proyecto: 'proyecto', tarea: 'tarea', seguimiento: 'seguimiento' }
+/** ¿Esa acción ya se hizo desde el ítem? Entonces el botón dice «✓ Creada» y abre lo creado. */
+export const yaCreada = (it: Pick<FeedItem, 'creados'>, a: AccionId) => !!(hechoDe[a] && it.creados[hechoDe[a]!])
+
+export interface AccionesDe {
+  /** la acción destacada de la tarjeta (una sola) */
+  principal: AccionId | null
+  /** el resto, en orden fijo */
+  secundarias: AccionId[]
+}
+/**
+ * Qué botones tiene una tarjeta y cuál es el principal:
+ * prospecto con teléfono → WhatsApp/Llamar · prospecto sin teléfono → Convertir · oportunidad vinculada → Crear propuesta ·
+ * oportunidad sin vincular → Convertir · idea → Crear proyecto · alerta de cuota → Registrar cobro · noticia → Ver origen.
+ * Lo que ya se creó no vuelve a ser el principal (queda como «✓ Creada»).
+ */
+export function accionesDe(it: FeedItem): AccionesDe {
+  const contacto = accionPrincipal(contactoDe(it.datos))
+  const conv = conversionDe(it)
+  const cobro = esAlertaDeCobro(it) && !!destinoCobro(it)
+  const origen = !!origenUrl(it.datos)
+  const todas: AccionId[] = []
+  if (contacto) todas.push('contacto')
+  if (conv) todas.push(conv)
+  if (puedeProponer(it)) todas.push('propuesta')
+  if (cobro) todas.push('cobro')
+  todas.push('tarea', 'seguimiento', 'proyecto')
+  if (origen) todas.push('origen')
+
+  const candidata: AccionId | null =
+    it.tipo === 'prospecto' ? (contacto && contacto.tipo !== 'email' ? 'contacto' : conv) :
+    it.tipo === 'oportunidad' ? (puedeProponer(it) ? 'propuesta' : conv) :
+    it.tipo === 'idea' || it.tipo === 'proyecto' ? 'proyecto' :
+    it.tipo === 'alerta' ? (cobro ? 'cobro' : null) :
+    origen ? 'origen' : null
+  const ok = (a: AccionId | null): a is AccionId => !!a && todas.includes(a) && !yaCreada(it, a)
+  const principal = ok(candidata) ? candidata : ok('tarea') ? 'tarea' : null
+  return { principal, secundarias: todas.filter((a) => a !== principal) }
+}
+
+/** Texto de WhatsApp con el guion del ítem ya escrito (wa.me?text=…). Sin guion, el enlace queda igual. */
+export function conGuion(href: string, d: Record<string, unknown>): string {
+  const g = txt(d.guion)
+  return g ? `${href}${href.includes('?') ? '&' : '?'}text=${encodeURIComponent(g)}` : href
+}
 
 // ---------- números ----------
 /** Conteos con punto de miles a partir de 1.000 (es-VE), sin depender de la regla de agrupación del navegador. */

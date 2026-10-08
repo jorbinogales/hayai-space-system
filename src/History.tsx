@@ -9,9 +9,16 @@ import { avatarOf, fmtDate, money, moveLabel, stats, todayISO, type Client, type
 import { STATUS_LABEL, avatarFor, useAllProjects, type Project } from './projectData'
 import type { Task } from './taskData'
 import { ago } from './time'
+import { takeFichaIntent } from './nav'
+import NewProposal from './NewProposal'
+import { closeProposal, loadProposals, openProposal, useProposalRequest, useProposalsVersion, type Proposal } from './proposalData'
+import { notifyFeed } from './feedData'
+import { pushToast } from './toast'
+import { loadClients } from './store'
 import { useFormGuard } from './updates'
 import { DraftBar } from './UpdateUI'
 import './ficha.css'
+import './proposal.css'
 
 type Tab = 'ficha' | 'bitacora' | 'cobros' | 'proyectos'
 const TABS: { key: Tab; label: string }[] = [
@@ -40,6 +47,50 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 // ---------- Ficha ----------
+const PROPOSAL_STATE: Record<Proposal['estado'], string> = { borrador: 'Borrador', presentada: 'Presentada', aceptada: 'Aceptada', rechazada: 'Rechazada', reemplazada: 'Reemplazada' }
+
+/** Propuestas del cliente (posible o activo: una ampliación también es una propuesta) y el botón para armar una nueva. */
+function ProposalsCard({ c }: { c: Client }) {
+  const version = useProposalsVersion()
+  const [list, setList] = useState<Proposal[] | null>(null)
+  useEffect(() => {
+    let live = true
+    setList(null)
+    void loadProposals(c.id)
+      .then((l) => live && setList(l))
+      .catch(() => live && setList([]))
+    return () => {
+      live = false
+    }
+  }, [c.id, version])
+  return (
+    <section className="fx-card" aria-label="Propuestas">
+      <div className="pr-head">
+        <h3>Propuestas</h3>
+        <button type="button" className="pr-new" onClick={() => openProposal({ clientId: c.id })}>
+          <Icon name="plus" size={14} /> Nueva propuesta
+        </button>
+      </div>
+      {list && list.length === 0 && <p className="none">Aún no hay propuestas.</p>}
+      {list && list.length > 0 && (
+        <ul className="pr-list">
+          {list.map((p) => (
+            <li key={p.id} className={p.vigente ? 'is-live' : undefined}>
+              <p className="pr-top">
+                <b>Versión {p.version}</b>
+                <span className="pr-state">{PROPOSAL_STATE[p.estado]}</span>
+              </p>
+              <small>
+                {money(p.totales.mensual)} por mes{p.totales.unico > 0 ? ` · ${money(p.totales.unico)} único` : ''} · {p.items.map((i) => i.concepto).join(', ')}
+              </small>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 function FichaPanel({ c, stages, project, visit, onConvert }: { c: Client; stages: Stage[]; project?: Project | null; visit?: Task | null; onConvert?: (id: string) => void }) {
   const st = stats(c)
   const crm = crmOf(c)
@@ -131,6 +182,8 @@ function FichaPanel({ c, stages, project, visit, onConvert }: { c: Client; stage
           </dl>
         </section>
       )}
+
+      <ProposalsCard c={c} />
 
       <section className="fx-card" aria-label="Contacto">
         <h3>Contacto</h3>
@@ -513,7 +566,23 @@ export default function History({
   useEffect(() => {
     setTab('ficha')
     setCobroId(null)
+    applyIntent()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client?.id])
+  // el feed (v1.6.6) pide abrir la ficha en una pestaña, p. ej. «Registrar cobro» → Cobros con el cobro abierto
+  function applyIntent() {
+    const i = client ? takeFichaIntent(client.id) : null
+    if (!i) return
+    if (i.tab) setTab(i.tab)
+    if (i.cobroId) setCobroId(i.cobroId)
+  }
+  useEffect(() => {
+    const on = () => applyIntent()
+    window.addEventListener('hayai:open-client', on)
+    return () => window.removeEventListener('hayai:open-client', on)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client?.id])
+  const proposalReq = useProposalRequest()
 
   const onKey = (e: KeyboardEvent<HTMLButtonElement>) => {
     const i = TABS.findIndex((t) => t.key === tab)
@@ -602,6 +671,23 @@ export default function History({
         )}
       </aside>
       {cobroId && <Cobro id={cobroId} onClose={() => setCobroId(null)} />}
+      {client && proposalReq && proposalReq.clientId === client.id && (
+        <NewProposal
+          clientId={client.id}
+          clientName={client.name}
+          feedItemId={proposalReq.feedItemId}
+          concepto={proposalReq.concepto}
+          notas={proposalReq.notas}
+          onClose={closeProposal}
+          onCreated={(p) => {
+            const fromFeed = !!proposalReq.feedItemId
+            closeProposal()
+            pushToast({ text: 'Listo ✓ Propuesta creada', detail: `Versión ${p.version} · ${money(p.totales.mensual)} por mes${p.totales.unico > 0 ? ` + ${money(p.totales.unico)} único` : ''}` })
+            void loadClients().catch(() => {})
+            if (fromFeed) notifyFeed()
+          }}
+        />
+      )}
     </>
   )
 }

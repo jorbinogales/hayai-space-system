@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { pool, tx, type Db } from '../db.ts'
 import { HttpError, idParam, isoDate, money, parse, text } from '../util.ts'
-import { applyClientPatch, entryStage, loadStages } from '../crm.ts'
+import { applyClientPatch, entryStage, loadStages, SOURCES } from '../crm.ts'
 import { moneyLabel, patchPayment } from '../payments.ts'
 import { recordActivity } from '../activity.ts'
 import { assertFresh } from '../concurrency.ts'
@@ -20,7 +20,7 @@ export async function loadClients(db: Db, ids?: string[]) {
   const [clients, items, moves] = await Promise.all([
     db.query(
       `SELECT c.id, c.name, c.avatar, c.is_prospect, c.archived_at, c.created_at, c.phone, c.email, c.contact_name, c.contact_role, c.address, c.notes,
-              c.tags, c.lead_source, c.pipeline_stage, c.est_value, c.probability, c.expected_close, c.lost_reason, c.stage_changed_at,
+              c.tags, c.lead_source, c.utm_source, c.pipeline_stage, c.est_value, c.probability, c.expected_close, c.lost_reason, c.stage_changed_at,
               c.next_action, c.next_action_date, c.socials, c.implementation_date, c.updated_at,
               -- ultimo contacto real: las entradas automaticas de etapa no cuentan
               (SELECT max(i.occurred_at) FROM interactions i WHERE i.client_id = c.id AND i.kind <> 'etapa') AS last_contact_at,
@@ -68,6 +68,7 @@ export async function loadClients(db: Db, ids?: string[]) {
     notes: c.notes as string | null,
     tags: c.tags as string[],
     source: c.lead_source as string | null,
+    utmSource: c.utm_source as string | null,
     stage: c.pipeline_stage as string | null,
     estValue: c.est_value as number | null,
     probability: c.probability as number | null,
@@ -261,6 +262,9 @@ paymentsRouter.delete('/:id', async (req, res) => {
 const newProspect = z.object({
   name: text(80),
   avatar: text(40),
+  // de dónde llegó el lead: obligatorio, por defecto «otro»; utm_source es texto libre
+  source: z.enum(SOURCES, `Origen inválido (${SOURCES.join(', ')})`).default('otro'),
+  utmSource: text(80).nullish(),
   project: z.object({ name: text(80), icon: projectIcon, owner: text(80), due: isoDate.nullish() }),
   visit: z.object({ date: isoDate.nullish(), title: text(160).optional() }).default({}),
 })
@@ -278,9 +282,9 @@ prospectsRouter.post('/', async (req, res) => {
     // Entra al pipeline en la primera etapa abierta (prospecto, 10 %), contando desde ahora.
     const entry = entryStage(await loadStages(c))
     const client = await c.query(
-      `INSERT INTO clients (name, avatar, is_prospect, pipeline_stage, probability, stage_changed_at, created_by)
-       VALUES ($1, $2, true, $3, $4, now(), $5) RETURNING id`,
-      [b.name, b.avatar, entry.key, entry.probability, userId],
+      `INSERT INTO clients (name, avatar, is_prospect, pipeline_stage, probability, stage_changed_at, created_by, lead_source, utm_source)
+       VALUES ($1, $2, true, $3, $4, now(), $5, $6, $7) RETURNING id`,
+      [b.name, b.avatar, entry.key, entry.probability, userId, b.source, b.utmSource ?? null],
     )
     const project = await c.query(
       `INSERT INTO projects (name, icon, client_id, owner_id, status, due_date, created_by)

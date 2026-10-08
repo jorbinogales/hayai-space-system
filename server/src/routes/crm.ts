@@ -29,6 +29,7 @@ const FICHA_KEYS: Record<string, string> = {
   notes: 'notas',
   tags: 'etiquetas',
   source: 'origen',
+  utmSource: 'utm_source',
   stage: 'etapa',
   estValue: 'valor_estimado',
   probability: 'probabilidad',

@@ -65,7 +65,7 @@ const shape = (x: any): any =>
 /** Campos del CRM que trae todo cliente de la web (ficha vacía, sin pipeline); un posible cliente los pisa con su etapa. */
 const CRM = {
   createdAt: '<ts>',
-  phone: null, email: null, contactName: null, contactRole: null, address: null, notes: null, tags: [], source: null,
+  phone: null, email: null, contactName: null, contactRole: null, address: null, notes: null, tags: [], source: null, utmSource: null,
   stage: null, estValue: null, probability: null, expectedClose: null, lostReason: null, stageChangedAt: null,
   nextAction: null, nextActionDate: null, lastContactAt: null, delFeed: null, socials: [], implementationDate: null,
 }
@@ -678,7 +678,7 @@ describe('datos', () => {
     assert.equal(r.status, 201, JSON.stringify(r.body))
     assert.deepEqual(Object.keys(r.body).sort(), ['client', 'project', 'task'])
     const { client, project, task } = r.body
-    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, archived: false, ...CRM, stage: 'prospecto', probability: 10, stageChangedAt: '<ts>', items: [], movements: [] })
+    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, archived: false, ...CRM, source: 'otro', stage: 'prospecto', probability: 10, stageChangedAt: '<ts>', items: [], movements: [] })
     assert.deepEqual(shape(project), {
       id: '<uuid>', name: 'Web Futuro', icon: 'globe', owner: 'Leandro', client: 'Futuro SA', clientId: '<uuid>', status: 'planeacion', due: '2020-03-01', archived: false, clientArchived: false, description: null,
     })

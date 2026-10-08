@@ -17,6 +17,8 @@ import { HttpError, id, text } from '../util.ts'
 import { boolFlag, exec, filters, op, pageShape, paged, TZ, type Actor } from './common.ts'
 import { VINCULO_TABLA, type Vinculo } from '../feedLinks.ts'
 import { sendToTrash } from '../trash.ts'
+import { insertContenido } from '../mkContenido.ts'
+import { userByName } from '../socios.ts'
 import { clienteActualizar, clienteCrear } from './clientes.ts'
 import { interaccionRegistrar } from './interacciones.ts'
 import { proyectoCrear } from './proyectos.ts'
@@ -26,7 +28,7 @@ export const TIPOS = ['idea', 'prospecto', 'alerta', 'noticia', 'oportunidad', '
 export const ESTADOS = ['nuevo', 'revisado', 'descartado', 'convertido'] as const
 /** Los tipos que avisan en la campana al publicarse (el resto se ve en el feed sin interrumpir). */
 export const TIPOS_AVISO = ['alerta', 'noticia', 'prospecto'] as const
-export const CONVERSIONES = ['posible_cliente', 'cliente', 'tarea', 'proyecto', 'seguimiento'] as const
+export const CONVERSIONES = ['posible_cliente', 'cliente', 'tarea', 'proyecto', 'seguimiento', 'contenido'] as const
 /** Cuánto dura la opción de «Deshacer» lo que se creó desde un ítem. */
 const DESHACER_SEG = 120
 /** Cuántos días sigue en la campana el aviso de un ítem nuevo que nadie ha revisado. */
@@ -480,7 +482,7 @@ const masDias = (iso: string, n: number) => {
   const [y, m, d] = iso.split('-').map(Number)
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10)
 }
-const ETIQUETA: Record<Vinculo, string> = { posible_cliente: 'el posible cliente', cliente: 'el cliente', tarea: 'la tarea', proyecto: 'el proyecto', propuesta: 'la propuesta', seguimiento: 'el seguimiento' }
+const ETIQUETA: Record<Vinculo, string> = { posible_cliente: 'el posible cliente', cliente: 'el cliente', tarea: 'la tarea', proyecto: 'el proyecto', propuesta: 'la propuesta', seguimiento: 'el seguimiento', contenido: 'la pieza de contenido' }
 
 export const feedConvertir = op(convertirShape, async (actor, b) => {
   // Se reclama la clase ANTES de crear nada: dos socios tocando "Convertir" a la vez no duplican el cliente o la tarea.
@@ -541,6 +543,22 @@ export const feedConvertir = op(convertirShape, async (actor, b) => {
         // sin responsable, la tarea es de quien la crea (el titular de la cuenta o de la llave)
         responsable: b.responsable ?? actor.name,
       })) as { id: string }
+    } else if (b.a === 'contenido') {
+      // Una idea del feed pasa al tablero de Contenido (columna «Idea»). Si salió de una keyword, la pieza hereda su keyword.
+      const kw = str(f.datos.keyword_id)
+      const keywordId = kw && z.uuid().safeParse(kw).success && (await pool.query('SELECT 1 FROM mk_keywords WHERE id = $1', [kw])).rowCount ? kw : null
+      const resp = b.responsable ? await userByName(pool, b.responsable) : { id: actor.id }
+      const nuevo = await insertContenido(pool, {
+        titulo: cortar(b.titulo ?? f.titulo, 160),
+        keyword_id: keywordId,
+        responsable_id: resp.id,
+        fecha_objetivo: b.vence ?? null,
+        notas: b.descripcion ?? (f.resumen ? cortar(f.resumen, 4000) : null),
+        feed_item_id: b.id,
+        created_by: actor.id,
+      })
+      if (keywordId) await pool.query(`UPDATE mk_keywords SET estado = 'en_contenido', updated_at = now() WHERE id = $1 AND estado = 'por_atacar'`, [keywordId])
+      creado = { id: nuevo }
     } else {
       creado = (await exec(proyectoCrear, actor, {
         nombre: cortar(b.nombre ?? f.titulo, 80),
@@ -595,6 +613,7 @@ export const feedDeshacer = op(
       throw new HttpError(409, 'Esa promoción cerró una propuesta y generó cobros: se revierte desde el cliente')
     await exec(clienteActualizar, actor, { id: l.ref_id, estado: 'posible' })
   } else if (b.a === 'tarea' || b.a === 'seguimiento') await sendToTrash('tarea', l.ref_id, actor.id, via)
+  else if (b.a === 'contenido') await pool.query('UPDATE mk_contenidos SET archived_at = now(), updated_at = now() WHERE id = $1', [l.ref_id]) // el tablero no usa la papelera: se archiva
   else await sendToTrash('proyecto', l.ref_id, actor.id, via)
   await tx(async (c) => {
     await c.query('SELECT 1 FROM feed_items WHERE id = $1 FOR UPDATE', [b.id])

@@ -3,10 +3,10 @@
 import type { Db } from './db.ts'
 import { HttpError } from './util.ts'
 
-export const VINCULOS = ['posible_cliente', 'cliente', 'tarea', 'proyecto', 'propuesta', 'seguimiento'] as const
+export const VINCULOS = ['posible_cliente', 'cliente', 'tarea', 'proyecto', 'propuesta', 'seguimiento', 'contenido'] as const
 export type Vinculo = (typeof VINCULOS)[number]
 /** En qué tabla vive lo creado por cada clase (lista cerrada: nunca viene del cliente). */
-export const VINCULO_TABLA: Record<Vinculo, string> = { posible_cliente: 'clients', cliente: 'clients', tarea: 'tasks', proyecto: 'projects', propuesta: 'proposals', seguimiento: 'tasks' }
+export const VINCULO_TABLA: Record<Vinculo, string> = { posible_cliente: 'clients', cliente: 'clients', tarea: 'tasks', proyecto: 'projects', propuesta: 'proposals', seguimiento: 'tasks', contenido: 'mk_contenidos' }
 
 /** Anota que `refId` salió del ítem; la primera cosa creada pasa el ítem a «convertido» (global). Si ya había una de esa clase, la reemplaza. */
 export async function vincular(c: Db, itemId: string, kind: Vinculo, refId: string, actorId: string) {

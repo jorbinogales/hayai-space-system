@@ -19,6 +19,7 @@ import { gastoActualizar, gastoRegistrar, gastosListar, gastoVer } from '../serv
 import { checklistActualizar, checklistAgregar, checklistOrdenar, hitoActualizar, hitoCrear, hitosOrdenar, proyectoActualizar, proyectoCrear, proyectosListar, proyectoVer } from '../services/proyectos.ts'
 import { ofertaActualizar, ofertaCrear, ofertaDesactivar, ofertasListar, propuestaActualizar, propuestaCrear, propuestasListar, propuestaVer } from '../services/propuestas.ts'
 import { tareaActualizar, tareaCrear, tareasListar, tareaVer } from '../services/tareas.ts'
+import { MK_RUTAS } from '../services/marketingRutas.ts'
 import { conflictGuard } from '../concurrency.ts'
 import { HttpError } from '../util.ts'
 import { apiKeyAuth, keyRateLimit, requireScope, SCOPE_LABEL, type Scope } from './apiKey.ts'
@@ -185,6 +186,8 @@ route('post', '/sistemas', sistemaCrear, 201)
 route('patch', '/sistemas/:id', sistemaActualizar)
 route('post', '/sistemas/:id/verificar', sistemaVerificar)
 route('get', '/marketing/embudo', marketingEmbudo)
+// Central de marketing: keywords, competidores, contenido y campañas (solo lectura). El SERP gasta saldo de Brightdata: exige confirmar_costo.
+for (const r of MK_RUTAS) route(r.method, r.path, r.op, r.status)
 // Feed de oportunidades: lo que las máquinas y los agentes ENCONTRARON (la bitácora es lo que el equipo HIZO).
 // POST /feed: 201 si se creó; 200 si esa (fuente, clave_externa) ya existía (idempotente: reintentar es seguro). En lote (items): 201 si se creó alguno.
 route('get', '/feed', feedListar)

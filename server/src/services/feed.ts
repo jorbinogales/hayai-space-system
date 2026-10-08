@@ -11,11 +11,13 @@
 import { z } from 'zod'
 import { recordActivity } from '../activity.ts'
 import { stamp } from '../concurrency.ts'
-import { SOURCES, fichaShape } from '../crm.ts'
+import { SOURCES, esquemaCobro, fichaShape } from '../crm.ts'
 import { pool, tx, type Db } from '../db.ts'
 import { HttpError, id, text } from '../util.ts'
 import { boolFlag, exec, filters, op, pageShape, paged, TZ, type Actor } from './common.ts'
-import { clienteCrear } from './clientes.ts'
+import { VINCULO_TABLA, type Vinculo } from '../feedLinks.ts'
+import { sendToTrash } from '../trash.ts'
+import { clienteActualizar, clienteCrear } from './clientes.ts'
 import { interaccionRegistrar } from './interacciones.ts'
 import { proyectoCrear } from './proyectos.ts'
 import { tareaCrear } from './tareas.ts'
@@ -24,7 +26,9 @@ export const TIPOS = ['idea', 'prospecto', 'alerta', 'noticia', 'oportunidad', '
 export const ESTADOS = ['nuevo', 'revisado', 'descartado', 'convertido'] as const
 /** Los tipos que avisan en la campana al publicarse (el resto se ve en el feed sin interrumpir). */
 export const TIPOS_AVISO = ['alerta', 'noticia', 'prospecto'] as const
-export const CONVERSIONES = ['posible_cliente', 'tarea', 'proyecto'] as const
+export const CONVERSIONES = ['posible_cliente', 'cliente', 'tarea', 'proyecto', 'seguimiento'] as const
+/** Cuánto dura la opción de «Deshacer» lo que se creó desde un ítem. */
+const DESHACER_SEG = 120
 /** Cuántos días sigue en la campana el aviso de un ítem nuevo que nadie ha revisado. */
 export const AVISO_DIAS = 14
 /** Si una fuente ya avisó de un tipo hace menos de esto, la siguiente publicación no repite el aviso en vivo (una siembra de 20 es UN aviso). */
@@ -101,13 +105,70 @@ export const itemOut = (r: any) => ({
   convertido: r.converted_to
     ? { a: r.converted_to as (typeof CONVERSIONES)[number], id: (r.converted_id ?? null) as string | null, por: (r.status_by ?? null) as string | null, el: r.status_at ? (r.status_at as Date).toISOString() : null }
     : null,
+  /** Con qué cliente está vinculado el ítem (lo calcula `enriquecer`). */
+  vinculo: { estado: 'sin_vinculo', cliente_id: null, cliente: null, origen: null } as Vinculado,
+  /** Lo que ya se creó desde el ítem, una de cada clase (global, lo ve todo el equipo). */
+  creados: {} as Creados,
   actualizado_el: stamp(r.updated_at),
 })
+
+type Vinculado = { estado: 'sin_vinculo' | 'posible_cliente' | 'cliente'; cliente_id: string | null; cliente: string | null; origen: 'conversion' | 'datos' | 'nombre' | null }
+type Creados = Partial<Record<Vinculo, { id: string; por: string; el: string }>>
+type ItemOut = ReturnType<typeof itemOut>
+
+const plano = (v: string) => v.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim()
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Le pone a cada ítem su vínculo con un cliente y lo ya creado. El vínculo sale, en este orden, de: lo convertido desde el ítem; `datos.cliente_id`;
+ * `datos.cliente` (nombre que coincide con UN solo cliente no archivado). Lo creado que ya no existe (papelera) no cuenta.
+ */
+export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
+  if (!items.length) return items
+  const links = (
+    await db.query(
+      `SELECT l.item_id, l.kind, l.ref_id, l.created_at, u.name AS por FROM feed_item_vinculos l JOIN users u ON u.id = l.created_by WHERE l.item_id = ANY($1::uuid[]) AND l.ref_id IS NOT NULL`,
+      [items.map((i) => i.id)],
+    )
+  ).rows
+  const existe = new Set<string>()
+  for (const tabla of new Set(Object.values(VINCULO_TABLA))) {
+    const refs = [...new Set(links.filter((l) => VINCULO_TABLA[l.kind as Vinculo] === tabla).map((l) => l.ref_id as string))]
+    if (refs.length) for (const r of (await db.query(`SELECT id FROM ${tabla} WHERE id = ANY($1::uuid[])`, [refs])).rows) existe.add(r.id as string)
+  }
+  const vivos = links.filter((l) => existe.has(l.ref_id as string))
+  const idDatos = (i: ItemOut) => (typeof i.datos.cliente_id === 'string' && UUID.test(i.datos.cliente_id) ? i.datos.cliente_id : null)
+  const nombreDatos = (i: ItemOut) => str(i.datos.cliente) ?? str(i.datos.cliente_nombre) ?? null
+  const ids = [...new Set([...vivos.filter((l) => l.kind === 'posible_cliente' || l.kind === 'cliente').map((l) => l.ref_id as string), ...items.flatMap((i) => idDatos(i) ?? [])])]
+  const nombres = [...new Set(items.flatMap((i) => nombreDatos(i) ?? []).map(plano))]
+  const cl = (
+    await db.query(
+      `SELECT id, name, is_prospect, archived_at FROM clients WHERE id = ANY($1::uuid[]) OR (archived_at IS NULL AND fold(name) = ANY(SELECT fold(x) FROM unnest($2::text[]) x))`,
+      [ids, nombres],
+    )
+  ).rows
+  const porId = new Map(cl.map((c) => [c.id as string, c]))
+  return items.map((it) => {
+    const mios = vivos.filter((l) => l.item_id === it.id)
+    const creados: Creados = {}
+    for (const l of mios) creados[l.kind as Vinculo] = { id: l.ref_id as string, por: l.por as string, el: (l.created_at as Date).toISOString() }
+    const deConv = mios.find((l) => l.kind === 'cliente') ?? mios.find((l) => l.kind === 'posible_cliente')
+    let c = deConv ? porId.get(deConv.ref_id as string) : undefined
+    let origen: Vinculado['origen'] = c ? 'conversion' : null
+    if (!c && idDatos(it)) (c = porId.get(idDatos(it)!)), (origen = c ? 'datos' : null)
+    if (!c && nombreDatos(it)) {
+      const hit = cl.filter((x) => !x.archived_at && plano(x.name as string) === plano(nombreDatos(it)!))
+      if (hit.length === 1) (c = hit[0]), (origen = 'nombre')
+    }
+    const vinculo: Vinculado = c ? { estado: c.is_prospect ? 'posible_cliente' : 'cliente', cliente_id: c.id as string, cliente: c.name as string, origen } : { estado: 'sin_vinculo', cliente_id: null, cliente: null, origen: null }
+    return { ...it, vinculo, creados }
+  })
+}
 
 async function item(db: Db, itemId: string, userId: string) {
   const r = (await db.query(`${SELECT('$2')} WHERE f.id = $1`, [itemId, userId])).rows[0]
   if (!r) throw new HttpError(404, 'Ítem del feed no encontrado')
-  return itemOut(r)
+  return (await enriquecer(db, [itemOut(r)]))[0]
 }
 
 // ---------- listar ----------
@@ -149,7 +210,7 @@ export const feedListar = op(
     for (const r of porEstado.rows) por_estado[r.e] = r.n
     const por_tipo = Object.fromEntries(TIPOS.map((t) => [t, { total: 0, nuevos: 0 }])) as Record<string, { total: number; nuevos: number }>
     for (const r of porTipo.rows) por_tipo[r.kind] = { total: r.n, nuevos: r.nuevos }
-    return paged(rows.rows.map(itemOut), total.rows[0].n, i.page, i.per_page, {
+    return paged(await enriquecer(pool, rows.rows.map(itemOut)), total.rows[0].n, i.page, i.per_page, {
       nuevos: por_estado.nuevo,
       guardados: extra.rows[0].guardados as number,
       por_estado,
@@ -338,11 +399,14 @@ const convertirShape = z.strictObject({
   telefono: fichaShape.telefono,
   email: fichaShape.email,
   valor_estimado: fichaShape.valor_estimado,
-  // tarea
+  // cliente (promover al posible cliente vinculado): día de implementación (hoy por defecto) y, si tiene propuesta vigente, el esquema de cobro
+  fecha_implementacion: z.iso.date('Fecha inválida (usa AAAA-MM-DD)').optional(),
+  esquema_cobro: esquemaCobro.optional(),
+  // tarea y seguimiento
   titulo: text(160).optional(),
-  proyecto_id: id.optional(), // sin él, la tarea va al proyecto interno de HAYAI
-  vence: z.iso.date('Fecha inválida (usa AAAA-MM-DD)').optional(),
-  // tarea y proyecto
+  proyecto_id: id.optional(), // sin él: un proyecto del cliente vinculado o, si no hay, el proyecto interno de HAYAI
+  vence: z.iso.date('Fecha inválida (usa AAAA-MM-DD)').optional(), // el seguimiento la trae puesta (3 días)
+  // tarea, seguimiento y proyecto
   responsable: text(80).optional(),
   // proyecto
   cliente_id: id.optional(),
@@ -361,19 +425,49 @@ async function proyectoInterno(actor: Actor): Promise<string> {
   return p.id
 }
 
+/** Dónde cae la tarea de un ítem: el proyecto activo del cliente vinculado; sin cliente (o sin proyecto), el interno de HAYAI. */
+async function proyectoDeLaTarea(actor: Actor, clienteId: string | null): Promise<string> {
+  if (clienteId) {
+    const r = (
+      await pool.query(
+        `SELECT id FROM projects WHERE client_id = $1 AND archived_at IS NULL AND status IN ('activo', 'entrega', 'planeacion') ORDER BY (status = 'activo') DESC, created_at, id LIMIT 1`,
+        [clienteId],
+      )
+    ).rows[0]
+    if (r) return r.id as string
+  }
+  return proyectoInterno(actor)
+}
+
+const hoyISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+const masDias = (iso: string, n: number) => {
+  const [y, m, d] = iso.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10)
+}
+const ETIQUETA: Record<Vinculo, string> = { posible_cliente: 'el posible cliente', cliente: 'el cliente', tarea: 'la tarea', proyecto: 'el proyecto', propuesta: 'la propuesta', seguimiento: 'el seguimiento' }
+
 export const feedConvertir = op(convertirShape, async (actor, b) => {
-  // Se reclama el ítem ANTES de crear nada: dos socios tocando "Convertir" a la vez no duplican el cliente o la tarea.
+  // Se reclama la clase ANTES de crear nada: dos socios tocando "Convertir" a la vez no duplican el cliente o la tarea.
   const antes = await tx(async (c) => {
-    const cur = (await c.query('SELECT status, converted_to FROM feed_items WHERE id = $1 FOR UPDATE', [b.id])).rows[0]
+    const cur = (await c.query('SELECT status FROM feed_items WHERE id = $1 FOR UPDATE', [b.id])).rows[0]
     if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
-    if (cur.status === 'convertido') throw new HttpError(409, `Este ítem ya se convirtió (${String(cur.converted_to).replace('_', ' ')}): no se convierte dos veces`)
-    await c.query(`UPDATE feed_items SET status = 'convertido', converted_to = $2, discard_reason = NULL, status_by = $3, status_at = now() WHERE id = $1`, [b.id, b.a, actor.id])
+    const prev = (await c.query('SELECT ref_id, created_at FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])).rows[0]
+    if (prev) {
+      const viva = prev.ref_id ? (await c.query(`SELECT 1 FROM ${VINCULO_TABLA[b.a]} WHERE id = $1`, [prev.ref_id])).rowCount : Date.now() - (prev.created_at as Date).getTime() < 120_000
+      if (viva) throw new HttpError(409, `Ya se creó ${ETIQUETA[b.a]} desde este ítem`)
+      await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a]) // lo creado ya no existe (papelera) o el intento quedó a medias
+    }
+    await c.query('INSERT INTO feed_item_vinculos (item_id, kind, created_by) VALUES ($1, $2, $3)', [b.id, b.a, actor.id])
+    if (cur.status !== 'convertido')
+      await c.query(`UPDATE feed_items SET status = 'convertido', converted_to = $2, discard_reason = NULL, status_by = $3, status_at = now() WHERE id = $1`, [b.id, b.a, actor.id])
     return cur.status as string
   })
   const f = await item(pool, b.id, actor.id)
   try {
     let creado: { id: string; [k: string]: unknown }
+    const v = f.vinculo
     if (b.a === 'posible_cliente') {
+      if (v.estado !== 'sin_vinculo') throw new HttpError(409, `Este ítem ya está vinculado a ${v.cliente}`)
       const d = f.datos
       const deItem = str(d.origen)
       const origen: (typeof SOURCES)[number] = b.origen ?? (deItem && (SOURCES as readonly string[]).includes(deItem) ? (deItem as (typeof SOURCES)[number]) : 'otro')
@@ -391,12 +485,23 @@ export const feedConvertir = op(convertirShape, async (actor, b) => {
       })) as { id: string }
       // Queda escrito en la bitácora del cliente de dónde salió.
       await exec(interaccionRegistrar, actor, { cliente_id: creado.id, tipo: 'nota', resumen: cortar(`Llegó del feed de oportunidades (${f.fuente}): ${f.titulo}`, 2000) })
-    } else if (b.a === 'tarea') {
-      const proyecto_id = b.proyecto_id ?? (await proyectoInterno(actor))
+    } else if (b.a === 'cliente') {
+      if (v.estado === 'sin_vinculo') throw new HttpError(409, 'Primero conviértelo en posible cliente (o vincúlalo a uno con datos.cliente_id)')
+      if (v.estado === 'cliente') throw new HttpError(409, `${v.cliente} ya es cliente`)
+      // Promover = ganar el posible cliente: el día de implementación es hoy salvo que se diga otro; con propuesta vigente hace falta el esquema de cobro.
+      creado = (await exec(clienteActualizar, actor, {
+        id: v.cliente_id!,
+        estado: 'activo',
+        fecha_implementacion: b.fecha_implementacion ?? hoyISO(),
+        ...(b.esquema_cobro ? { esquema_cobro: b.esquema_cobro } : {}),
+      })) as { id: string }
+    } else if (b.a === 'tarea' || b.a === 'seguimiento') {
+      const proyecto_id = b.proyecto_id ?? (await proyectoDeLaTarea(actor, v.cliente_id))
+      const vence = b.vence ?? (b.a === 'seguimiento' ? masDias(hoyISO(), 3) : undefined)
       creado = (await exec(tareaCrear, actor, {
-        titulo: cortar(b.titulo ?? f.titulo, 160),
+        titulo: cortar(b.titulo ?? (b.a === 'seguimiento' ? `Seguimiento: ${f.titulo}` : f.titulo), 160),
         proyecto_id,
-        ...(b.vence ? { vence: b.vence } : {}),
+        ...(vence ? { vence } : {}),
         // sin responsable, la tarea es de quien la crea (el titular de la cuenta o de la llave)
         responsable: b.responsable ?? actor.name,
       })) as { id: string }
@@ -404,17 +509,51 @@ export const feedConvertir = op(convertirShape, async (actor, b) => {
       creado = (await exec(proyectoCrear, actor, {
         nombre: cortar(b.nombre ?? f.titulo, 80),
         descripcion: b.descripcion ?? contexto(f, 4000),
-        ...(b.cliente_id ? { cliente_id: b.cliente_id } : {}),
+        ...((b.cliente_id ?? v.cliente_id) ? { cliente_id: (b.cliente_id ?? v.cliente_id)! } : {}),
         ...(b.responsable ? { responsable: b.responsable } : {}),
       })) as { id: string }
     }
-    await pool.query('UPDATE feed_items SET converted_id = $2 WHERE id = $1', [b.id, creado.id])
+    await pool.query('UPDATE feed_item_vinculos SET ref_id = $3, created_at = now() WHERE item_id = $1 AND kind = $2', [b.id, b.a, creado.id])
+    await pool.query('UPDATE feed_items SET converted_id = $2 WHERE id = $1 AND converted_to = $3', [b.id, creado.id, b.a])
     return { item: await item(pool, b.id, actor.id), creado: { tipo: b.a, id: creado.id, detalle: creado } }
   } catch (e) {
     // No se pudo crear (validación, 404...): el ítem vuelve a como estaba para poder reintentar con otros datos.
-    await pool.query(`UPDATE feed_items SET status = $2, converted_to = NULL, converted_id = NULL, status_by = NULL, status_at = NULL WHERE id = $1`, [b.id, antes])
+    await tx(async (c) => {
+      await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2 AND ref_id IS NULL', [b.id, b.a])
+      if (antes !== 'convertido' && !(await c.query('SELECT 1 FROM feed_item_vinculos WHERE item_id = $1', [b.id])).rowCount)
+        await c.query(`UPDATE feed_items SET status = $2, converted_to = NULL, converted_id = NULL, status_by = NULL, status_at = NULL WHERE id = $1`, [b.id, antes])
+    })
     throw e
   }
+})
+
+/**
+ * Deshacer lo que se creó desde el ítem (el «Deshacer» del aviso «Listo ✓»): solo quien lo creó y dentro de unos minutos. Lo creado va a la
+ * papelera (se puede restaurar) y el ítem vuelve a como estaba. Un cliente promovido vuelve a posible cliente (si no cerró una propuesta).
+ */
+export const feedDeshacer = op(z.strictObject({ id, a: z.enum(CONVERSIONES, `a inválido (${CONVERSIONES.join(', ')})`) }), async (actor, b) => {
+  const l = (await pool.query('SELECT ref_id, created_by, created_at FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])).rows[0]
+  if (!l || !l.ref_id) throw new HttpError(404, 'No hay nada que deshacer en este ítem')
+  if (l.created_by !== actor.id) throw new HttpError(403, 'Solo quien lo creó puede deshacerlo')
+  if (Date.now() - (l.created_at as Date).getTime() > DESHACER_SEG * 1000) throw new HttpError(409, 'Ya pasó el tiempo para deshacer: elimínalo desde su pantalla')
+  if (b.a === 'posible_cliente' && (await pool.query(`SELECT 1 FROM feed_item_vinculos WHERE item_id = $1 AND kind = 'cliente'`, [b.id])).rowCount)
+    throw new HttpError(409, 'Primero deshaz la promoción a cliente')
+  const via = actor.via ?? 'web'
+  if (b.a === 'posible_cliente') await sendToTrash('cliente', l.ref_id, actor.id, via)
+  else if (b.a === 'cliente') {
+    if ((await pool.query(`SELECT 1 FROM proposals WHERE client_id = $1 AND status = 'aceptada'`, [l.ref_id])).rowCount)
+      throw new HttpError(409, 'Esa promoción cerró una propuesta y generó cobros: se revierte desde el cliente')
+    await exec(clienteActualizar, actor, { id: l.ref_id, estado: 'posible' })
+  } else if (b.a === 'tarea' || b.a === 'seguimiento') await sendToTrash('tarea', l.ref_id, actor.id, via)
+  else await sendToTrash('proyecto', l.ref_id, actor.id, via)
+  await tx(async (c) => {
+    await c.query('SELECT 1 FROM feed_items WHERE id = $1 FOR UPDATE', [b.id])
+    await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])
+    const otro = (await c.query('SELECT kind, ref_id FROM feed_item_vinculos WHERE item_id = $1 AND ref_id IS NOT NULL ORDER BY created_at, kind LIMIT 1', [b.id])).rows[0]
+    if (otro) await c.query(`UPDATE feed_items SET converted_to = $2, converted_id = $3 WHERE id = $1`, [b.id, otro.kind, otro.ref_id])
+    else await c.query(`UPDATE feed_items SET status = 'nuevo', converted_to = NULL, converted_id = NULL, status_by = NULL, status_at = NULL WHERE id = $1`, [b.id])
+  })
+  return { item: await item(pool, b.id, actor.id), deshecho: b.a }
 })
 
 /** Para el hub: cuántos hay nuevos PARA ESE SOCIO (el feed completo se consulta con feedListar). */

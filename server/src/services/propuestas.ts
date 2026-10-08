@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { assertFresh, stamp } from '../concurrency.ts'
 import { pool, tx } from '../db.ts'
 import { proposalTotals, syncEstValue } from '../crm.ts'
+import { vincular } from '../feedLinks.ts'
 import { HttpError, id, text } from '../util.ts'
 import { op, r2 } from './common.ts'
 
@@ -222,13 +223,13 @@ export const propuestasListar = op(z.strictObject({ cliente_id: id }), async (_a
 export const propuestaVer = op(z.strictObject({ id }), (_a, i) => una(i.id))
 
 export const propuestaCrear = op(
-  z.strictObject({ cliente_id: id, items: itemsShape, notas: text(4000).optional() }),
+  z.strictObject({ cliente_id: id, items: itemsShape, notas: text(4000).optional(), feed_item_id: id.optional() }),
   async (actor, b) => {
     const items = await resolveItems(b.items)
     const proposalId = await tx(async (c) => {
       const client = (await c.query('SELECT is_prospect FROM clients WHERE id = $1 FOR UPDATE', [b.cliente_id])).rows[0]
       if (!client) throw new HttpError(404, 'Cliente no encontrado')
-      if (!client.is_prospect) throw new HttpError(409, 'Las propuestas se arman para un posible cliente')
+      // Un cliente activo también puede tener propuesta (una ampliación o upsell): ahí no toca su valor estimado de pipeline.
       // Una version nueva reemplaza a la viva anterior (la negociacion queda como historia).
       await c.query(`UPDATE proposals SET status = 'reemplazada' WHERE client_id = $1 AND status IN ('borrador', 'presentada')`, [b.cliente_id])
       const version = (await c.query('SELECT COALESCE(max(version), 0) + 1 AS v FROM proposals WHERE client_id = $1', [b.cliente_id])).rows[0].v
@@ -237,7 +238,9 @@ export const propuestaCrear = op(
         [b.cliente_id, version, b.notas ?? null, actor.id],
       )
       await insertItems(c, rows[0].id, items)
-      await syncEstValue(c, b.cliente_id)
+      if (client.is_prospect) await syncEstValue(c, b.cliente_id)
+      // Armada desde un ítem del feed: queda enlazada (el botón pasa a «✓ Creada» y no se duplica).
+      if (b.feed_item_id) await vincular(c, b.feed_item_id, 'propuesta', rows[0].id, actor.id)
       return rows[0].id as string
     })
     return una(proposalId)
@@ -262,7 +265,7 @@ export const propuestaActualizar = op(
         await insertItems(c, b.id, items)
         await c.query('UPDATE proposals SET updated_at = now() WHERE id = $1', [b.id])
       }
-      await syncEstValue(c, cur.client_id)
+      if ((await c.query('SELECT is_prospect FROM clients WHERE id = $1', [cur.client_id])).rows[0]?.is_prospect) await syncEstValue(c, cur.client_id)
     })
     return una(b.id)
   },

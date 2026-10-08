@@ -376,6 +376,35 @@
 }
 
 /* ---------- movimiento reducido ---------- */
+/* ---------- barra de acciones inteligentes (v1.6.6): UNA acción principal llena y el resto en pequeño ---------- */
+.fd-bar2 { display: grid; gap: var(--fd-s2); margin-top: var(--fd-s1); min-width: 0; }
+.fd-main { display: flex; }
+.fd-main > .fd-btn { min-height: 44px; padding: 0 var(--fd-s5); font-size: 0.9rem; }
+.fd-sec { display: flex; flex-wrap: wrap; gap: var(--fd-s2); min-width: 0; }
+.fd-sec-i { display: contents; }
+.fd-btn.fd-sm { min-height: var(--fd-hit-sm); padding: 0 var(--fd-s3); font-size: 0.78rem; background: transparent; box-shadow: inset 0 0 0 1.5px var(--fd-line-strong); }
+.fd-btn.fd-sm:active:not(:disabled) { background: var(--fd-wash-2); }
+@media (hover: hover) { .fd-btn.fd-sm:hover:not(:disabled) { background: var(--fd-wash); box-shadow: inset 0 0 0 1.5px var(--ink-2); } }
+.fd-btn.fd-sm .fd-btn-sub { border-left-color: var(--fd-line-strong); color: var(--ink-2); font-weight: 500; }
+.fd-btn.is-contact-soft { background: transparent; color: var(--fd-ok-ink); box-shadow: inset 0 0 0 1.5px var(--fd-ok); }
+.fd-btn.is-contact-soft .fd-btn-sub { border-left-color: rgba(29, 90, 58, 0.4); color: var(--fd-ok-ink); }
+@media (hover: hover) { .fd-btn.is-contact-soft:hover:not(:disabled) { background: rgba(47, 138, 91, 0.12); box-shadow: inset 0 0 0 1.5px var(--fd-ok-ink); } }
+/* lo ya creado: «✓ Creada», verde sereno, abre el detalle */
+.fd-btn.fd-is-done { background: rgba(47, 138, 91, 0.12); color: var(--fd-ok-ink); box-shadow: inset 0 0 0 1.5px rgba(47, 138, 91, 0.5); }
+.fd-btn.fd-is-done .fd-btn-sub { border-left-color: rgba(29, 90, 58, 0.35); color: var(--fd-ok-ink); }
+@media (hover: hover) { .fd-btn.fd-is-done:hover:not(:disabled) { background: rgba(47, 138, 91, 0.2); box-shadow: inset 0 0 0 1.5px var(--fd-ok-ink); } }
+.fd-btn.fd-adj[aria-expanded='true'] { background: var(--night); color: var(--fd-gold); box-shadow: none; }
+.fd-adjust { display: grid; gap: var(--fd-s3); padding: var(--fd-s3); border-radius: 14px; background: var(--fd-wash); }
+.fd-adjust > .fd-dest .fd-dest-l { flex-basis: 100%; }
+.fd-hint { margin: 0; font-size: 0.8rem; line-height: 1.45; color: var(--ink-2); text-wrap: pretty; }
+.fd-check { display: flex !important; align-items: center; gap: var(--fd-s2); min-height: var(--fd-hit-sm); font-size: 0.86rem; }
+.fd-check input { width: 18px; height: 18px; accent-color: var(--night); }
+/* confirmación al crear: un aro que se expande en la tarjeta y el botón que «salta» (se apaga con prefers-reduced-motion) */
+.fd-card.is-flash { animation: fdFlash 1100ms var(--ease) 1; }
+.fd-btn.is-just { animation: fdJust 700ms var(--ease) 1; }
+@keyframes fdFlash { 0% { outline: 3px solid rgba(47, 138, 91, 0.6); outline-offset: 0; } 100% { outline: 3px solid rgba(47, 138, 91, 0); outline-offset: 14px; } }
+@keyframes fdJust { 0% { transform: scale(1); } 35% { transform: scale(1.07); } 100% { transform: scale(1); } }
+
 @media (prefers-reduced-motion: reduce) {
   .fd-screen *, .fd-screen *::before, .fd-screen *::after, .fd-entry, .fd-entry * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
   .fd-card.is-hit { animation: none; } /* solo el contorno estatico */
@@ -384,4 +413,5 @@
   .fd-spin { animation: none; }
   .fd-btn:hover:not(:disabled), .fd-entry:hover { transform: none; }
   .fd-entry:hover .fd-entry-go { transform: none; }
+  .fd-card.is-flash, .fd-btn.is-just { animation: none; }
 }

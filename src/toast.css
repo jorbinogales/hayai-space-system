@@ -1,0 +1,98 @@
+/* Aviso flotante «Listo ✓ · Deshacer». Noche + ámbar, el mismo lenguaje del banner de actualización. Todo valor sale de aquí abajo o del tema. */
+.tst-host {
+  --tst-gold: #ffd27a;
+  --tst-cream: #f4ebdd;
+  --tst-ok: #5fd39a;
+  position: fixed;
+  z-index: 60;
+  left: 50%;
+  bottom: clamp(16px, 4dvh, 36px);
+  transform: translateX(-50%);
+  width: min(460px, calc(100vw - 2 * var(--pad)));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  pointer-events: none;
+}
+.tst {
+  position: relative;
+  overflow: hidden;
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 12px 8px 14px 14px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(34, 27, 19, 0.98), rgba(22, 17, 11, 0.98));
+  color: var(--tst-cream);
+  box-shadow: 0 22px 44px -18px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(239, 157, 37, 0.34);
+  animation: tstIn 320ms var(--ease) both;
+}
+.tst-ico {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--tst-gold);
+  color: var(--night);
+  animation: tstPop 520ms var(--ease) 80ms both;
+}
+.tst p { margin: 0; display: grid; gap: 2px; font-size: 0.88rem; line-height: 1.35; overflow-wrap: anywhere; }
+.tst b { color: var(--tst-gold); font-weight: 700; }
+.tst small { font-size: 0.76rem; color: rgba(244, 235, 221, 0.74); }
+.tst .tst-err { color: #ffb4a0; }
+.tst-undo {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--amber);
+  color: var(--night);
+  font: 700 0.82rem / 1 var(--sans);
+  cursor: pointer;
+}
+.tst-undo:disabled { opacity: 0.6; cursor: default; }
+.tst-undo:active:not(:disabled) { background: #de8f1c; }
+.tst-x {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: rgba(244, 235, 221, 0.7);
+  cursor: pointer;
+}
+.tst-x:active { background: rgba(244, 235, 221, 0.16); }
+@media (hover: hover) {
+  .tst-undo:hover:not(:disabled) { background: #f6a93a; }
+  .tst-x:hover { background: rgba(244, 235, 221, 0.12); color: var(--tst-cream); }
+}
+.tst :focus-visible { outline: 2px solid var(--tst-gold); outline-offset: 2px; }
+/* la barra que se vacía: cuánto queda para poder deshacer */
+.tst-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--amber);
+  transform-origin: left center;
+  animation: tstBar linear forwards;
+}
+@keyframes tstIn { from { opacity: 0; transform: translateY(14px) scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes tstPop { 0% { transform: scale(0.4); } 60% { transform: scale(1.18); } 100% { transform: scale(1); } }
+@keyframes tstBar { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@media (max-width: 520px) {
+  .tst { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .tst-x { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tst, .tst-ico { animation: none; }
+  .tst-bar { animation-duration: 0.01ms !important; transform: scaleX(0.0001); }
+}

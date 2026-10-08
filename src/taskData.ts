@@ -23,6 +23,8 @@ export const useTasks = () => {
   const all = tasks.use()
   return useMemo(() => all.filter((t) => !t.hidden), [all])
 }
+/** Lectura puntual (fuera de React) de una tarea: para llevar al proyecto donde quedó. */
+export const taskNow = (id: string) => tasks.get().find((t) => t.id === id)
 export const loadTasks = async () => tasks.set(await api.get<Task[]>('/tasks'))
 export const resetTasks = () => tasks.set([])
 

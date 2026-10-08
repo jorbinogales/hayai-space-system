@@ -12,14 +12,18 @@ import {
   FEED_TIPOS,
   FEED_TIPO_LABEL,
   accionPrincipal,
+  accionesDe,
   categoriaLabel,
   closeFeed,
+  conGuion,
+  conceptoDe,
   contactoDe,
   convertFeed,
+  conversionDe,
   cortar,
+  destinoCobro,
   fmtN,
   fuenteLabel,
-  hayContacto,
   isGrowi,
   isRec,
   loadFeed,
@@ -33,11 +37,16 @@ import {
   safeUrl,
   saveFeed,
   takeFeedFocus,
+  undoFeed,
   urlLabel,
   useFeedTick,
   useKnownNuevos,
   vistaDe,
+  yaCreada,
+  notifyFeed,
+  type AccionId,
   type ConvertBody,
+  type CreadoKind,
   type EnlaceContacto,
   type FeedConversion,
   type FeedEstado,
@@ -48,11 +57,13 @@ import {
   type FeedTipo,
   type MiEstado,
 } from './feedData'
-import { go } from './nav'
+import { go, requestFicha } from './nav'
 import { loadProjects, useProjects } from './projectData'
+import { loadProposals, openProposal } from './proposalData'
+import { pushToast } from './toast'
 import { useSession } from './session'
-import { loadClients } from './store'
-import { loadTasks } from './taskData'
+import { addDays, fmtDate, loadClients, money, todayISO } from './store'
+import { loadTasks, taskNow } from './taskData'
 import { ago } from './time'
 import { Icon } from './ui'
 import './feed.css'
@@ -154,19 +165,29 @@ function GrowiSeal() {
   )
 }
 
-const CONVERSION_LABEL: Record<FeedConversion, string> = { posible_cliente: 'posible cliente', tarea: 'tarea', proyecto: 'proyecto' }
-const DEST_LABEL: Record<FeedConversion, string> = { posible_cliente: 'Posible cliente', tarea: 'Tarea', proyecto: 'Proyecto' }
-const OPEN_LABEL: Record<FeedConversion, string> = { posible_cliente: 'Abrir cliente', tarea: 'Abrir tareas', proyecto: 'Abrir proyectos' }
-const DESTINOS: FeedConversion[] = ['posible_cliente', 'tarea', 'proyecto']
-/** «Convertir en posible cliente» solo tiene sentido en prospectos y oportunidades; en lo demás: crear tarea o proyecto. */
-const destinosDe = (t: FeedTipo): FeedConversion[] => (t === 'prospecto' || t === 'oportunidad' ? DESTINOS : DESTINOS.filter((k) => k !== 'posible_cliente'))
-const CREAR_LABEL: Record<FeedConversion, string> = { posible_cliente: 'Posible cliente', tarea: 'Crear tarea', proyecto: 'Crear proyecto' }
-/** El destino que mejor encaja con cada hallazgo viene preseleccionado (los otros siguen a un toque). */
-const PRIMARY: Record<FeedTipo, FeedConversion> = { prospecto: 'posible_cliente', alerta: 'tarea', noticia: 'tarea', idea: 'proyecto', oportunidad: 'proyecto', proyecto: 'proyecto' }
+const CONVERSION_LABEL: Record<CreadoKind, string> = { posible_cliente: 'posible cliente', cliente: 'cliente', tarea: 'tarea', seguimiento: 'seguimiento', proyecto: 'proyecto', propuesta: 'propuesta' }
+/** Destinos del panel «Con ajustes» (el seguimiento y la propuesta tienen su propio botón). */
+type Dest = 'posible_cliente' | 'cliente' | 'tarea' | 'proyecto'
+const DEST_LABEL: Record<Dest, string> = { posible_cliente: 'Posible cliente', cliente: 'Cliente', tarea: 'Tarea', proyecto: 'Proyecto' }
+/** Convertir en (posible) cliente según el vínculo —solo prospectos y oportunidades—, más tarea y proyecto. */
+const destinosDe = (it: FeedItem): Dest[] => {
+  const c = conversionDe(it)
+  return c ? [c, 'tarea', 'proyecto'] : ['tarea', 'proyecto']
+}
+const HECHO_LABEL: Record<Exclude<CreadoKind, 'cliente' | 'posible_cliente'>, string> = { tarea: 'Tarea', seguimiento: 'Seguimiento', proyecto: 'Proyecto', propuesta: 'Propuesta' }
+const LISTO: Record<FeedConversion, string> = { posible_cliente: 'Posible cliente creado', cliente: 'Cliente activado', tarea: 'Tarea creada', seguimiento: 'Seguimiento creado', proyecto: 'Proyecto creado' }
 
-function openConverted(c: { a: FeedConversion; id: string | null }) {
-  if (c.a === 'posible_cliente') go({ screen: 'clientes', clientId: c.id })
-  else go({ screen: c.a === 'tarea' ? 'tareas' : 'proyectos' })
+/** Abre lo que ya se creó desde el ítem: el detalle de la tarea (su proyecto), el proyecto, o la ficha del cliente (propuesta, cliente). */
+function openCreated(kind: CreadoKind, id: string | null, it: FeedItem) {
+  if (kind === 'posible_cliente' || kind === 'cliente' || kind === 'propuesta') {
+    const cid = it.vinculo.cliente_id ?? (kind === 'propuesta' ? null : id)
+    if (cid) return go({ screen: 'clientes', clientId: cid })
+    return go({ screen: 'clientes' })
+  }
+  if (kind === 'proyecto' && id) return void (location.hash = `proyectos/${id}`)
+  const t = id ? taskNow(id) : undefined
+  if (t) return void (location.hash = `proyectos/${t.projectId}`)
+  go({ screen: 'tareas' })
 }
 
 // ---------- copiar al portapapeles ----------
@@ -294,53 +315,44 @@ function Detalle({ it, d }: { it: FeedItem; d: ReturnType<typeof detailOf> }) {
 
 // ---------- contacto ----------
 const external = { target: '_blank', rel: 'noopener noreferrer' } as const
+/** Las otras maneras de llegar al negocio (más teléfonos, correos, redes). El botón principal (WhatsApp/Llamar) vive en la barra de acciones. */
 function Contacto({ it }: { it: FeedItem }) {
   const c = useMemo(() => contactoDe(it.datos), [it.datos])
   const main = accionPrincipal(c)
-  if (!hayContacto(c)) return null
   // lo que el botón principal ya muestra no se repite abajo
   const otherTels = c.tels.filter((t) => t.display !== main?.detalle)
   const mails = c.correos.filter((m) => main?.tipo !== 'email' || m !== main.detalle)
   const links = c.enlaces.slice(0, 4)
-  const has = otherTels.length + mails.length + links.length > 0
+  if (otherTels.length + mails.length + links.length === 0) return null
   return (
     <div className="fd-contact" role="group" aria-label={`Contacto: ${it.titulo}`}>
-      {main && (
-        <a className="fd-btn is-contact" href={main.href} {...(main.tipo === 'whatsapp' ? external : {})} aria-label={`${main.tipo === 'whatsapp' ? 'Escribir por WhatsApp a' : main.tipo === 'llamar' ? 'Llamar al' : 'Enviar correo a'} ${main.detalle}`}>
-          <Svg d={main.tipo === 'whatsapp' ? PATH.whatsapp : main.tipo === 'llamar' ? PATH.phone : PATH.mail} size={16} />
-          {main.label}
-          <span className="fd-btn-sub">{main.detalle}</span>
-        </a>
-      )}
-      {has && (
-        <ul className="fd-reach">
-          {otherTels.map((t) => (
-            <li key={t.tel}>
-              <a href={t.tel} aria-label={`Llamar al ${t.display}`}>
-                <Svg d={PATH.phone} size={13} />
-                {t.display}
-              </a>
-            </li>
-          ))}
-          {mails.map((m) => (
-            <li key={m}>
-              <a href={`mailto:${m}`} aria-label={`Enviar correo a ${m}`}>
-                <Svg d={PATH.mail} size={13} />
-                <span>{m}</span>
-              </a>
-            </li>
-          ))}
-          {links.map((l) => (
-            <li key={l.href}>
-              <a href={l.href} {...external}>
-                <Svg d={LINK_ICON[l.tipo]} size={13} />
-                <span>{l.label}</span>
-                <span className="fd-sr"> (se abre en otra pestaña)</span>
-              </a>
-            </li>
-          ))}
-        </ul>
-      )}
+      <ul className="fd-reach">
+        {otherTels.map((t) => (
+          <li key={t.tel}>
+            <a href={t.tel} aria-label={`Llamar al ${t.display}`}>
+              <Svg d={PATH.phone} size={13} />
+              {t.display}
+            </a>
+          </li>
+        ))}
+        {mails.map((m) => (
+          <li key={m}>
+            <a href={`mailto:${m}`} aria-label={`Enviar correo a ${m}`}>
+              <Svg d={PATH.mail} size={13} />
+              <span>{m}</span>
+            </a>
+          </li>
+        ))}
+        {links.map((l) => (
+          <li key={l.href}>
+            <a href={l.href} {...external}>
+              <Svg d={LINK_ICON[l.tipo]} size={13} />
+              <span>{l.label}</span>
+              <span className="fd-sr"> (se abre en otra pestaña)</span>
+            </a>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
@@ -472,7 +484,7 @@ function TareaForm({ it, owners, me, busy, onClose, onSubmit, id }: PanelProps &
         <label>
           <span>Proyecto</span>
           <select value={proyecto} onChange={(e) => setProyecto(e.target.value)}>
-            <option value="">HAYAI interno (sin cliente)</option>
+            <option value="">{it.vinculo.cliente_id ? `Proyecto de ${it.vinculo.cliente ?? 'su cliente'} (o HAYAI interno)` : 'HAYAI interno (sin cliente)'}</option>
             {internos.length > 0 && (
               <optgroup label="Proyectos internos de HAYAI">
                 {internos.map((p) => (
@@ -528,12 +540,86 @@ function ProyectoForm({ it, owners, me, busy, onClose, onSubmit, id }: PanelProp
         </div>
         <label>
           <span>Descripción (opcional)</span>
-          <textarea value={descripcion} rows={3} maxLength={4000} onChange={(e) => setDescripcion(e.target.value)} />
+          <textarea value={descripcion} rows={3} maxLength={4000} placeholder="Si la dejas vacía se llena con el resumen y los datos del hallazgo." onChange={(e) => setDescripcion(e.target.value)} />
         </label>
       </fieldset>
       <div className="fd-actions">
         <button type="submit" className="fd-btn is-primary" disabled={busy || !nombre.trim()}>
           {busy ? 'Creando…' : 'Convertir'}
+        </button>
+        <button type="button" className="fd-btn" onClick={onClose} disabled={busy}>
+          Cancelar
+        </button>
+      </div>
+    </form>
+  )
+}
+
+/** Promover al posible cliente vinculado: día de implementación y, si tiene una propuesta vigente, cómo se le cobra (se generan los cobros). */
+function ClienteForm({ it, busy, onClose, onSubmit, id }: PanelProps & { it: FeedItem; id: string; onSubmit: (b: ConvertBody) => void }) {
+  const hoy = todayISO()
+  const [impl, setImpl] = useState(hoy)
+  const [inicio, setInicio] = useState(addDays(hoy, 30))
+  const [meses, setMeses] = useState('12')
+  const [unicos, setUnicos] = useState(false)
+  const [vigente, setVigente] = useState<{ version: number; mensual: number; unico: number } | null | undefined>(undefined) // undefined: consultando
+  const first = useFirstFocus<HTMLInputElement>()
+  useEffect(() => {
+    let live = true
+    const cid = it.vinculo.cliente_id
+    if (!cid) return setVigente(null)
+    void loadProposals(cid)
+      .then((l) => {
+        const p = l.find((x) => x.estado === 'borrador' || x.estado === 'presentada')
+        if (live) setVigente(p ? { version: p.version, mensual: p.totales.mensual, unico: p.totales.unico } : null)
+      })
+      .catch(() => live && setVigente(null))
+    return () => {
+      live = false
+    }
+  }, [it.vinculo.cliente_id])
+  const m = Number(meses)
+  const mesesOk = Number.isInteger(m) && m >= 2 && m <= 36
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    if (busy || !impl || (vigente && (!inicio || !mesesOk))) return
+    onSubmit({ a: 'cliente', fecha_implementacion: impl, ...(vigente ? { esquema_cobro: { inicio_cobro: inicio, meses: m, unicos_cobrados: unicos } } : {}) })
+  }
+  return (
+    <form className="fd-form" id={id} onSubmit={submit} onKeyDown={escape(onClose)} aria-label="Convertir en cliente">
+      <fieldset disabled={busy}>
+        <label>
+          <span>Día de implementación</span>
+          <input ref={first} type="date" value={impl} required onChange={(e) => setImpl(e.target.value)} />
+        </label>
+        {vigente === undefined && <p className="fd-hint">Revisando si tiene una propuesta vigente…</p>}
+        {vigente && (
+          <>
+            <p className="fd-hint">
+              Tiene la propuesta v{vigente.version} vigente ({money(vigente.mensual)} por mes{vigente.unico > 0 ? ` + ${money(vigente.unico)} único` : ''}): al aceptarla se generan las mensualidades.
+            </p>
+            <div className="fd-two">
+              <label>
+                <span>Primera mensualidad</span>
+                <input type="date" value={inicio} required onChange={(e) => setInicio(e.target.value)} />
+              </label>
+              <label>
+                <span>Meses (2 a 36)</span>
+                <input inputMode="numeric" value={meses} onChange={(e) => setMeses(e.target.value)} aria-invalid={!mesesOk} />
+              </label>
+            </div>
+            {vigente.unico > 0 && (
+              <label className="fd-check">
+                <input type="checkbox" checked={unicos} onChange={(e) => setUnicos(e.target.checked)} />
+                <span>Los pagos únicos ya están cobrados</span>
+              </label>
+            )}
+          </>
+        )}
+      </fieldset>
+      <div className="fd-actions">
+        <button type="submit" className="fd-btn is-primary" disabled={busy || vigente === undefined || !impl || (!!vigente && (!inicio || !mesesOk))}>
+          {busy ? 'Convirtiendo…' : 'Convertir en cliente'}
         </button>
         <button type="button" className="fd-btn" onClick={onClose} disabled={busy}>
           Cancelar
@@ -580,6 +666,7 @@ interface Done {
   nombre?: string
   etapa?: string
   proyecto?: string
+  vence?: string
 }
 interface CardProps {
   it: FeedItem
@@ -592,7 +679,10 @@ interface CardProps {
 
 const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }: CardProps) {
   const [panel, setPanel] = useState<Panel>(null)
-  const [dest, setDest] = useState<FeedConversion>(PRIMARY[it.tipo])
+  const acciones = useMemo(() => accionesDe(it), [it])
+  const contacto = useMemo(() => accionPrincipal(contactoDe(it.datos)), [it.datos])
+  const [dest, setDest] = useState<Dest>(() => (acciones.principal === 'posible_cliente' || acciones.principal === 'cliente' || acciones.principal === 'tarea' || acciones.principal === 'proyecto' ? acciones.principal : (conversionDe(it) ?? 'tarea')))
+  const [flash, setFlash] = useState<FeedConversion | null>(null)
   const [busy, setBusy] = useState<Busy>(null)
   const [note, setNote] = useState<{ tone: 'ok' | 'warn'; text: string } | null>(null)
   const [err, setErr] = useState('')
@@ -604,7 +694,6 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
   const doneRef = useRef<HTMLDivElement>(null)
   const noteRef = useRef<HTMLParagraphElement>(null)
   const detail = detailOf(it)
-  const origen = origenUrl(it.datos)
   const converted = it.estado === 'convertido'
   const vista = vistaDe(it)
   const pid = `fd-${it.id}`
@@ -645,9 +734,14 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
       void refreshAlerts().catch(() => {}) // revisar, descartar o convertir cambia lo que la campana avisa
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
-        setNote({ tone: 'warn', text: 'Alguien ya lo convirtió. Te muestro en qué quedó.' })
+        setNote({ tone: 'warn', text: `${e.message}. Te muestro cómo quedó.` })
         setPanel(null)
         await refetch()
+      } else if (e instanceof ApiError && e.status === 400 && /esquema_cobro/i.test(e.message)) {
+        // promover un posible cliente con propuesta vigente pide el esquema de cobro: se abre el formulario
+        setDest('cliente')
+        setPanel('ajustar')
+        setErr('Tiene una propuesta vigente: indica cómo se le cobra.')
       } else if (e instanceof ApiError && e.status === 404) {
         setErr('Este hallazgo ya no existe.')
         onGone(it.id)
@@ -665,15 +759,53 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
       const r = await convertFeed(it, body)
       const det = r.creado.detalle
       const etapa = typeof det.etapa === 'string' ? (STAGE_LABEL[det.etapa] ?? 'Prospecto captado') : 'Prospecto captado'
+      const nombre = typeof det.nombre === 'string' ? det.nombre : typeof det.titulo === 'string' ? det.titulo : undefined
+      const vence = typeof det.vence === 'string' ? det.vence : undefined
       setPanel(null)
-      setDone({ a: kind, nombre: typeof det.nombre === 'string' ? det.nombre : undefined, etapa, proyecto: typeof det.proyecto === 'string' ? det.proyecto : proyecto })
+      setDone({ a: kind, nombre, etapa, proyecto: typeof det.proyecto === 'string' ? det.proyecto : proyecto, vence })
       onItem(r.item)
+      // confirmación: el botón y la tarjeta hacen un pulso breve (sin movimiento si el socio lo tiene desactivado)
+      setFlash(kind)
+      window.setTimeout(() => setFlash(null), 1400)
       // lo recién creado ya existe en el servidor: las pantallas de trabajo lo vuelven a leer
-      const refresh = kind === 'posible_cliente' ? [loadClients()] : kind === 'tarea' ? [loadTasks(), loadProjects()] : [loadProjects()]
-      void Promise.allSettled(refresh)
+      const refresh = () => Promise.allSettled(kind === 'posible_cliente' || kind === 'cliente' ? [loadClients(), loadProjects(), loadTasks()] : kind === 'proyecto' ? [loadProjects()] : [loadTasks(), loadProjects()])
+      void refresh()
+      // «Listo ✓» flotante con «Deshacer»: revierte esa conversión (lo creado va a la papelera) y el feed se vuelve a leer
+      pushToast({
+        text: `Listo ✓ ${LISTO[kind]}`,
+        detail: [nombre ? `«${nombre}»` : null, kind === 'seguimiento' && vence ? `vence el ${fmtDate(vence, true)}` : null].filter(Boolean).join(' · ') || undefined,
+        undo: async () => {
+          await undoFeed(it, kind)
+          await refresh()
+          notifyFeed()
+          void refreshAlerts().catch(() => {})
+          pushToast({ text: 'Deshecho', detail: 'El hallazgo volvió a como estaba.', tone: 'info', ms: 3500 })
+        },
+      })
     })
-  /** «Convertir»: un toque, con lo pre-llenado (la tarea queda a nombre de quien convierte). */
-  const quick = () => void convert(dest, dest === 'tarea' ? { a: 'tarea', ...(me ? { responsable: me } : {}) } : { a: dest }, dest === 'tarea' ? 'HAYAI interno' : undefined)
+  const body = (a: FeedConversion): ConvertBody => (a === 'tarea' || a === 'seguimiento' ? { a, ...(me ? { responsable: me } : {}) } : { a })
+  /** Un toque, con lo pre-llenado: título, resumen y vínculo del ítem (la tarea queda a nombre de quien la crea). */
+  const quick = (a: FeedConversion) => void convert(a, body(a), a === 'tarea' || a === 'seguimiento' ? (it.vinculo.cliente ? `el proyecto de ${it.vinculo.cliente}` : 'HAYAI interno') : undefined)
+  /** «Crear propuesta»: abre la ficha del cliente con el formulario ya prellenado con lo del ítem. */
+  const proponer = () => {
+    const cid = it.vinculo.cliente_id
+    if (!cid) return
+    openProposal({
+      clientId: cid,
+      feedItemId: it.id,
+      ...(conceptoDe(it.datos) ? { concepto: conceptoDe(it.datos)! } : {}),
+      notas: cortar(`Hallazgo del feed: ${it.titulo}${it.resumen ? ` — ${it.resumen}` : ''}`, 1000).texto,
+    })
+    go({ screen: 'clientes', clientId: cid })
+  }
+  const registrarCobro = () => {
+    const d = destinoCobro(it)
+    if (!d) return
+    if (d.clienteId) {
+      requestFicha({ clientId: d.clienteId, tab: 'cobros', cobroId: d.cobroId })
+      go({ screen: 'clientes', clientId: d.clienteId })
+    } else go({ screen: 'finanzas' })
+  }
 
   const mark = (estado: MiEstado, motivo?: string) =>
     act(estado === 'descartado' ? 'descartar' : estado === 'revisado' ? 'revisado' : 'nuevo', async () => {
@@ -692,8 +824,73 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
 
   const isBusy = busy !== null
 
+  /** Un botón de la barra. El principal va lleno (una sola por tarjeta); lo que ya se creó dice «✓ Creada» y abre su detalle. */
+  const renderAccion = (a: AccionId, primary: boolean): ReactNode => {
+    const cls = `fd-btn${primary ? ' is-primary' : ' fd-sm'}`
+    const just = (k: FeedConversion) => (flash === k ? ' is-just' : '')
+    if (a === 'contacto' && contacto) {
+      const wa = contacto.tipo === 'whatsapp'
+      return (
+        <a
+          className={`fd-btn ${primary ? 'is-contact' : 'is-contact-soft fd-sm'}`}
+          href={wa ? conGuion(contacto.href, it.datos) : contacto.href}
+          {...(wa ? external : {})}
+          aria-label={`${wa ? 'Escribir por WhatsApp a' : contacto.tipo === 'llamar' ? 'Llamar al' : 'Enviar correo a'} ${contacto.detalle}${wa && typeof it.datos.guion === 'string' ? ' con el guion ya escrito' : ''}`}
+        >
+          <Svg d={wa ? PATH.whatsapp : contacto.tipo === 'llamar' ? PATH.phone : PATH.mail} size={primary ? 16 : 14} />
+          {contacto.label}
+          <span className="fd-btn-sub">{contacto.detalle}</span>
+        </a>
+      )
+    }
+    if (a === 'origen') {
+      const href = origenUrl(it.datos)
+      if (!href) return null
+      return (
+        <a className={cls} href={href} {...external}>
+          Ver origen <Svg d={PATH.external} size={13} />
+          <span className="fd-sr"> (se abre en otra pestaña)</span>
+        </a>
+      )
+    }
+    if (a === 'cobro') return <button type="button" className={cls} disabled={isBusy} onClick={registrarCobro}>Registrar cobro</button>
+    if (a === 'posible_cliente' || a === 'cliente') {
+      return (
+        <button type="button" className={`${cls}${just(a)}`} disabled={isBusy} onClick={() => quick(a)}>
+          {busy === 'convertir' ? 'Convirtiendo…' : a === 'cliente' ? 'Convertir en cliente' : 'Convertir en posible cliente'}
+        </button>
+      )
+    }
+    if (a === 'propuesta' || a === 'tarea' || a === 'seguimiento' || a === 'proyecto') {
+      if (yaCreada(it, a)) {
+        const c = it.creados[a]!
+        return (
+          <button
+            type="button"
+            className={`fd-btn fd-sm fd-is-done${just(a === 'propuesta' ? 'tarea' : a)}`}
+            onClick={() => openCreated(a, c.id, it)}
+            aria-label={`${HECHO_LABEL[a]} ya creada${c.por ? ` por ${c.por}` : ''}: abrir`}
+            title={c.por ? `Creada por ${c.por}` : undefined}
+          >
+            ✓ Creada
+            <span className="fd-btn-sub">{HECHO_LABEL[a]}</span>
+          </button>
+        )
+      }
+      if (a === 'propuesta') return <button type="button" className={cls} disabled={isBusy} onClick={proponer}>Crear propuesta</button>
+      const labels = { tarea: 'Crear tarea', seguimiento: 'Seguimiento en 3 días', proyecto: 'Crear proyecto' } as const
+      const doing = { tarea: 'Creando…', seguimiento: 'Creando…', proyecto: 'Creando…' } as const
+      return (
+        <button type="button" className={`${cls}${just(a)}`} disabled={isBusy} onClick={() => quick(a)}>
+          {busy === 'convertir' ? doing[a] : labels[a]}
+        </button>
+      )
+    }
+    return null
+  }
+
   return (
-    <li id={`fd-item-${it.id}`} className={`fd-card is-${vista} t-${it.tipo}${hit ? ' is-hit' : ''}`}>
+    <li id={`fd-item-${it.id}`} className={`fd-card is-${vista} t-${it.tipo}${hit ? ' is-hit' : ''}${flash ? ' is-flash' : ''}`}>
       <article aria-labelledby={`fd-t-${it.id}`} aria-busy={isBusy}>
         <header className="fd-ch">
           <div className="fd-ch-l">
@@ -727,12 +924,6 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
         </p>
 
         {it.resumen && <Summary text={it.resumen} />}
-        {origen && (
-          <a className="fd-btn is-ghost fd-origin" href={origen} {...external}>
-            Ver origen <Svg d={PATH.external} size={13} />
-            <span className="fd-sr"> (se abre en otra pestaña)</span>
-          </a>
-        )}
         {vista === 'descartado' && (
           <p className="fd-why">
             <b>Lo descartaste</b>
@@ -772,14 +963,14 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
           {said}
         </span>
 
-        {converted ? (
+        {converted && (
           <div ref={doneRef} tabIndex={-1} className="fd-done" role="status">
             <span className="fd-done-ico" aria-hidden="true">
               <Icon name="check" size={16} />
             </span>
             <p>
               <span>
-                <b>Convertido en {it.convertido ? CONVERSION_LABEL[it.convertido.a] : 'algo real'}</b>
+                <b>Convertido{it.convertido ? ` en ${CONVERSION_LABEL[it.convertido.a]}` : ''}</b>
                 {it.convertido?.por && <> por {it.convertido.por}</>}
                 {it.convertido?.el && (
                   <>
@@ -793,83 +984,93 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
               {done && (
                 <small>
                   {done.a === 'posible_cliente' && <>Quedó en «{done.etapa}»</>}
-                  {done.a === 'tarea' && done.proyecto && <>Quedó en «{done.proyecto}»</>}
+                  {(done.a === 'tarea' || done.a === 'seguimiento') && done.proyecto && <>Quedó en «{done.proyecto}»</>}
                   {done.a === 'proyecto' && done.nombre && <>Quedó como «{done.nombre}»</>}
+                  {done.a === 'cliente' && <>Ya es cliente activo</>}
                 </small>
               )}
             </p>
-            {it.convertido && (
-              <button type="button" className="fd-btn is-ghost" onClick={() => openConverted(it.convertido!)}>
-                {OPEN_LABEL[it.convertido.a]} <Icon name="arrow" size={14} />
+          </div>
+        )}
+
+        <div className="fd-bar2" role="group" aria-label={`Acciones: ${it.titulo}`}>
+          {acciones.principal && <div className="fd-main">{renderAccion(acciones.principal, true)}</div>}
+          <div className="fd-sec">
+            {acciones.secundarias.map((a) => (
+              <span key={a} className="fd-sec-i">
+                {renderAccion(a, false)}
+              </span>
+            ))}
+            {it.vinculo.estado !== 'sin_vinculo' && it.vinculo.cliente_id && (
+              <button type="button" className="fd-btn fd-sm" onClick={() => go({ screen: 'clientes', clientId: it.vinculo.cliente_id })}>
+                Ficha de {it.vinculo.cliente}
+                <span className="fd-btn-sub">{it.vinculo.estado === 'cliente' ? 'Cliente' : 'Posible cliente'}</span>
               </button>
             )}
+            <button
+              type="button"
+              className="fd-btn fd-sm fd-adj"
+              ref={(n) => void (triggers.current.ajustar = n)}
+              disabled={isBusy}
+              aria-expanded={panel === 'ajustar'}
+              aria-controls={`${pid}-aj`}
+              onClick={() => toggle('ajustar')}
+            >
+              Con ajustes…
+            </button>
           </div>
-        ) : (
-          <>
-            <div className="fd-conv" role="group" aria-label={`Convertir: ${it.titulo}`}>
-              <div className="fd-dest" role="radiogroup" aria-label="Convertir en">
-                <span className="fd-dest-l" aria-hidden="true">
-                  {destinosDe(it.tipo).length === 3 ? 'Convertir en' : 'Crear'}
-                </span>
-                {destinosDe(it.tipo).map((k) => (
-                  <label key={k} className={dest === k ? 'is-on' : ''}>
-                    <input type="radio" name={`${pid}-dest`} value={k} checked={dest === k} disabled={isBusy} onChange={() => setDest(k)} />
-                    <span>{destinosDe(it.tipo).length === 3 ? DEST_LABEL[k] : CREAR_LABEL[k]}</span>
-                  </label>
-                ))}
-              </div>
-              <div className="fd-acts">
-                <button type="button" className="fd-btn is-primary" disabled={isBusy} onClick={quick}>
-                  {busy === 'convertir' ? 'Convirtiendo…' : 'Convertir'}
-                </button>
-                <button
-                  type="button"
-                  className="fd-btn"
-                  ref={(n) => void (triggers.current.ajustar = n)}
-                  disabled={isBusy}
-                  aria-expanded={panel === 'ajustar'}
-                  aria-controls={`${pid}-aj`}
-                  onClick={() => toggle('ajustar')}
-                >
-                  Convertir con ajustes
-                </button>
-              </div>
-            </div>
+        </div>
 
-            {panel === 'ajustar' && dest === 'posible_cliente' && <AjustarForm it={it} id={`${pid}-aj`} busy={busy === 'convertir'} onClose={() => closePanel()} onSubmit={(b) => void convert('posible_cliente', b)} />}
-            {panel === 'ajustar' && dest === 'tarea' && <TareaForm it={it} owners={owners} me={me} id={`${pid}-aj`} busy={busy === 'convertir'} onClose={() => closePanel()} onSubmit={(b, p) => void convert('tarea', b, p)} />}
-            {panel === 'ajustar' && dest === 'proyecto' && <ProyectoForm it={it} owners={owners} me={me} id={`${pid}-aj`} busy={busy === 'convertir'} onClose={() => closePanel()} onSubmit={(b) => void convert('proyecto', b)} />}
-            {panel === 'descartar' && <DescartarForm id={`${pid}-de`} busy={busy === 'descartar'} onClose={() => closePanel()} onSubmit={(m) => void mark('descartado', m)} />}
-
-            <div className="fd-triage" role="group" aria-label={`Revisar: ${it.titulo}`}>
-              {it.mi_estado === 'nuevo' && (
-                <button type="button" className="fd-quiet" disabled={isBusy} onClick={() => void mark('revisado')}>
-                  {busy === 'revisado' ? 'Marcando…' : 'Marcar revisado'}
-                </button>
-              )}
-              {it.mi_estado !== 'nuevo' && (
-                <button type="button" className="fd-quiet" disabled={isBusy} onClick={() => void mark('nuevo')}>
-                  {busy === 'nuevo' ? 'Volviendo…' : 'Volver a nuevo'}
-                </button>
-              )}
-              {it.mi_estado !== 'descartado' && (
-                <button
-                  type="button"
-                  className="fd-quiet"
-                  ref={(n) => void (triggers.current.descartar = n)}
-                  disabled={isBusy}
-                  aria-expanded={panel === 'descartar'}
-                  aria-controls={`${pid}-de`}
-                  onClick={() => toggle('descartar')}
-                >
-                  Descartar
-                </button>
-              )}
-              <span className="fd-mine">
-                <Svg d={PATH.eye} size={12} /> Solo tú lo ves así
+        {panel === 'ajustar' && (
+          <div className="fd-adjust" id={`${pid}-aj`}>
+            <div className="fd-dest" role="radiogroup" aria-label="Crear con ajustes">
+              <span className="fd-dest-l" aria-hidden="true">
+                Crear con ajustes
               </span>
+              {destinosDe(it).map((k) => (
+                <label key={k} className={dest === k ? 'is-on' : ''}>
+                  <input type="radio" name={`${pid}-dest`} value={k} checked={dest === k} disabled={isBusy} onChange={() => setDest(k)} />
+                  <span>{DEST_LABEL[k]}</span>
+                </label>
+              ))}
             </div>
-          </>
+            {dest === 'posible_cliente' && <AjustarForm it={it} id={`${pid}-aj-f`} busy={busy === 'convertir'} onClose={() => closePanel()} onSubmit={(b) => void convert('posible_cliente', b)} />}
+            {dest === 'cliente' && <ClienteForm it={it} id={`${pid}-aj-f`} busy={busy === 'convertir'} onClose={() => closePanel()} onSubmit={(b) => void convert('cliente', b)} />}
+            {dest === 'tarea' && <TareaForm it={it} owners={owners} me={me} id={`${pid}-aj-f`} busy={busy === 'convertir'} onClose={() => closePanel()} onSubmit={(b, p) => void convert('tarea', b, p)} />}
+            {dest === 'proyecto' && <ProyectoForm it={it} owners={owners} me={me} id={`${pid}-aj-f`} busy={busy === 'convertir'} onClose={() => closePanel()} onSubmit={(b) => void convert('proyecto', b)} />}
+          </div>
+        )}
+        {panel === 'descartar' && <DescartarForm id={`${pid}-de`} busy={busy === 'descartar'} onClose={() => closePanel()} onSubmit={(m) => void mark('descartado', m)} />}
+
+        {!converted && (
+          <div className="fd-triage" role="group" aria-label={`Revisar: ${it.titulo}`}>
+            {it.mi_estado === 'nuevo' && (
+              <button type="button" className="fd-quiet" disabled={isBusy} onClick={() => void mark('revisado')}>
+                {busy === 'revisado' ? 'Marcando…' : 'Marcar revisado'}
+              </button>
+            )}
+            {it.mi_estado !== 'nuevo' && (
+              <button type="button" className="fd-quiet" disabled={isBusy} onClick={() => void mark('nuevo')}>
+                {busy === 'nuevo' ? 'Volviendo…' : 'Volver a nuevo'}
+              </button>
+            )}
+            {it.mi_estado !== 'descartado' && (
+              <button
+                type="button"
+                className="fd-quiet"
+                ref={(n) => void (triggers.current.descartar = n)}
+                disabled={isBusy}
+                aria-expanded={panel === 'descartar'}
+                aria-controls={`${pid}-de`}
+                onClick={() => toggle('descartar')}
+              >
+                Descartar
+              </button>
+            )}
+            <span className="fd-mine">
+              <Svg d={PATH.eye} size={12} /> Solo tú lo ves así
+            </span>
+          </div>
         )}
       </article>
     </li>

@@ -4,7 +4,7 @@ import { exec } from '../services/common.ts'
 import { comprobanteArchivo, comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
 import { pagoActualizar } from '../services/clientes.ts'
 import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
-import { feedConvertir, feedGuardar, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
+import { feedConvertir, feedDeshacer, feedGuardar, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 
 import { versionesListar, versionPublicar, versionVer } from '../services/versiones.ts'
@@ -65,3 +65,4 @@ hubRouter.post('/feed', async (req, res) => {
 hubRouter.patch('/feed/:id/estado', async (req, res) => void res.json(await exec(feedMarcar, req.user!, { ...body(req), id: req.params.id })))
 hubRouter.post('/feed/:id/guardar', async (req, res) => void res.json(await exec(feedGuardar, req.user!, { ...body(req), id: req.params.id })))
 hubRouter.post('/feed/:id/convertir', async (req, res) => void res.json(await exec(feedConvertir, req.user!, { ...body(req), id: req.params.id })))
+hubRouter.post('/feed/:id/deshacer', async (req, res) => void res.json(await exec(feedDeshacer, req.user!, { ...body(req), id: req.params.id })))

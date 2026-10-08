@@ -22,6 +22,7 @@ import { clearAllDrafts, setDraftOwner, startUpdates, stopUpdates } from './upda
 import { UpdateHost } from './UpdateUI'
 import { setFinanceView } from './nav'
 import Versions from './Versions'
+import ToastHost from './Toast'
 
 export type Screen = 'home' | 'clientes' | 'proyectos' | 'finanzas' | 'tareas' | 'hub' | 'marketing'
 /** A dónde se puede navegar: «gastos» ya no es una pantalla, es la vista Gastos dentro de Finanzas. */
@@ -152,6 +153,7 @@ export default function App() {
       {session && vault && <Vault onClose={() => setVault(false)} />}
       {session && <Versions />}
       {session && <UpdateHost />}
+      {session && <ToastHost />}
       {session === undefined && <div className="boot-wait" aria-hidden="true" />}
       {session === null && (
         <Boot

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Blobvatar } from './blob'
-import { dismissToast, markActivitySeen, markAlerts, settleSeen, unreadTotal, useLive, type Activity, type Alert } from './live'
+import { ALERT_BACKED, dismissToast, markActivitySeen, markAlerts, settleSeen, unreadTotal, useLive, type Activity, type Alert } from './live'
 import { go } from './nav'
+import { openFeed, type FeedTipo } from './feedData'
 import { ago } from './time'
 import { openChangelog } from './updates'
 import { Icon } from './ui'
@@ -22,13 +23,21 @@ function Said({ e }: { e: Activity }) {
 const openActivity = (e: Activity) =>
   e.tipo === 'version_nueva'
     ? openChangelog(e.sujeto)
-    : e.tipo === 'tarea_nueva' || e.tipo === 'tarea_completada'
-      ? go({ screen: 'tareas' })
-      : go({ screen: 'clientes', clientId: e.cliente_id })
+    : e.tipo === 'feed_nuevo'
+      ? openFeed({ filters: { estado: 'nuevo', ...(e.detalle ? { tipo: e.detalle as FeedTipo } : {}) } })
+      : e.tipo === 'tarea_nueva' || e.tipo === 'tarea_completada'
+        ? go({ screen: 'tareas' })
+        : go({ screen: 'clientes', clientId: e.cliente_id })
 
-const openAlert = (a: Alert) => (a.tipo === 'actualizacion' ? openChangelog(a.version ?? null) : go({ screen: 'clientes', clientId: a.cliente_id }))
+const openAlert = (a: Alert) =>
+  a.tipo === 'actualizacion'
+    ? openChangelog(a.version ?? null)
+    : a.tipo === 'feed'
+      ? // uno solo: su tarjeta; varios del mismo origen: el feed filtrado por ese tipo y esa fuente
+        openFeed(a.feed?.item_id ? { itemId: a.feed.item_id } : { filters: { estado: 'nuevo', tipo: a.feed?.tipo as FeedTipo, fuente: a.feed?.fuente } })
+      : go({ screen: 'clientes', clientId: a.cliente_id })
 
-const ALERT_ICON = { cuota_vencida: 'wallet', seguimiento: 'calendar', actualizacion: 'code' } as const
+const ALERT_ICON = { cuota_vencida: 'wallet', seguimiento: 'calendar', actualizacion: 'code', feed: 'radar' } as const
 
 type Tab = 'alertas' | 'equipo'
 
@@ -40,6 +49,8 @@ export function Notifications() {
   const wrap = useRef<HTMLDivElement>(null)
   const bell = useRef<HTMLButtonElement>(null)
   const total = unreadTotal(live)
+  // La pestaña Equipo es lo que HICIERON los demás; la versión nueva y el feed ya tienen su alerta en la otra pestaña.
+  const team = live.activity.filter((e) => !ALERT_BACKED.includes(e.tipo))
 
   const close = () => {
     setOpen(false)
@@ -151,14 +162,14 @@ export function Notifications() {
               </div>
             ) : (
               <div role="tabpanel" id="np-equipo" aria-labelledby="nt-equipo" className="notif-list">
-                {live.activity.length === 0 ? (
+                {team.length === 0 ? (
                   <p className="notif-empty">
                     <b>Aún no hay movimientos del equipo.</b>
                     Aquí verás cuando alguien añada un cliente o una tarea, o la complete.
                   </p>
                 ) : (
                   <ul>
-                    {live.activity.map((e) => (
+                    {team.map((e) => (
                       <li key={e.id}>
                         <button
                           className={`notif-item${!e.propia && e.id > live.seenUpTo ? ' is-new' : ''}`}

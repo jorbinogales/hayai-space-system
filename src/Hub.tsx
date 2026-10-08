@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { Screen } from './App'
+import type { NavTarget } from './App'
 import { api } from './api'
 import { Blobvatar } from './blob'
+import Feed from './Feed'
 import { loadHub, useLoaded, type Acuerdo, type AcuerdoEstado, type Astronauta, type HubData, type Sistema } from './hubData'
 import { useLive, type Activity } from './live'
 import { setInternal } from './nav'
@@ -548,11 +549,11 @@ function Agreements({ initial, owners }: { initial: HubData['acuerdos']; owners:
 }
 
 // ---------- atajos internos ----------
-function Shortcuts({ d, onGo }: { d: HubData; onGo: (s: Screen) => void }) {
+function Shortcuts({ d, onGo }: { d: HubData; onGo: (s: NavTarget) => void }) {
   const t = d.pulso.tareas_internas
-  const items: { key: Screen; title: string; value: string; hint: string }[] = [
+  const items: { key: NavTarget; title: string; value: string; hint: string }[] = [
     { key: 'tareas', title: 'Tareas internas', value: `${t.pendientes} ${t.pendientes === 1 ? 'abierta' : 'abiertas'}`, hint: 'Abre Tareas ya filtrado a los proyectos de HAYAI' },
-    { key: 'gastos', title: 'Gastos internos', value: `${money(d.pulso.gastos_generales_mes)} este mes`, hint: 'Abre Gastos ya filtrado a lo general y a proyectos sin cliente' },
+    { key: 'gastos', title: 'Gastos internos', value: `${money(d.pulso.gastos_generales_mes)} este mes`, hint: 'Abre Finanzas en Gastos, ya filtrado a lo general y a proyectos sin cliente' },
     { key: 'finanzas', title: 'Finanzas internas', value: 'Gastos generales', hint: 'Abre Finanzas enfocado en los gastos generales de HAYAI' },
   ]
   return (
@@ -575,7 +576,7 @@ function Shortcuts({ d, onGo }: { d: HubData; onGo: (s: Screen) => void }) {
 }
 
 // ---------- pantalla ----------
-export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s: Screen) => void }) {
+export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s: NavTarget) => void }) {
   const hub = useLoaded(loadHub, [])
   const live = useLive()
   const d = hub.data
@@ -592,7 +593,7 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
   }, [lastAct])
 
   const owners = useMemo(() => (d?.astronautas ?? []).map((a) => a.nombre), [d?.astronautas])
-  const go = (s: Screen) => {
+  const go = (s: NavTarget) => {
     setInternal(true) // el filtro interno se enciende justo antes de navegar
     onOpen(s)
   }
@@ -631,6 +632,8 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
           )}
 
           {ready ? <Pulse d={d} /> : <div className="hb-pulse" aria-hidden="true">{[0, 1, 2, 3].map((i) => <article key={i} className="hb-stat is-skel"><i /><i /><i /></article>)}</div>}
+
+          <Feed seed={d?.feed} />
 
           <div className="hb-grid is-7-5">
             <Block id="team" title="Los astronautas" ready={ready} aside={d && <span className="hb-aside">{plural(d.astronautas.length, 'socio', 'socios')}</span>}>

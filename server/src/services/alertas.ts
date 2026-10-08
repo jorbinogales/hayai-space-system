@@ -5,12 +5,13 @@ import { z } from 'zod'
 import { pool, tx } from '../db.ts'
 import { COLD_DAYS, daysBetween, loadStages } from '../crm.ts'
 import { dayISO, op, pageShape, paged, r2, todayISO } from './common.ts'
+import { feedAlertas } from './feed.ts'
 
 const LECTURAS_DIAS = 90
 /** Cuántos días sigue visible en la campana el aviso de una versión nueva (si no se lee antes). */
 const ACTUALIZACION_DIAS = 14
 
-const TIPOS = ['cuota_vencida', 'seguimiento', 'actualizacion'] as const
+const TIPOS = ['cuota_vencida', 'seguimiento', 'actualizacion', 'feed'] as const
 
 type Alerta = {
   clave: string
@@ -26,6 +27,8 @@ type Alerta = {
   leida: boolean
   /** Solo en 'actualizacion': la versión anunciada (el botón "Ver cambios" abre su entrada del historial). */
   version?: string
+  /** Solo en 'feed': qué llegó (tipo y fuente), cuántos (varios del mismo origen y día van juntos) y, si es uno solo, su id para abrirlo en el hub. */
+  feed?: { tipo: string; fuente: string; cantidad: number; item_id: string | null }
 }
 
 const dias = (n: number) => `${n} ${n === 1 ? 'día' : 'días'}`
@@ -33,7 +36,7 @@ const dias = (n: number) => `${n} ${n === 1 ? 'día' : 'días'}`
 /** Todas las alertas vigentes y si `userId` ya las leyo. Primero lo mas grave: cuotas vencidas (las mas viejas arriba), luego seguimientos. */
 async function calcular(userId: string): Promise<Alerta[]> {
   const hoy = todayISO()
-  const [cuotas, seguimientos, leidas, version] = await Promise.all([
+  const [cuotas, seguimientos, leidas, version, feed] = await Promise.all([
     pool.query(
       `SELECT p.id, p.client_id, c.name AS client, p.date, p.concept, p.amount, p.series_index, p.series_total
        FROM payments p JOIN clients c ON c.id = p.client_id
@@ -58,6 +61,7 @@ async function calcular(userId: string): Promise<Alerta[]> {
        ORDER BY (string_to_array(v.version, '.'))[1]::int DESC, (string_to_array(v.version, '.'))[2]::int DESC, (string_to_array(v.version, '.'))[3]::int DESC LIMIT 1`,
       [ACTUALIZACION_DIAS],
     ),
+    feedAlertas(),
   ])
   const read = new Set<string>(leidas.rows.map((r) => r.key))
   const out: Alerta[] = []
@@ -77,6 +81,23 @@ async function calcular(userId: string): Promise<Alerta[]> {
       responsable: null,
       leida: read.has(clave),
       version: r.version as string,
+    })
+  }
+  // Feed de oportunidades: alerta, noticia y prospecto nuevos sin revisar (para todos los socios; la lectura es por socio).
+  for (const f of feed) {
+    out.push({
+      clave: f.clave,
+      tipo: 'feed',
+      fecha: f.fecha,
+      dias: Math.max(0, daysBetween(f.fecha, hoy)),
+      titulo: f.titulo,
+      detalle: f.detalle,
+      cliente_id: null,
+      cliente: null,
+      monto: null,
+      responsable: null,
+      leida: read.has(f.clave),
+      feed: { tipo: f.tipo, fuente: f.fuente, cantidad: f.cantidad, item_id: f.item_id },
     })
   }
   for (const r of cuotas.rows) {
@@ -120,7 +141,7 @@ async function calcular(userId: string): Promise<Alerta[]> {
 export const notificacionesListar = op(
   z.strictObject({
     estado: z.enum(['todas', 'sin_leer'], 'Estado inválido (todas o sin_leer)').default('todas'),
-    tipo: z.enum(TIPOS, 'Tipo inválido (cuota_vencida, seguimiento o actualizacion)').optional(),
+    tipo: z.enum(TIPOS, 'Tipo inválido (cuota_vencida, seguimiento, actualizacion o feed)').optional(),
     ...pageShape,
   }),
   async (actor, i) => {
@@ -135,7 +156,7 @@ export const notificacionesListar = op(
   },
 )
 
-const CLAVE = /^(cuota:[0-9a-f-]{36}|seguimiento:[0-9a-f-]{36}:\d{4}-\d{2}-\d{2}|version:\d{1,4}\.\d{1,4}\.\d{1,4})$/
+const CLAVE = /^(cuota:[0-9a-f-]{36}|seguimiento:[0-9a-f-]{36}:\d{4}-\d{2}-\d{2}|version:\d{1,4}\.\d{1,4}\.\d{1,4}|feed:[0-9a-f-]{36}|feed:[a-z]+:[a-z0-9._-]{1,60}:\d{4}-\d{2}-\d{2}:\d{1,4})$/
 
 export const notificacionesLeer = op(
   z

@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Cosmos from './Cosmos'
 import Home from './Home'
 import Clients from './Clients'
 import Projects from './Projects'
-import Expenses from './Expenses'
 import Finances from './Finances'
 import Tasks from './Tasks'
 import Hub from './Hub'
@@ -21,14 +20,18 @@ import { SessionProvider } from './session'
 import { startLive, stopLive } from './live'
 import { clearAllDrafts, setDraftOwner, startUpdates, stopUpdates } from './updates'
 import { UpdateHost } from './UpdateUI'
+import { setFinanceView } from './nav'
 import Versions from './Versions'
 
-export type Screen = 'home' | 'clientes' | 'proyectos' | 'gastos' | 'finanzas' | 'tareas' | 'hub' | 'marketing'
+export type Screen = 'home' | 'clientes' | 'proyectos' | 'finanzas' | 'tareas' | 'hub' | 'marketing'
+/** A dónde se puede navegar: «gastos» ya no es una pantalla, es la vista Gastos dentro de Finanzas. */
+export type NavTarget = Screen | 'gastos'
 /** Pantallas planas: se montan encima del cosmos sin viaje 3D (el mundo se queda en el Home, tapado por la pantalla). */
 export const isFlat = (s: Screen) => s === 'hub' || s === 'marketing'
 const fromHash = (): Screen => {
   const h = location.hash.slice(1).split('/')[0]
-  return h === 'clientes' || h === 'proyectos' || h === 'gastos' || h === 'finanzas' || h === 'tareas' || h === 'hub' || h === 'marketing' ? h : 'home'
+  if (h === 'gastos') return 'finanzas' // enlace viejo: Gastos vive dentro de Finanzas
+  return h === 'clientes' || h === 'proyectos' || h === 'finanzas' || h === 'tareas' || h === 'hub' || h === 'marketing' ? h : 'home'
 }
 
 export default function App() {
@@ -86,9 +89,16 @@ export default function App() {
     return () => window.removeEventListener('hayai:unauthorized', out)
   }, [])
 
-  const navigate = (s: Screen, setHash = true) => {
+  // desde dónde se abrió Marketing (su flecha de regreso vuelve ahí: al Hub o al Home)
+  const marketingFrom = useRef<'home' | 'hub'>('home')
+  const navigate = (target: NavTarget, setHash = true) => {
+    // Gastos vive dentro de Finanzas: «gastos» abre Finanzas en esa vista; «finanzas» a secas, en el resumen
+    const s: Screen = target === 'gastos' ? 'finanzas' : target
+    if (target === 'gastos') setFinanceView('gastos', false)
+    else if (s === 'finanzas') setFinanceView(setHash || location.hash.split('/')[1] !== 'gastos' ? 'resumen' : 'gastos', false) // por enlace (#finanzas/gastos) se respeta la vista del hash
     if (world.busy() || s === route) return
-    if (setHash) location.hash = s === 'home' ? '' : s
+    if (s === 'marketing') marketingFrom.current = route === 'hub' ? 'hub' : 'home'
+    if (setHash) location.hash = s === 'home' ? '' : s === 'finanzas' && target === 'gastos' ? 'finanzas/gastos' : s
     // las pantallas planas (hub, marketing) no viajan: se muestran al instante sobre el cosmos
     if (isFlat(s) || (isFlat(route) && s === 'home')) {
       setRoute(s)
@@ -113,11 +123,10 @@ export default function App() {
         <Home shown={ui === 'home'} onOpen={navigate} />
         {ui === 'clientes' && <Clients onBack={() => navigate('home')} />}
         {ui === 'proyectos' && <Projects onBack={() => navigate('home')} />}
-        {ui === 'gastos' && <Expenses onBack={() => navigate('home')} />}
         {ui === 'finanzas' && <Finances onBack={() => navigate('home')} />}
         {ui === 'tareas' && <Tasks onBack={() => navigate('home')} />}
         {ui === 'hub' && <Hub onBack={() => navigate('home')} onOpen={navigate} />}
-        {ui === 'marketing' && <Marketing onBack={() => navigate('hub')} />}
+        {ui === 'marketing' && <Marketing from={marketingFrom.current} onBack={() => navigate(marketingFrom.current)} />}
       </Cosmos>
       {session && (
         <Topbar

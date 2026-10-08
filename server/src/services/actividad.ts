@@ -1,7 +1,7 @@
 // Actividad del equipo: lo que hicieron los demas socios (cliente nuevo, tarea nueva, tarea completada). Un servicio para la
 // web, la API v1 y el MCP. El texto nombra al dueño de la llave que lo hizo; la herramienta (web, Growi, Muse...) no aparece.
 import { z } from 'zod'
-import { ACTIVITY_SELECT, activityOut, INTERNAL_ACTIVITY_SQL, isSystemKind, KINDS, SYSTEM_KINDS } from '../activity.ts'
+import { ACTIVITY_SELECT, activityOut, ALERT_BACKED_KINDS, INTERNAL_ACTIVITY_SQL, isSystemKind, KINDS, SYSTEM_KINDS } from '../activity.ts'
 import { pool } from '../db.ts'
 import { op, pageShape, paged } from './common.ts'
 
@@ -14,9 +14,19 @@ async function seenOf(userId: string): Promise<number> {
   return Number((await pool.query('SELECT seen_id FROM activity_seen WHERE user_id = $1', [userId])).rows[0].seen_id)
 }
 
-/** Lo posterior al "visto hasta" y hecho por OTRO socio: lo propio nunca cuenta como sin leer. */
+/**
+ * Lo posterior al "visto hasta" y hecho por OTRO socio: lo propio nunca cuenta como sin leer. La versión nueva y el feed ya tienen su
+ * alerta en la campana: contarlos aquí también inflaría el número (una actualización sumaba 2).
+ */
 async function unread(userId: string, seen: number): Promise<number> {
-  return (await pool.query('SELECT count(*)::int AS n FROM activity WHERE id > $1 AND (actor_id <> $2 OR kind = ANY($3::text[]))', [seen, userId, SYSTEM_KINDS])).rows[0].n
+  return (
+    await pool.query('SELECT count(*)::int AS n FROM activity WHERE id > $1 AND (actor_id <> $2 OR kind = ANY($3::text[])) AND kind <> ALL($4::text[])', [
+      seen,
+      userId,
+      SYSTEM_KINDS,
+      ALERT_BACKED_KINDS,
+    ])
+  ).rows[0].n
 }
 
 export const actividadListar = op(

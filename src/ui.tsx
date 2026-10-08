@@ -31,6 +31,7 @@ const PATHS = {
   trash: 'M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6',
   archive: 'M3 4h18v4H3ZM5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4',
   key: 'M15.5 7.5 19 4M17 6l3 3M11.4 11.6a5.5 5.5 0 1 1-7.8 7.8 5.5 5.5 0 0 1 7.8-7.8ZM11.4 11.6 17 6',
+  radar: 'M12 3a9 9 0 1 0 9 9M12 12l5.5-5.5M12 7.5a4.5 4.5 0 1 0 4.5 4.5M12 12h.01',
   calendar: 'M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2ZM16 2v4M8 2v4M3 10h18',
 }
 export type IconName = keyof typeof PATHS

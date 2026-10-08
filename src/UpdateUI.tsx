@@ -2,26 +2,59 @@
 // banner «Recargar página», confirmación al recargar con cambios, diálogo de conflicto y la barra «Recuperamos tu borrador».
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { markAlerts, useLive } from './live'
 import { ago } from './time'
 import { cancelReload, confirmReload, openChangelog, requestReload, updateAvailable, useUpdates, type Guard } from './updates'
 
-/** Aviso fijo abajo: avisa que hay versión nueva, no tapa nada y no se puede ignorar sin más (se queda hasta recargar). */
+/**
+ * Banner superior central, por encima de los modales. Dos casos de la misma pieza:
+ *  - esta pestaña quedó atrás de la versión publicada: «Hay una versión nueva» con «Ver cambios» y «Recargar página» (nunca recarga solo);
+ *  - esta pestaña ya corre la versión anunciada y el socio aún no vio el aviso: «Nueva actualización vX» con «Ver cambios» y «Entendido».
+ * En ambos se queda hasta que se resuelva; ver los cambios o entenderlo marca la alerta de la campana como leída.
+ */
 export function UpdateBanner() {
   const u = useUpdates()
-  if (!updateAvailable(u)) return null
+  const live = useLive()
+  const pending = live.alerts.find((a) => a.tipo === 'actualizacion' && !a.leida)
+  const behind = updateAvailable(u)
+  if (!behind && !pending) return null
+  const version = behind ? u.latest : pending?.version
+  const seen = () => pending && void markAlerts([pending.clave]).catch(() => {})
   return (
     <div className="upd-banner" role="status" aria-live="polite">
       <span className="upd-dot" aria-hidden="true" />
       <div className="upd-text">
-        <b>Hay una versión nueva (v{u.latest}).</b>
-        {u.dirty.length > 0 ? <small>Si recargas ahora, cualquier cambio no guardado se perderá.</small> : <small>Recarga cuando te quede bien.</small>}
+        {behind ? (
+          <>
+            <b>Hay una versión nueva (v{version}).</b>
+            {u.dirty.length > 0 ? <small>Si recargas ahora, cualquier cambio no guardado se perderá.</small> : <small>Recarga cuando te quede bien.</small>}
+          </>
+        ) : (
+          <>
+            <b>Nueva actualización v{version}.</b>
+            <small>Ya estás usando esta versión.</small>
+          </>
+        )}
       </div>
-      <button type="button" className="upd-link" onClick={() => openChangelog(u.latest)}>
+      <button
+        type="button"
+        className="upd-link"
+        onClick={() => {
+          seen()
+          openChangelog(version ?? null)
+        }}
+      >
         Ver cambios
       </button>
-      <button type="button" className="primary" onClick={requestReload}>
-        Recargar página
-      </button>
+      {behind ? (
+        <button type="button" className="primary" onClick={requestReload}>
+          Recargar página
+        </button>
+      ) : (
+        <button type="button" className="primary" onClick={seen}>
+          Entendido
+        </button>
+      )}
     </div>
   )
 }

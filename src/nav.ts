@@ -17,6 +17,30 @@ export function go(t: Target) {
   else location.hash = h
 }
 
+// ---------- vista de Finanzas: Resumen | Gastos ----------
+// Gastos vive DENTRO de Finanzas (ya no tiene planeta propio). El hash lo refleja: #finanzas y #finanzas/gastos (#gastos, el enlace
+// viejo, también cae aquí).
+export type FinanceView = 'resumen' | 'gastos'
+const viewFromHash = (): FinanceView => {
+  const [screen, sub] = location.hash.slice(1).split('/')
+  return screen === 'gastos' || (screen === 'finanzas' && sub === 'gastos') ? 'gastos' : 'resumen'
+}
+let financeView: FinanceView = viewFromHash()
+const viewSubs = new Set<() => void>()
+/** Cambia la vista de Finanzas y deja el enlace al día (sin recargar ni añadir historial). */
+export function setFinanceView(v: FinanceView, syncHash = true) {
+  if (financeView !== v) {
+    financeView = v
+    viewSubs.forEach((f) => f())
+  }
+  if (syncHash && location.hash.slice(1).split('/')[0] === 'finanzas') history.replaceState(null, '', v === 'gastos' ? '#finanzas/gastos' : '#finanzas')
+}
+export const useFinanceView = () =>
+  useSyncExternalStore(
+    (f) => (viewSubs.add(f), () => void viewSubs.delete(f)),
+    () => financeView,
+  )
+
 // ---------- filtro interno (atajos del Hub) ----------
 // Los atajos «Tareas internas», «Gastos internos» y «Finanzas internas» del Hub abren esas pantallas con lo interno de HAYAI
 // (sin cliente) ya filtrado. El Hub lo enciende justo antes de navegar; Home lo apaga al volver al core o al entrar normal.

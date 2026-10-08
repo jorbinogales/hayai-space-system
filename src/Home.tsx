@@ -175,7 +175,7 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
                 : p.key === 'marketing'
                   ? { title: 'Marketing', lines: marketingLines(funnel) }
                   : p.key === 'finanzas'
-                    ? { title: `Finanzas ${new Date().getFullYear()}`, lines: [`${money(fin.ingresos)} ingresos`, `${money(fin.gastos)} gastos`, `${money(fin.ingresos - fin.gastos)} balance`] }
+                    ? { title: 'Finanzas', lines: [`${money(fin.ingresos)} ingresos`, `${money(fin.gastos)} gastos`, `${money(fin.ingresos - fin.gastos)} balance`] }
                     : { title: 'Tareas', lines: [`${tk.pendientes} por hacer`, `${tk.completadas} completadas`] }
           return (
             <div

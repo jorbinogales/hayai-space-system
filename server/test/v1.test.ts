@@ -724,10 +724,10 @@ describe('MCP', () => {
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 72) // lectura + escritura
+    assert.equal(names.length, 77) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 82)
+    assert.equal(full.length, 88)
     assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -3465,7 +3465,7 @@ describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la ta
     bcvPayload.principal = oficial(873.87, caracas())
     const r = await api('/version')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.equal(r.body.version, '1.6.6')
+    assert.equal(r.body.version, '1.7.0')
     assert.equal(r.body.hoy, caracas())
     assert.deepEqual({ ...r.body.bcv, actualizada_el: '<t>' }, { moneda: 'USD', tasa: 873.87, fecha: caracas(), es_de_hoy: true, fuente: `localhost:${BCV_PORT}`, actualizada_el: '<t>' })
     const hits = bcvHits.principal
@@ -3521,7 +3521,7 @@ describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la ta
 
   it('MCP y web: la misma respuesta; sin llave o sin sesión 401', async () => {
     const m = data(await mcp('hayai_version_ver', {}))
-    assert.equal(m.version, '1.6.6')
+    assert.equal(m.version, '1.7.0')
     assert.equal(m.bcv.tasa, 890)
     assert.equal((await http(`${ROOT}/api/v1/version`)).status, 401)
     const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
@@ -3537,13 +3537,13 @@ describe('Historial de versiones (changelog)', () => {
   const hoy = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
   const publicar = (b: Record<string, unknown>, key = KEY) => api('/versiones', { key, body: b })
 
-  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5 y 1.6.6 vienen publicadas; la más nueva primero y marcada como actual', async () => {
+  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6 y 1.7.0 vienen publicadas; la más nueva primero y marcada como actual', async () => {
     const r = await api('/versiones')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.6.6', true], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
-    const [v166, v165, v16, v15, v10] = r.body.data
+    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.7.0', true], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
+    const [v17, v166, , v16, v15, v10] = r.body.data
     assert.deepEqual([v166.titulo, v166.autor, v166.fecha, v166.cambios.length], ['Órbita fina II', 'Equipo HAYAI', '2026-10-08', 7])
-    assert.deepEqual([v165.titulo, v165.autor, v165.fecha, v165.cambios.length >= 10], ['Órbita fina', 'Equipo HAYAI', '2026-10-08', true])
+    assert.deepEqual([v17.titulo, v17.autor, v17.fecha, v17.cambios.length], ['Chat interno', 'Equipo HAYAI', '2026-10-08', 5])
     assert.deepEqual([v16.titulo, v16.autor, v16.fecha, v16.cambios.length], ['Feed de oportunidades', 'Equipo HAYAI', '2026-10-08', 6])
     assert.equal(v10.titulo, 'Lanzamiento inicial')
     assert.equal(v10.autor, 'Equipo HAYAI', 'las históricas no tienen autor individual')
@@ -3554,15 +3554,15 @@ describe('Historial de versiones (changelog)', () => {
 
   it('POST /versiones: el autor es el dueño de la llave, la fecha por defecto es hoy, pasa a ser la actual y avisa al equipo', async () => {
     const base = (await api('/actividad?per_page=1', { key: KEY_J })).body.meta.ultimo_id as number
-    const r = await publicar({ version: '1.6.7', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
+    const r = await publicar({ version: '1.7.1', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
     assert.equal(r.status, 201, JSON.stringify(r.body))
-    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.6.7', 'Leandro', hoy(), true, 2])
-    assert.equal((await api('/version')).body.version, '1.6.7')
-    assert.equal((await api('/versiones')).body.data[0].version, '1.6.7')
+    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.7.1', 'Leandro', hoy(), true, 2])
+    assert.equal((await api('/version')).body.version, '1.7.1')
+    assert.equal((await api('/versiones')).body.data[0].version, '1.7.1')
     assert.equal((await api('/versiones')).body.data.filter((v: any) => v.actual).length, 1)
     const ev = ((await api(`/actividad?desde_id=${base}&orden=asc`, { key: KEY_J })).body.data as any[]).filter((e) => e.tipo === 'version_nueva')
     assert.equal(ev.length, 1)
-    assert.equal(ev[0].texto, 'Nueva actualización v1.6.7 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
+    assert.equal(ev[0].texto, 'Nueva actualización v1.7.1 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
     assert.equal(ev[0].propia, false)
     // y le llega a TODOS, también a quien la publicó (su pestaña abierta también debe enterarse)
     const mio = ((await api(`/actividad?desde_id=${base}&orden=asc`)).body.data as any[]).find((e) => e.tipo === 'version_nueva')
@@ -3574,7 +3574,7 @@ describe('Historial de versiones (changelog)', () => {
 
   it('el orden es numérico (1.10.0 va después de 1.9.0) y la versión nueva siempre debe ser mayor que la actual', async () => {
     assert.equal((await publicar({ version: '1.10.0', cambios: ['x'] })).status, 201)
-    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.6.7', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
+    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.7.1', '1.7.0', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
     assert.equal((await api('/version')).body.version, '1.10.0')
     for (const v of ['1.10.0', '1.9.5', '1.4.0', '0.9.0']) {
       const r = await publicar({ version: v, cambios: ['x'] })
@@ -4439,5 +4439,410 @@ describe('Feed de oportunidades', () => {
     await assert.rejects(admin.query(`UPDATE feed_items SET category = 'Mayúscula' WHERE id = $1`, [it.id]), /check/i)
     await assert.rejects(admin.query(`INSERT INTO feed_items (title, kind, source, published_by) SELECT 'x', 'idea', 'Mala Fuente', id FROM users LIMIT 1`), /check/i)
     await assert.rejects(admin.query(`INSERT INTO feed_items (title, kind, source, published_by) SELECT 'x', 'chisme', 'manual', id FROM users LIMIT 1`), /check/i)
+  })
+})
+
+describe('Chat interno', () => {
+  let n = 0
+  const rpc = (method: string, params: unknown = {}, key: string | null = KEY) =>
+    http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: ++n, method, params } })
+  const mcp = async (name: string, args: unknown = {}, key: string | null = KEY) => (await rpc('tools/call', { name, arguments: args }, key)).body
+  const dato = (b: any) => JSON.parse(b.result.content[0].text)
+  const espera = (ms = 15) => new Promise((r) => setTimeout(r, ms))
+  const pub = (cuerpo: string, extra: Record<string, unknown> = {}, key = KEY) => api('/chat', { key, body: { cuerpo, fuente: 'growi', ...extra } })
+  const cookies: Record<string, string> = {}
+  const web = (who: string, path: string, o: { method?: string; body?: unknown; headers?: Record<string, string> } = {}) => http(`${ROOT}/api${path}`, { ...o, headers: { cookie: cookies[who], ...o.headers } })
+  const uid: Record<string, string> = {}
+  let KEY_JD = '' // Jorbi con borrado
+  let KEY_R = '' // Jorbi, solo lectura
+  const ids: string[] = []
+
+  before(async () => {
+    for (const [name, pin] of [['Jorbi', '482913'], ['Elis', '713904']]) {
+      const r = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, pin }) })
+      assert.equal(r.status, 200, `login ${name}`)
+      cookies[name] = r.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    }
+    KEY_JD = newKey('Jorbi', 'chat-borra', 'read,write,delete')
+    KEY_R = newKey('Jorbi', 'chat-lee', 'read')
+    for (const u of (await api('/chat/usuarios')).body.data) uid[u.nombre] = u.id
+    // Primer acceso de cada uno: el "leído hasta" nace ahora, así que todo lo que se publique después cuenta como no leído.
+    for (const k of [KEY, KEY_J]) assert.equal((await api('/chat/contadores', { key: k })).body.sin_leer, 0)
+    assert.equal((await web('Elis', '/chat/contadores')).body.sin_leer, 0)
+    await espera(5)
+  })
+
+  it('usuarios mencionables: los astronautas activos con su id', async () => {
+    const r = await api('/chat/usuarios')
+    assert.equal(r.status, 200)
+    assert.deepEqual(r.body.data.map((u: any) => u.nombre).sort(), ['Elis', 'Jorbi', 'Leandro'])
+    assert.ok(r.body.data.every((u: any) => u.id && u.avatar))
+  })
+
+  it('publicar: el autor sale de la llave, no del cuerpo; fuente obligatoria; idempotente por (fuente, clave_externa)', async () => {
+    const r = await pub('Hola equipo, el cron de Growi ya corrió.', { clave_externa: 'run-1' })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.deepEqual([r.body.autor.nombre, r.body.autor.id, r.body.fuente, r.body.clave_externa, r.body.creado, r.body.editado_el, r.body.menciones], ['Leandro', uid.Leandro, 'growi', 'run-1', true, null, []])
+    assert.match(r.body.creado_el, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/, 'con microsegundos')
+    assert.ok(r.full.actualizado_el)
+    const id = r.body.id
+    ids.push(id)
+    const otra = await pub('Otro texto', { clave_externa: 'run-1' })
+    assert.equal(otra.status, 200, 'misma (fuente, clave): no se duplica')
+    assert.deepEqual([otra.body.id, otra.body.creado, otra.body.cuerpo], [id, false, 'Hola equipo, el cron de Growi ya corrió.'])
+    assert.equal((await pub('Misma clave, otra fuente', { clave_externa: 'run-1', fuente: 'muse-leandro' })).status, 201)
+    assert.equal((await pub('Sin clave')).status, 201)
+    assert.equal((await pub('Sin clave')).status, 201, 'sin clave_externa no hay idempotencia')
+    assert.equal((await admin.query(`SELECT count(*)::int AS n FROM chat_messages WHERE source = 'growi' AND external_key = 'run-1'`)).rows[0].n, 1)
+    // Otra llave de otro socio: se atribuye a ese socio
+    const j = await pub('Soy Jorbi', {}, KEY_J)
+    assert.equal(j.body.autor.nombre, 'Jorbi')
+    ids.push(j.body.id)
+    assert.equal((await api(`/chat/${id}`)).body.id, id)
+    assert.equal((await api(`/chat/${NOPE}`)).status, 404)
+  })
+
+  it('validación: cuerpo, fuente, clave, menciones, autor en el cuerpo y campos desconocidos', async () => {
+    const malos: [string, unknown][] = [
+      ['cuerpo vacío', { cuerpo: '   ', fuente: 'growi' }],
+      ['sin cuerpo', { fuente: 'growi' }],
+      ['cuerpo largo', { cuerpo: 'x'.repeat(4001), fuente: 'growi' }],
+      ['sin fuente', { cuerpo: 'hola' }],
+      ['fuente con espacio', { cuerpo: 'hola', fuente: 'mi app' }],
+      ['clave larga', { cuerpo: 'hola', fuente: 'growi', clave_externa: 'k'.repeat(201) }],
+      ['menciones no uuid', { cuerpo: 'hola', fuente: 'growi', menciones: ['Elis'] }],
+      ['menciones con uuid inexistente', { cuerpo: 'hola', fuente: 'growi', menciones: [NOPE] }],
+      ['autor en el cuerpo', { cuerpo: 'hola', fuente: 'growi', autor: uid.Elis }],
+      ['author_id en el cuerpo', { cuerpo: 'hola', fuente: 'growi', author_id: uid.Elis }],
+    ]
+    for (const [que, body] of malos) assert.equal((await api('/chat', { body })).status, 400, `${que}`)
+    assert.equal((await pub('x'.repeat(4000))).status, 201, '4000 caracteres justos caben')
+    assert.equal((await api('/chat', { raw: JSON.stringify({ cuerpo: 'hola', fuente: 'growi' }), headers: { 'content-type': 'text/plain' } })).status, 415)
+  })
+
+  it('menciones: @Nombre sin importar mayúsculas, ids explícitos, sin repetidos ni el propio autor; los @ que no existen se ignoran', async () => {
+    const r = await pub('Hola @jorbi y @ELIS, @Jorbi otra vez, @nadie, escríbeme a leandro@jorbi.com, o @Leandro (yo mismo)')
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.deepEqual(r.body.menciones.map((m: any) => m.nombre), ['Elis', 'Jorbi'], 'sin repetir, sin el autor, sin @nadie ni el correo')
+    assert.deepEqual(r.body.menciones.map((m: any) => m.id), [uid.Elis, uid.Jorbi])
+    assert.equal(r.body.cuerpo.includes('@nadie'), true, 'el texto no se toca')
+    ids.push(r.body.id)
+    // por uuid (además de las @), con repetidos y con el propio autor
+    const u = await pub('Sin arrobas', { menciones: [uid.Elis, uid.Elis, uid.Leandro] })
+    assert.deepEqual(u.body.menciones.map((m: any) => m.nombre), ['Elis'])
+    const mezcla = await pub('Mira esto @Jorbi', { menciones: [uid.Elis] })
+    assert.deepEqual(mezcla.body.menciones.map((m: any) => m.nombre), ['Elis', 'Jorbi'])
+    ids.push(mezcla.body.id)
+    assert.equal((await pub('@Elisabeth no es @Elis.')).body.menciones.map((m: any) => m.nombre).join(), 'Elis', 'el límite de la palabra: @Elisabeth no es Elis, pero «@Elis.» sí')
+    assert.equal((await pub('Elis sin arroba')).body.menciones.length, 0)
+    assert.equal((await admin.query('SELECT count(*)::int AS n FROM chat_mentions WHERE message_id = $1', [r.body.id])).rows[0].n, 2)
+  })
+
+  it('contadores: sin leer son los de OTROS posteriores al «leído hasta»; las menciones, los míos; lo propio no cuenta', async () => {
+    const mensajes = (await admin.query(`SELECT count(*) FILTER (WHERE a.name = 'Leandro')::int AS de_leandro, count(*) FILTER (WHERE a.name = 'Jorbi')::int AS de_jorbi, count(*)::int AS todos FROM chat_messages m JOIN users a ON a.id = m.author_id WHERE m.source <> 'seed'`)).rows[0]
+    const menciona = async (u: string) => (await admin.query(`SELECT count(*)::int AS n FROM chat_mentions cm JOIN chat_messages m ON m.id = cm.message_id WHERE cm.user_id = $1 AND m.author_id <> $1`, [uid[u]])).rows[0].n
+    const j = (await api('/chat/contadores', { key: KEY_J })).body
+    assert.deepEqual([j.sin_leer, j.menciones_sin_leer], [mensajes.de_leandro, await menciona('Jorbi')])
+    assert.ok(j.sin_leer >= 6 && j.menciones_sin_leer === 2)
+    const l = (await api('/chat/contadores')).body
+    assert.deepEqual([l.sin_leer, l.menciones_sin_leer], [mensajes.de_jorbi, 0], 'Leandro: solo lo de Jorbi cuenta; lo suyo no')
+    const e = (await web('Elis', '/chat/contadores')).body
+    assert.deepEqual([e.sin_leer, e.menciones_sin_leer], [mensajes.todos, await menciona('Elis')])
+    // el listado trae los mismos contadores en meta
+    const lista = await api('/chat?limite=1', { key: KEY_J })
+    assert.deepEqual([lista.body.meta.sin_leer, lista.body.meta.menciones_sin_leer], [j.sin_leer, j.menciones_sin_leer])
+  })
+
+  it('marcar leído: hasta = creado_el del más nuevo MOSTRADO (no «ahora»); nunca retrocede; no pasa de ahora; todos=true', async () => {
+    const todos = (await api('/chat?limite=100', { key: KEY_J })).body.data as any[]
+    const delaOtros = todos.filter((m) => m.autor.nombre !== 'Jorbi').sort((a, b) => (a.creado_el < b.creado_el ? -1 : 1))
+    const antes = (await api('/chat/contadores', { key: KEY_J })).body.sin_leer
+    assert.equal(antes, delaOtros.length)
+    const mitad = delaOtros[3] // el cuarto de los de Leandro
+    const r = await api('/chat/leido', { key: KEY_J, body: { hasta: mitad.creado_el } })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.sin_leer, delaOtros.length - 4, 'quedan los posteriores al marcado, no todos ni ninguno')
+    assert.equal(r.body.leido_hasta, mitad.creado_el)
+    // un instante anterior no retrocede el cursor
+    assert.equal((await api('/chat/leido', { key: KEY_J, body: { hasta: delaOtros[0].creado_el } })).body.leido_hasta, mitad.creado_el)
+    // un instante futuro se recorta a «ahora»: no deja el cursor adelantado para tragarse lo que llegue después
+    const fut = await api('/chat/leido', { key: KEY_J, body: { hasta: '2999-01-01T00:00:00Z' } })
+    assert.equal(fut.body.sin_leer, 0)
+    assert.ok(fut.body.leido_hasta < '2999')
+    await espera(5)
+    await pub('Mensaje posterior al marcado')
+    assert.equal((await api('/chat/contadores', { key: KEY_J })).body.sin_leer, 1, 'lo nuevo vuelve a contar')
+    // todos=true: hasta el último
+    assert.equal((await api('/chat/leido', { key: KEY_J, body: { todos: true } })).body.sin_leer, 0)
+    for (const b of [{}, { hasta: 'ayer' }, { todos: false }, { hasta: mitad.creado_el, todos: true }, { raro: 1 }]) assert.equal((await api('/chat/leido', { key: KEY_J, body: b })).status, 400, JSON.stringify(b))
+    // la web: Elis marca con el creado_el del más nuevo que vio
+    const nuevo = (await web('Elis', '/chat?limite=1')).body.data[0]
+    const w = await web('Elis', '/chat/leido', { body: { hasta: nuevo.creado_el } })
+    assert.deepEqual([w.status, w.body.sin_leer, w.body.menciones_sin_leer], [200, 0, 0])
+  })
+
+  it('listar con keyset: más reciente primero, sin huecos ni repetidos, también con milisegundos iguales y empates exactos', async () => {
+    // Tres mensajes con el MISMO milisegundo y microsegundos distintos, y tres con el instante idéntico: un cursor truncado a ms perdería filas.
+    const instantes = ['2026-01-01T00:00:00.123100Z', '2026-01-01T00:00:00.123400Z', '2026-01-01T00:00:00.123900Z', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z']
+    for (const [i, t] of instantes.entries())
+      await admin.query(`INSERT INTO chat_messages (author_id, body, source, created_at, updated_at) VALUES ($1, $2, 'seed', $3::timestamptz, $3::timestamptz)`, [uid.Leandro, `viejo ${t} #${i}`, t])
+    const total = (await admin.query('SELECT count(*)::int AS n FROM chat_messages')).rows[0].n as number
+    const orden = (await admin.query('SELECT id FROM chat_messages ORDER BY created_at DESC, id DESC')).rows.map((r) => r.id)
+    const vistos: string[] = []
+    let q = '/chat?limite=4'
+    let paginas = 0
+    for (;;) {
+      const r = await api(q)
+      assert.equal(r.status, 200, JSON.stringify(r.body))
+      assert.ok(r.body.data.length <= 4)
+      vistos.push(...r.body.data.map((m: any) => m.id))
+      paginas++
+      if (!r.body.meta.hay_mas) {
+        assert.equal(r.body.meta.siguiente, null)
+        break
+      }
+      assert.equal(r.body.data.length, 4)
+      q = `/chat?limite=4&antes_de=${encodeURIComponent(r.body.meta.siguiente.antes_de)}&antes_de_id=${r.body.meta.siguiente.antes_de_id}`
+      assert.ok(paginas < 50)
+    }
+    assert.equal(vistos.length, total)
+    assert.deepEqual(vistos, orden, 'el orden es (created_at, id) descendente, sin saltarse ni repetir nada')
+    assert.ok(paginas >= 3)
+    const primera = (await api('/chat?limite=1')).body.data[0]
+    const antes = await api(`/chat?limite=2&antes_de=${encodeURIComponent(primera.creado_el)}&antes_de_id=${primera.id}`)
+    assert.ok(antes.body.data.every((m: any) => m.id !== primera.id))
+    for (const bad of ['limite=0', 'limite=101', 'limite=x', `antes_de=${encodeURIComponent('2026-01-01T00:00:00Z')}`, `antes_de_id=${NOPE}`, `antes_de=ayer&antes_de_id=${NOPE}`, 'page=2', 'raro=1'])
+      assert.equal((await api(`/chat?${bad}`)).status, 400, bad)
+    await admin.query(`DELETE FROM chat_messages WHERE source = 'seed'`)
+  })
+
+  it('editar: solo el autor, queda «(editado)», recalcula las menciones, sin cambios no marca, If-Match / actualizado_el', async () => {
+    const m = await pub('Primera versión para @Jorbi', { clave_externa: 'edit-1' })
+    const id = m.body.id
+    assert.deepEqual(m.body.menciones.map((x: any) => x.nombre), ['Jorbi'])
+    assert.equal((await api(`/chat/${id}`, { method: 'PATCH', body: { cuerpo: 'Intento ajeno' }, key: KEY_J })).status, 403, 'otro socio no edita')
+    assert.equal((await api(`/chat/${id}`, { method: 'PATCH', body: { cuerpo: 'Lo cambia la llave de solo lectura' }, key: KEY_R })).status, 403)
+    assert.equal((await api(`/chat/${NOPE}`, { method: 'PATCH', body: { cuerpo: 'x' } })).status, 404)
+    await espera()
+    const e = await api(`/chat/${id}`, { method: 'PATCH', body: { cuerpo: 'Segunda versión para @Elis' }, headers: { 'if-match': m.full.actualizado_el } })
+    assert.equal(e.status, 200, JSON.stringify(e.body))
+    assert.deepEqual([e.body.cuerpo, e.body.autor.nombre, e.body.menciones.map((x: any) => x.nombre)], ['Segunda versión para @Elis', 'Leandro', ['Elis']])
+    assert.ok(e.body.editado_el)
+    assert.equal(e.body.creado_el, m.body.creado_el, 'la hora original no cambia')
+    assert.equal(e.body.fuente, 'growi')
+    assert.notEqual(e.full.actualizado_el, m.full.actualizado_el)
+    // la misma versión de nuevo: no hay nada que cambiar ni que marcar
+    const igual = await api(`/chat/${id}`, { method: 'PATCH', body: { cuerpo: 'Segunda versión para @Elis' } })
+    assert.deepEqual([igual.status, igual.body.editado_el], [200, e.body.editado_el])
+    // conflicto: quien tenía la versión vieja no pisa
+    const viejo = await api(`/chat/${id}`, { method: 'PATCH', body: { cuerpo: 'Pisando', actualizado_el: m.full.actualizado_el } })
+    assert.equal(viejo.status, 409, JSON.stringify(viejo.body))
+    assert.equal((await api(`/chat/${id}`)).body.cuerpo, 'Segunda versión para @Elis')
+    const ok = await api(`/chat/${id}`, { method: 'PATCH', body: { cuerpo: 'Tercera, con ids', menciones: [uid.Jorbi], actualizado_el: e.full.actualizado_el } })
+    assert.deepEqual(ok.body.menciones.map((x: any) => x.nombre), ['Jorbi'])
+    // los ids explícitos inexistentes se rechazan y no cambian nada
+    assert.equal((await api(`/chat/${id}`, { method: 'PATCH', body: { cuerpo: 'Con id malo', menciones: [NOPE] } })).status, 400)
+    assert.equal((await api(`/chat/${id}`)).body.cuerpo, 'Tercera, con ids')
+    for (const b of [{}, { cuerpo: '' }, { cuerpo: 'x'.repeat(4001) }, { cuerpo: 'ok', fuente: 'otra' }, { cuerpo: 'ok', autor: uid.Elis }])
+      assert.equal((await api(`/chat/${id}`, { method: 'PATCH', body: b })).status, 400, JSON.stringify(b))
+    ids.push(id)
+  })
+
+  it('borrar: exige el permiso de borrado; solo el autor o un ADMIN; va a la papelera con su etiqueta y se restaura con sus menciones', async () => {
+    const largo = `Mensaje para borrar con un texto largo ${'y '.repeat(60)}fin @Jorbi`
+    const m = await pub(largo)
+    const id = m.body.id
+    assert.equal((await api(`/chat/${id}`, { method: 'DELETE' })).status, 403, 'KEY no tiene permiso de borrado')
+    assert.equal((await api(`/chat/${id}`, { method: 'DELETE', key: KEY_R })).status, 403)
+    const noAutor = await api(`/chat/${id}`, { method: 'DELETE', key: KEY_JD })
+    assert.equal(noAutor.status, 403, 'Jorbi tiene el permiso, pero no es el autor ni ADMIN')
+    assert.equal((await api(`/chat/${id}`)).status, 200)
+    assert.equal((await apiD(`/chat/${NOPE}`, { method: 'DELETE' })).status, 404)
+
+    // un ADMIN sí puede borrar el mensaje de otro
+    await admin.query(`UPDATE users SET role = 'ADMIN' WHERE name = 'Jorbi'`)
+    const adm = await pub('Mensaje que borrará un administrador')
+    const ad = await api(`/chat/${adm.body.id}`, { method: 'DELETE', key: KEY_JD })
+    await admin.query(`UPDATE users SET role = 'SOCIO' WHERE name = 'Jorbi'`)
+    assert.equal(ad.status, 200, JSON.stringify(ad.body))
+    assert.equal((await api(`/chat/${adm.body.id}`)).status, 404)
+
+    const antesDeBorrar = (await api('/chat/contadores', { key: KEY_J })).body.sin_leer
+    const d = await apiD(`/chat/${id}`, { method: 'DELETE' })
+    assert.equal(d.status, 200, JSON.stringify(d.body))
+    assert.equal(d.body.entidad, 'mensaje')
+    assert.equal(d.body.nombre, `${largo.replace(/\s+/g, ' ').slice(0, 80)}…`, 'la etiqueta son los primeros 80 caracteres')
+    assert.match(d.body.resumen, /Mensaje de Leandro .*1 mención/)
+    assert.equal((await api(`/chat/${id}`)).status, 404)
+    assert.ok(!(await api('/chat?limite=100')).body.data.some((x: any) => x.id === id))
+    assert.equal((await api('/chat/contadores', { key: KEY_J })).body.sin_leer, antesDeBorrar - 1, 'el borrado se descuenta de los no leídos')
+    assert.equal((await admin.query('SELECT count(*)::int AS n FROM chat_mentions WHERE message_id = $1', [id])).rows[0].n, 0)
+
+    const pap = (await apiD('/papelera?per_page=100')).body.data.find((x: any) => x.id === d.body.papelera_id)
+    assert.deepEqual([pap.tipo, pap.origen, pap.eliminado_por], ['mensaje', 'api:limpieza', 'Leandro'])
+    const rest = await apiD(`/papelera/${d.body.papelera_id}/restaurar`, { method: 'POST', body: {} })
+    assert.equal(rest.status, 200, JSON.stringify(rest.body))
+    const back = await api(`/chat/${id}`)
+    assert.deepEqual([back.body.cuerpo, back.body.creado_el, back.body.menciones.map((x: any) => x.nombre)], [largo, m.body.creado_el, ['Jorbi']], 'vuelve idéntico, con la hora original y sus menciones')
+    assert.equal((await api('/chat/contadores', { key: KEY_J })).body.sin_leer, antesDeBorrar)
+    assert.equal((await apiD(`/papelera/${d.body.papelera_id}/restaurar`, { method: 'POST', body: {} })).status, 404, 'ya no está en la papelera')
+    // si la clave externa se reutilizó mientras estaba en la papelera, restaurar avisa en vez de duplicar
+    const k = await pub('Con clave', { clave_externa: 'k-papelera' })
+    const dk = await apiD(`/chat/${k.body.id}`, { method: 'DELETE' })
+    assert.equal((await pub('Otra vez con la misma clave', { clave_externa: 'k-papelera' })).status, 201)
+    assert.equal((await apiD(`/papelera/${dk.body.papelera_id}/restaurar`, { method: 'POST', body: {} })).status, 409)
+  })
+
+  it('web (sesión): publica como «manual» con su nombre, edita y borra lo suyo, la papelera de la web lo lista y restaura; sin sesión 401', async () => {
+    const p = await web('Elis', '/chat', { body: { cuerpo: 'Nota de Elis desde la pantalla, cc @leandro', fuente: 'otra', autor: uid.Jorbi } })
+    assert.equal(p.status, 400, 'el autor no se manda: strict')
+    const q = await web('Elis', '/chat', { body: { cuerpo: 'Nota de Elis desde la pantalla, cc @leandro', fuente: 'otra' } })
+    assert.equal(q.status, 201, JSON.stringify(q.body))
+    assert.deepEqual([q.body.autor.nombre, q.body.fuente, q.body.menciones.map((x: any) => x.nombre)], ['Elis', 'manual', ['Leandro']], 'la web siempre es «manual» y el autor es la sesión')
+    const id = q.body.id
+    assert.equal((await web('Jorbi', `/chat/${id}`, { method: 'PATCH', body: { cuerpo: 'ajeno' } })).status, 403)
+    assert.equal((await web('Jorbi', `/chat/${id}`, { method: 'DELETE' })).status, 403, 'Jorbi no es ADMIN aquí ni autor')
+    const e = await web('Elis', `/chat/${id}`, { method: 'PATCH', body: { cuerpo: 'Nota de Elis, editada' }, headers: { 'if-match': q.full.actualizado_el } })
+    assert.deepEqual([e.status, e.body.cuerpo, e.body.menciones.length], [200, 'Nota de Elis, editada', 0])
+    assert.ok(e.body.editado_el)
+    assert.equal((await web('Elis', `/chat/${id}`, { method: 'PATCH', body: { cuerpo: 'tarde' }, headers: { 'if-match': q.full.actualizado_el } })).status, 409)
+    const lista = await web('Jorbi', '/chat?limite=3')
+    assert.equal(lista.status, 200)
+    assert.equal(lista.body.data[0].id, id)
+    assert.equal((await web('Jorbi', `/chat/${id}`)).body.autor.nombre, 'Elis')
+    // borrar: la papelera de la web lo muestra y lo restaura
+    assert.equal((await web('Elis', `/chat/${id}`, { method: 'DELETE' })).status, 200)
+    const trash = (await web('Elis', '/trash')).body as any[]
+    const item = trash.find((t) => t.entity === 'mensaje' && t.label === 'Nota de Elis, editada')
+    assert.ok(item, JSON.stringify(trash.map((t) => t.entity)))
+    assert.equal(item.deletedBy, 'Elis')
+    assert.equal((await web('Elis', `/trash/${item.id}/restore`, { method: 'POST' })).body.restaurado, true)
+    assert.equal((await web('Elis', `/chat/${id}`)).status, 200)
+    for (const [m, p2] of [['GET', '/chat'], ['GET', '/chat/contadores'], ['GET', '/chat/usuarios'], ['POST', '/chat'], ['POST', '/chat/leido']]) {
+      const r = await http(`${ROOT}/api${p2}`, { method: m, ...(m === 'POST' ? { body: {} } : {}) })
+      assert.equal(r.status, 401, `${m} ${p2}`)
+    }
+  })
+
+  it('permisos de la llave: leer exige read, publicar/editar/marcar exigen write, borrar exige delete', async () => {
+    const r = (path: string, o: any = {}) => api(path, { key: KEY_R, ...o })
+    assert.equal((await r('/chat')).status, 200)
+    assert.equal((await r('/chat/contadores')).status, 200)
+    assert.equal((await r('/chat/usuarios')).status, 200)
+    for (const [m, path, body] of [['POST', '/chat', { cuerpo: 'x', fuente: 'growi' }], ['POST', '/chat/leido', { todos: true }], ['PATCH', `/chat/${ids[0]}`, { cuerpo: 'x' }]] as const) {
+      const x = await r(path, { method: m, body })
+      assert.equal(x.status, 403, `${m} ${path}`)
+      assert.equal(x.body.error.required_scope, 'write')
+    }
+    assert.equal((await r(`/chat/${ids[0]}`, { method: 'DELETE' })).body.error.required_scope, 'delete')
+    assert.equal((await http(`${ROOT}/api/v1/chat`)).status, 401)
+  })
+
+  it('MCP: las herramientas según los permisos de la llave, publicar idempotente, @ y uuid, editar con conflicto, marcar leído y borrar', async () => {
+    const nombres = async (key: string) => ((await rpc('tools/list', {}, key)).body.result.tools as any[]).map((t) => t.name).filter((x: string) => x.startsWith('hayai_chat')).sort()
+    assert.deepEqual(await nombres(KEY), ['hayai_chat_editar', 'hayai_chat_listar', 'hayai_chat_marcar_leido', 'hayai_chat_publicar', 'hayai_chat_usuarios'])
+    assert.deepEqual(await nombres(KEY_D), ['hayai_chat_borrar', 'hayai_chat_editar', 'hayai_chat_listar', 'hayai_chat_marcar_leido', 'hayai_chat_publicar', 'hayai_chat_usuarios'])
+    assert.deepEqual(await nombres(KEY_R), ['hayai_chat_listar', 'hayai_chat_usuarios'])
+    const tools = (await rpc('tools/list')).full.result.tools as any[]
+    assert.equal(tools.find((t) => t.name === 'hayai_chat_listar').annotations.readOnlyHint, true)
+    assert.ok(tools.find((t) => t.name === 'hayai_chat_editar').inputSchema.properties.actualizado_el, 'editar acepta actualizado_el')
+    const p = dato(await mcp('hayai_chat_publicar', { cuerpo: 'Aviso desde el Muse para @Jorbi', fuente: 'muse-leandro', clave_externa: 'mcp-1' }))
+    assert.deepEqual([p.creado, p.autor.nombre, p.fuente, p.menciones.map((m: any) => m.nombre)], [true, 'Leandro', 'muse-leandro', ['Jorbi']])
+    const otra = dato(await mcp('hayai_chat_publicar', { cuerpo: 'Aviso desde el Muse para @Jorbi', fuente: 'muse-leandro', clave_externa: 'mcp-1' }))
+    assert.deepEqual([otra.creado, otra.id], [false, p.id])
+    assert.deepEqual(dato(await mcp('hayai_chat_publicar', { cuerpo: 'Por id', fuente: 'muse-leandro', menciones: [uid.Elis] })).menciones.map((m: any) => m.nombre), ['Elis'])
+    const l = dato(await mcp('hayai_chat_listar', { limite: 2 }))
+    assert.equal(l.data.length, 2)
+    assert.ok(typeof l.meta.sin_leer === 'number' && l.meta.hay_mas === true && l.meta.siguiente.antes_de_id)
+    const sig = dato(await mcp('hayai_chat_listar', { limite: 2, antes_de: l.meta.siguiente.antes_de, antes_de_id: l.meta.siguiente.antes_de_id }))
+    assert.ok(!sig.data.some((m: any) => l.data.some((x: any) => x.id === m.id)))
+    assert.ok((await mcp('hayai_chat_publicar', { cuerpo: '', fuente: 'x' })).result.isError)
+    assert.ok((await mcp('hayai_chat_publicar', { cuerpo: 'hola' })).result.isError, 'la fuente es obligatoria')
+    const visto = p.actualizado_el
+    await espera()
+    assert.notEqual(dato(await mcp('hayai_chat_editar', { id: p.id, cuerpo: 'Corregido' })).editado_el, null)
+    const conf = await mcp('hayai_chat_editar', { id: p.id, cuerpo: 'Pisando', actualizado_el: visto })
+    assert.ok(conf.result.isError)
+    assert.match(conf.result.content[0].text, /cambió mientras lo editabas/)
+    const ajeno = await mcp('hayai_chat_editar', { id: p.id, cuerpo: 'De Jorbi' }, KEY_J)
+    assert.ok(ajeno.result.isError)
+    assert.match(ajeno.result.content[0].text, /Solo el autor/)
+    assert.equal(dato(await mcp('hayai_chat_marcar_leido', { todos: true }, KEY_J)).sin_leer, 0)
+    assert.equal(dato(await mcp('hayai_chat_usuarios', {})).data.length, 3)
+    const del = dato(await mcp('hayai_chat_borrar', { id: p.id }, KEY_D))
+    assert.equal(del.entidad, 'mensaje')
+    assert.ok((await mcp('hayai_chat_borrar', { id: p.id }, KEY_D)).result.isError, 'ya no existe')
+  })
+
+  it('en vivo (SSE): nuevo, editado, borrado y restaurado llegan a las pestañas abiertas con el evento «chat», sin pisar el id de la actividad', async () => {
+    const ac = new AbortController()
+    const res = await fetch(`${ROOT}/api/events`, { headers: { cookie: cookies.Elis }, signal: ac.signal })
+    const eventos: { event: string; id: string | null; data: any }[] = []
+    const reader = res.body!.getReader()
+    const dec = new TextDecoder()
+    void (async () => {
+      let raw = ''
+      try {
+        for (;;) {
+          const { value, done } = await reader.read()
+          if (done) return
+          raw += dec.decode(value, { stream: true })
+          let i: number
+          while ((i = raw.indexOf('\n\n')) >= 0) {
+            const lines = raw.slice(0, i).split('\n')
+            raw = raw.slice(i + 2)
+            const ev = lines.find((l) => l.startsWith('event: '))
+            const data = lines.find((l) => l.startsWith('data: '))
+            if (ev && data) eventos.push({ event: ev.slice(7), id: lines.find((l) => l.startsWith('id: '))?.slice(4) ?? null, data: JSON.parse(data.slice(6)) })
+          }
+        }
+      } catch {
+        /* abortado */
+      }
+    })()
+    const llega = async (pred: (e: (typeof eventos)[number]) => boolean) => {
+      for (let t = 0; t < 160; t++) {
+        const e = eventos.find(pred)
+        if (e) return e
+        await new Promise((r) => setTimeout(r, 25))
+      }
+      throw new Error(`no llegó el evento; llegaron: ${JSON.stringify(eventos.map((e) => [e.event, e.data.op]))}`)
+    }
+    try {
+      await espera(150)
+      const m = await pub('En vivo para @Elis')
+      const nuevo = await llega((e) => e.event === 'chat' && e.data.op === 'nuevo' && e.data.mensaje.id === m.body.id)
+      assert.equal(nuevo.id, null, 'sin id: no pisa el Last-Event-ID de la actividad')
+      assert.deepEqual([nuevo.data.mensaje.autor.nombre, nuevo.data.mensaje.cuerpo, nuevo.data.mensaje.menciones.map((x: any) => x.nombre)], ['Leandro', 'En vivo para @Elis', ['Elis']])
+      await api(`/chat/${m.body.id}`, { method: 'PATCH', body: { cuerpo: 'En vivo, editado' } })
+      const ed = await llega((e) => e.data.op === 'editado' && e.data.mensaje.id === m.body.id)
+      assert.deepEqual([ed.event, ed.data.mensaje.cuerpo, ed.data.mensaje.editado_el !== null], ['chat', 'En vivo, editado', true])
+      const d = await apiD(`/chat/${m.body.id}`, { method: 'DELETE' })
+      const bo = await llega((e) => e.data.op === 'borrado' && e.data.id === m.body.id)
+      assert.equal(bo.event, 'chat')
+      await apiD(`/papelera/${d.body.papelera_id}/restaurar`, { method: 'POST', body: {} })
+      await llega((e) => e.data.op === 'nuevo' && e.data.mensaje.id === m.body.id && e !== nuevo)
+      // el stream de la actividad sigue igual: ningún evento del chat se hace pasar por actividad
+      assert.ok(eventos.filter((e) => e.event === 'chat').every((e) => e.data.tipo === undefined))
+      // una publicación idempotente repetida no vuelve a avisar
+      await pub('Idempotente en vivo', { clave_externa: 'live-1' })
+      await llega((e) => e.data.mensaje?.cuerpo === 'Idempotente en vivo')
+      const cuantos = eventos.length
+      await pub('Idempotente en vivo', { clave_externa: 'live-1' })
+      await espera(300)
+      assert.equal(eventos.length, cuantos)
+    } finally {
+      ac.abort()
+    }
+  })
+
+  it('base de datos: las reglas viven también en las tablas (cuerpo recortado y no vacío, fuente en slug, edición no anterior a la creación)', async () => {
+    const ins = (cols: string, vals: string) => admin.query(`INSERT INTO chat_messages (author_id, ${cols}) SELECT id, ${vals} FROM users LIMIT 1`)
+    await assert.rejects(ins('body', `' '`), /check/i)
+    await assert.rejects(ins('body', `' hola'`), /check/i)
+    await assert.rejects(ins('body', `repeat('x', 4001)`), /check/i)
+    await assert.rejects(ins('body, source', `'hola', 'Mala Fuente'`), /check/i)
+    await assert.rejects(ins('body, edited_at', `'hola', now() - interval '1 day'`), /chat_messages_edited_ck/)
+    await assert.rejects(admin.query(`INSERT INTO chat_mentions (message_id, user_id) VALUES ($1, $2)`, [NOPE, uid.Elis]), /foreign key/i)
   })
 })

@@ -10,7 +10,7 @@ import { HttpError } from './util.ts'
 type Store = { expected: string | null }
 const als = new AsyncLocalStorage<Store>()
 
-export const VERSIONED_TABLES = ['clients', 'projects', 'tasks', 'payments', 'expenses', 'proposals', 'agreements', 'feed_items'] as const
+export const VERSIONED_TABLES = ['clients', 'projects', 'tasks', 'payments', 'expenses', 'proposals', 'agreements', 'feed_items', 'chat_messages'] as const
 export type VersionedTable = (typeof VERSIONED_TABLES)[number]
 
 /** Un instante ISO valido, o null si no se mando. Lo demas es un 400 (mejor avisar que comparar contra basura). */

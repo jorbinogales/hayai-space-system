@@ -3,8 +3,9 @@
 // (por id), y el navegador tambien pide lo que le falte con Last-Event-ID al reconectar. Sin dependencias nuevas.
 import type { Request, Response } from 'express'
 import pg from 'pg'
-import { ACTIVITY_SELECT, activityOut, CHANNEL } from './activity.ts'
+import { ACTIVITY_SELECT, activityOut, CHANNEL, CHAT_CHANNEL } from './activity.ts'
 import { connectionString, pool } from './db.ts'
+import { mensajePorId } from './services/chat.ts'
 
 type Sub = { res: Response; userId: string; timer: NodeJS.Timeout }
 
@@ -25,6 +26,16 @@ function frame(id: number, data: unknown) {
 async function fetchAfter(afterId: number, limit = REPLAY_MAX) {
   const { rows } = await pool.query(`${ACTIVITY_SELECT} WHERE a.id > $1 ORDER BY a.id LIMIT $2`, [afterId, limit])
   return rows
+}
+
+// Chat interno: el mismo mensaje para todos (nuevo, editado o borrado). Sin `id:` en el frame a proposito: el id del stream es el de la
+// actividad (Last-Event-ID) y un evento del chat lo pisaria; si el stream se corta, el chat se vuelve a pedir al reconectar.
+async function broadcastChat(p: { op?: string; id?: string }) {
+  if (!p.id || (p.op !== 'nuevo' && p.op !== 'editado' && p.op !== 'borrado')) return
+  const data = p.op === 'borrado' ? { op: p.op, id: p.id } : await mensajePorId(pool, p.id).then((mensaje) => (mensaje ? { op: p.op, mensaje } : null))
+  if (!data) return // desaparecio entre el aviso y la lectura (se borro): el aviso de borrado llega aparte
+  const out = `event: chat\ndata: ${JSON.stringify(data)}\n\n`
+  for (const s of subs) s.res.write(out)
 }
 
 // Ids ya repartidos (los ultimos): el aviso en vivo y el reenvio tras una caida pueden traer el mismo evento dos veces.
@@ -60,6 +71,16 @@ async function connectListener() {
   c.on('error', retry)
   c.on('end', retry)
   c.on('notification', (m) => {
+    if (m.channel === CHAT_CHANNEL) {
+      let p: { op?: string; id?: string } = {}
+      try {
+        p = JSON.parse(m.payload ?? '{}')
+      } catch {
+        return
+      }
+      enqueue(() => broadcastChat(p))
+      return
+    }
     // Cada aviso trae el id de la fila: se lee (con el nombre del autor) y se reparte. Se pide ESE id y no "todo lo posterior
     // al ultimo": un cambio con id menor puede confirmarse despues que otro con id mayor y no debe perderse.
     const id = Number(m.payload)
@@ -72,6 +93,7 @@ async function connectListener() {
   try {
     await c.connect()
     await c.query(`LISTEN ${CHANNEL}`)
+    await c.query(`LISTEN ${CHAT_CHANNEL}`)
     listener = c
     // Lo que se confirmo mientras no escuchabamos.
     enqueue(async () => broadcast(await fetchAfter(lastId)))

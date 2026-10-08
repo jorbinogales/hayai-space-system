@@ -8,6 +8,7 @@ import { loadProjects } from './projectData'
 import { loadTasks } from './taskData'
 import { isNewer, noteVersion, onUpdates, runningVersion } from './updates'
 import { notifyFeed } from './feedData'
+import { chatReconnected, receiveChat, refreshChatCounters, resetChat, type ChatEvent } from './chatData'
 
 export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta' | 'acuerdo_nuevo' | 'sistema_caido' | 'sistema_recuperado' | 'version_nueva' | 'feed_nuevo'
 export interface Activity {
@@ -179,7 +180,12 @@ function connect() {
     set({ online: true })
     receive(JSON.parse((m as MessageEvent<string>).data) as Activity)
   })
-  es.onopen = () => set({ online: true })
+  // Chat interno: nuevo, editado o borrado (sin id de actividad: no toca el Last-Event-ID).
+  es.addEventListener('chat', (m) => receiveChat(JSON.parse((m as MessageEvent<string>).data) as ChatEvent))
+  es.onopen = () => {
+    set({ online: true })
+    chatReconnected()
+  }
   es.onerror = () => {
     set({ online: false })
     // EventSource reconecta solo ante un corte; si el servidor respondio con error se cierra y hay que reabrirlo a mano.
@@ -193,6 +199,7 @@ async function poll() {
     const r = await api.get<Paged<Activity>>(`/activity?desde_id=${lastId}&orden=asc&per_page=50`)
     for (const e of r.data) receive(e)
     set({ online: true })
+    void refreshChatCounters().catch(() => {}) // respaldo del chat si el stream estuviera retenido
   } catch {
     /* sin red: el siguiente intento */
   }
@@ -225,6 +232,7 @@ export function stopLive() {
   window.clearTimeout(refreshTimer)
   document.removeEventListener('visibilitychange', onVisible)
   offUpdates?.()
+  resetChat()
   lastId = 0
   set({ alerts: [], alertsUnread: 0, activity: [], activityUnread: 0, seenUpTo: 0, toasts: [], online: true })
 }

@@ -1,0 +1,100 @@
+/* Chat interno (icono junto a la campana + panel del canal del equipo). Misma piel que la campana: noche con acentos ambar, crema y oro.
+   Reutiliza .notif, .notif-panel, .notif-empty, .notif-av, .badge.count y .toast de styles.css; aqui solo lo propio del chat.
+   La mencion usa el coral que ya marca lo urgente en la campana (cuotas vencidas): texto noche sobre coral = 5.6:1. */
+
+.chat {
+  --ch-gold: #ffd27a;
+  --ch-cream: #f4ebdd;
+  --ch-dim: rgba(244, 235, 221, 0.6);
+  --ch-line: rgba(244, 235, 221, 0.12);
+  --ch-wash: rgba(244, 235, 221, 0.07);
+  --ch-coral: #e5654a;
+  --ch-coral-ink: #ffb09f;
+}
+
+/* ---- icono: la mencion pendiente se distingue por color Y por el arroba ---- */
+.badge.count.is-mention { background: var(--ch-coral, #e5654a); color: var(--night); }
+.round.has-mention { box-shadow: 0 0 0 2px rgba(229, 101, 74, 0.55); }
+
+/* ---- panel ---- */
+.notif-panel.chat-panel { width: min(420px, calc(100vw - 2 * var(--pad))); }
+.chat-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 14px 12px 18px; border-bottom: 1px solid var(--ch-line); }
+.chat-head div { display: grid; gap: 3px; min-width: 0; }
+.chat-head b { font-size: 0.96rem; font-weight: 700; color: var(--ch-gold); letter-spacing: 0.02em; }
+.chat-head small { font-size: 0.74rem; line-height: 1.35; color: var(--ch-dim); text-wrap: pretty; }
+
+.chat-list { height: min(400px, 52dvh); overflow-y: auto; padding: 8px; overscroll-behavior: contain; scroll-behavior: auto; }
+.chat-list:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
+.chat-list ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.chat-list > .notif-empty { margin: 8px 0; }
+.chat-older { display: block; margin: 0 auto 8px; min-height: 36px; padding: 8px 14px; border: 0; border-radius: 999px; background: rgba(239, 157, 37, 0.16); color: var(--ch-gold); font: 600 0.78rem / 1 var(--sans); cursor: pointer; }
+.chat-older:disabled { opacity: 0.6; cursor: progress; }
+
+/* ---- un mensaje ---- */
+.chat-msg { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border-radius: 12px; border-left: 3px solid transparent; }
+.chat-msg.is-mine { background: var(--ch-wash); }
+.chat-msg.is-new { background: rgba(239, 157, 37, 0.1); }
+.chat-msg.is-mention { border-left-color: var(--ch-coral); background: rgba(229, 101, 74, 0.12); }
+.chat-msg .notif-av { margin-top: 2px; }
+.chat-bubble { position: relative; flex: 1; min-width: 0; display: grid; gap: 3px; }
+.chat-meta { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 0.74rem; color: var(--ch-dim); }
+.chat-meta b { font-size: 0.88rem; font-weight: 700; color: var(--ch-gold); }
+.chat-meta time { font-variant-numeric: tabular-nums; }
+.chat-meta i { font-style: normal; }
+.chat-src { padding: 1px 7px; border-radius: 999px; background: rgba(120, 190, 200, 0.18); color: #a6dbe2; font-size: 0.68rem; letter-spacing: 0.02em; }
+.chat-text { margin: 0; font-size: 0.9rem; line-height: 1.4; color: var(--ch-cream); white-space: pre-wrap; overflow-wrap: anywhere; text-wrap: pretty; }
+.chat-mention { padding: 0 3px; border-radius: 5px; background: rgba(239, 157, 37, 0.2); color: var(--ch-gold); font-weight: 600; }
+.chat-mention.is-me { background: rgba(229, 101, 74, 0.3); color: var(--ch-coral-ink); }
+.chat-sep { display: flex; align-items: center; gap: 10px; padding: 6px 4px; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ch-gold); }
+.chat-sep::before, .chat-sep::after { content: ''; flex: 1; height: 1px; background: rgba(239, 157, 37, 0.4); }
+
+/* ---- acciones: visibles al pasar el cursor o enfocar; siempre en pantallas tactiles (donde no existe hover) ---- */
+.chat-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* los iconos flotan en la esquina del mensaje (no le suman altura); la confirmacion y la edicion si ocupan su fila */
+.chat-actions:not(.is-open) { position: absolute; top: -4px; right: -4px; }
+.chat-msg.has-actions .chat-meta { padding-right: 64px; }
+.chat-msg:not(:hover):not(:focus-within) .chat-actions:not(.is-open) { opacity: 0; }
+@media (hover: none) { .chat-msg .chat-actions { opacity: 1 !important; } }
+.chat-icon { position: relative; display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--ch-dim); cursor: pointer; }
+.chat-icon::after { content: ''; position: absolute; inset: -8px; } /* objetivo tactil de 44px */
+.chat-ask { font-size: 0.78rem; color: var(--ch-cream); }
+.chat-btn { min-height: 36px; padding: 0 14px; border: 0; border-radius: 999px; background: rgba(244, 235, 221, 0.12); color: var(--ch-cream); font: 600 0.8rem / 1 var(--sans); cursor: pointer; }
+.chat-btn.primary { background: var(--amber); color: var(--night); }
+.chat-btn.danger { background: var(--ch-coral); color: var(--night); }
+.chat-btn:disabled, .chat-send:disabled { opacity: 0.5; cursor: not-allowed; }
+.chat-err { margin: 0; padding: 6px 10px; border-radius: 10px; background: rgba(229, 101, 74, 0.18); color: var(--ch-coral-ink); font-size: 0.8rem; line-height: 1.35; }
+.chat-edit { display: grid; gap: 8px; }
+
+/* ---- caja de escritura ---- */
+.chat-compose { display: grid; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--ch-line); }
+.chat-row { display: flex; align-items: flex-end; gap: 8px; }
+.chat-input { position: relative; flex: 1; min-width: 0; }
+.chat-input textarea { display: block; width: 100%; min-height: 44px; max-height: 132px; padding: 11px 14px; resize: none; border: 1px solid rgba(244, 235, 221, 0.2); border-radius: 14px; background: rgba(255, 255, 255, 0.07); color: var(--ch-cream); font: 500 0.92rem / 1.35 var(--sans); }
+.chat-input textarea::placeholder { color: rgba(244, 235, 221, 0.45); }
+.chat-input textarea:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+.chat-count { position: absolute; right: 12px; bottom: 6px; font-size: 0.66rem; color: var(--ch-dim); pointer-events: none; font-variant-numeric: tabular-nums; }
+.chat-send { flex: none; display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 50%; background: var(--amber); color: var(--night); cursor: pointer; transition: transform var(--t-hover) var(--ease); }
+.chat-send:active:not(:disabled) { transform: scale(0.94); }
+.chat-icon:focus-visible, .chat-btn:focus-visible, .chat-send:focus-visible, .chat-older:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+/* ---- selector de @ (sobre la caja) ---- */
+.chat-suggest { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 2; margin: 0; padding: 6px; list-style: none; display: grid; gap: 2px; max-height: 188px; overflow-y: auto; border-radius: 14px; background: #2a2118; box-shadow: 0 14px 30px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(239, 157, 37, 0.3); }
+.chat-suggest li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 10px; border-radius: 10px; color: var(--ch-cream); font-size: 0.9rem; cursor: pointer; }
+.chat-suggest li.is-on { background: rgba(239, 157, 37, 0.24); }
+
+.toasts.chat-toasts { top: auto; bottom: var(--pad); }
+
+@media (hover: hover) {
+  .chat-icon:hover { color: var(--ch-gold); background: rgba(239, 157, 37, 0.16); }
+  .chat-btn:hover:not(:disabled) { filter: brightness(1.12); }
+  .chat-older:hover:not(:disabled) { background: rgba(239, 157, 37, 0.3); }
+  .chat-suggest li:hover { background: rgba(239, 157, 37, 0.16); }
+  .chat-send:hover:not(:disabled) { filter: brightness(1.1); }
+}
+@media (max-width: 640px) {
+  .notif-panel.chat-panel { width: auto; }
+  .chat-list { height: min(60dvh, 460px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-send { transition-duration: 0.01ms; }
+}

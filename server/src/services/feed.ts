@@ -38,7 +38,7 @@ const tipo = z.enum(TIPOS, `Tipo inválido (${TIPOS.join(', ')})`)
 const estado = z.enum(ESTADOS, `Estado inválido (${ESTADOS.join(', ')})`)
 /** Nombre anterior de lo que hoy es Growi: si algún flujo viejo sigue publicando con él, cae en `growi` (misma clave externa = no se duplica). */
 const FUENTES_ANTIGUAS: Record<string, string> = { 'gumloop-video-auditorias': 'growi' }
-const fuente = z
+export const fuente = z
   .string('fuente es obligatoria')
   .trim()
   .toLowerCase()

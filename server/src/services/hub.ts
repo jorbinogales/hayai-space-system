@@ -184,7 +184,7 @@ export const hubVer = op(z.strictObject({}), async (actor) => {
     pool.query(`SELECT status, count(*)::int AS n FROM agreements GROUP BY status`),
     sistemasListar.run(actor, { activos: true, page: 1, per_page: 100 }),
     pool.query(`${ACTIVITY_SELECT} WHERE ${INTERNAL_ACTIVITY_SQL} ORDER BY a.id DESC LIMIT 15`),
-    feedResumen(),
+    feedResumen(actor.id),
   ])
   const acuerdosPor = { abierto: 0, cumplido: 0, descartado: 0 } as Record<string, number>
   for (const c of conteo.rows) acuerdosPor[c.status] = c.n

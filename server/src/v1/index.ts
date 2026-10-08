@@ -11,7 +11,7 @@ import { finanzasResumen } from '../services/finanzas.ts'
 import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResumen } from '../services/alertas.ts'
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
-import { feedConvertir, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
+import { feedConvertir, feedGuardar, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
 import { gastoActualizar, gastoRegistrar, gastosListar, gastoVer } from '../services/gastos.ts'
@@ -190,6 +190,7 @@ route('get', '/feed', feedListar)
 route('get', '/feed/:id', feedVer)
 route('post', '/feed', feedPublicar, (o) => ((o.creado ?? o.creados) ? 201 : 200))
 route('patch', '/feed/:id/estado', feedMarcar)
+route('post', '/feed/:id/guardar', feedGuardar)
 route('post', '/feed/:id/convertir', feedConvertir)
 
 route('get', '/pipeline', pipelineResumen)

@@ -61,7 +61,7 @@ async function calcular(userId: string): Promise<Alerta[]> {
        ORDER BY (string_to_array(v.version, '.'))[1]::int DESC, (string_to_array(v.version, '.'))[2]::int DESC, (string_to_array(v.version, '.'))[3]::int DESC LIMIT 1`,
       [ACTUALIZACION_DIAS],
     ),
-    feedAlertas(),
+    feedAlertas(userId),
   ])
   const read = new Set<string>(leidas.rows.map((r) => r.key))
   const out: Alerta[] = []

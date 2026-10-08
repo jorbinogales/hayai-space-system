@@ -724,10 +724,10 @@ describe('MCP', () => {
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 70) // lectura + escritura
+    assert.equal(names.length, 71) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 80)
+    assert.equal(full.length, 81)
     assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -2787,6 +2787,32 @@ describe('Cobros: detalle del pago (bolívares, tasa, banco, recibido por)', () 
     )
   })
 
+  it('receptor por defecto: un cobro nace recibido por quien lo registra (llave o sesión); se puede cambiar; el pendiente no lleva receptor hasta cobrarse', async () => {
+    await mkPago({ concepto: 'Sin receptor dicho' }) // Leandro (KEY)
+    const a = (await api(`/pagos/${await lastId()}`)).body
+    assert.deepEqual([a.recibido_por.nombre, a.recibido_por_origen], ['Leandro', 'manual'])
+    await api(`/clientes/${cid}/pagos`, { body: { fecha: '2026-10-07', monto: 30, concepto: 'Lo registra Jorbi', estado: 'cobrado' }, key: KEY_J })
+    assert.equal((await api(`/pagos/${await lastId()}`)).body.recibido_por.nombre, 'Jorbi')
+    await mkPago({ concepto: 'Lo recibió Elis', recibido_por: 'Elis' })
+    assert.equal((await api(`/pagos/${await lastId()}`)).body.recibido_por.nombre, 'Elis', 'lo manual manda')
+    await mkPago({ concepto: 'Sin receptor a propósito', recibido_por: null })
+    assert.equal((await api(`/pagos/${await lastId()}`)).body.recibido_por, null)
+    // pendiente: sin receptor; al marcarlo cobrado, queda con quien lo marca; si dices quién, manda lo tuyo
+    await mkPago({ concepto: 'Pendiente A', estado: 'pendiente' })
+    const pa = await lastId()
+    assert.equal((await api(`/pagos/${pa}`)).body.recibido_por, null)
+    await api(`/pagos/${pa}`, { method: 'PATCH', body: { estado: 'cobrado' }, key: KEY_J })
+    assert.equal((await api(`/pagos/${pa}`)).body.recibido_por.nombre, 'Jorbi')
+    await mkPago({ concepto: 'Pendiente B', estado: 'pendiente' })
+    const pb = await lastId()
+    await api(`/pagos/${pb}`, { method: 'PATCH', body: { estado: 'cobrado', recibido_por: 'Elis' }, key: KEY_J })
+    assert.equal((await api(`/pagos/${pb}`)).body.recibido_por.nombre, 'Elis')
+    // y se cambia después
+    const ch = await api(`/pagos/${pa}`, { method: 'PATCH', body: { recibido_por: 'Leandro' } })
+    assert.equal(ch.status, 200, JSON.stringify(ch.body))
+    assert.equal((await api(`/pagos/${pa}`)).body.recibido_por.nombre, 'Leandro')
+  })
+
   it('tasa sin bolívares => bolívares = monto × tasa; los dos a la vez deben cuadrar (400); método y últimos 4 se validan', async () => {
     await mkPago({ monto: 100, tasa: 900, concepto: 'Solo tasa' })
     const a = (await api(`/pagos/${await lastId()}`)).body
@@ -2866,7 +2892,8 @@ describe('Cobros: detalle del pago (bolívares, tasa, banco, recibido por)', () 
 describe('Cobros: comprobante, OCR y mapeo de cédulas a socios', () => {
   let cid = ''
   const mkPago = async (b: Record<string, unknown> = {}) => {
-    const r = await api(`/clientes/${cid}/pagos`, { body: { fecha: '2026-10-07', monto: 20, concepto: 'Pago', estado: 'cobrado', ...b } })
+    // recibido_por: null = sin receptor (por defecto un cobro nace recibido por quien lo registra): así se prueba la detección por cédula
+    const r = await api(`/clientes/${cid}/pagos`, { body: { fecha: '2026-10-07', monto: 20, concepto: 'Pago', estado: 'cobrado', recibido_por: null, ...b } })
     assert.equal(r.status, 201, JSON.stringify(r.body))
     return (await admin.query('SELECT id FROM payments WHERE client_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1', [cid])).rows[0].id as string
   }
@@ -3436,7 +3463,7 @@ describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la ta
     bcvPayload.principal = oficial(873.87, caracas())
     const r = await api('/version')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.equal(r.body.version, '1.6.0')
+    assert.equal(r.body.version, '1.6.5')
     assert.equal(r.body.hoy, caracas())
     assert.deepEqual({ ...r.body.bcv, actualizada_el: '<t>' }, { moneda: 'USD', tasa: 873.87, fecha: caracas(), es_de_hoy: true, fuente: `localhost:${BCV_PORT}`, actualizada_el: '<t>' })
     const hits = bcvHits.principal
@@ -3492,7 +3519,7 @@ describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la ta
 
   it('MCP y web: la misma respuesta; sin llave o sin sesión 401', async () => {
     const m = data(await mcp('hayai_version_ver', {}))
-    assert.equal(m.version, '1.6.0')
+    assert.equal(m.version, '1.6.5')
     assert.equal(m.bcv.tasa, 890)
     assert.equal((await http(`${ROOT}/api/v1/version`)).status, 401)
     const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
@@ -3508,13 +3535,14 @@ describe('Historial de versiones (changelog)', () => {
   const hoy = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
   const publicar = (b: Record<string, unknown>, key = KEY) => api('/versiones', { key, body: b })
 
-  it('GET /versiones: 1.0.0, 1.5.0 y 1.6.0 vienen publicadas; la más nueva primero y marcada como actual', async () => {
+  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0 y 1.6.5 vienen publicadas; la más nueva primero y marcada como actual', async () => {
     const r = await api('/versiones')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.6.0', true], ['1.5.0', false], ['1.0.0', false]])
-    const [v16, v15, v10] = r.body.data
+    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.6.5', true], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
+    const [v165, v16, v15, v10] = r.body.data
+    assert.deepEqual([v165.titulo, v165.autor, v165.fecha, v165.cambios.length >= 10], ['Órbita fina', 'Equipo HAYAI', '2026-10-08', true])
     assert.deepEqual([v16.titulo, v16.autor, v16.fecha, v16.cambios.length], ['Feed de oportunidades', 'Equipo HAYAI', '2026-10-08', 6])
-    assert.equal(v10.titulo, 'Versión de mierda')
+    assert.equal(v10.titulo, 'Lanzamiento inicial')
     assert.equal(v10.autor, 'Equipo HAYAI', 'las históricas no tienen autor individual')
     assert.ok(v15.cambios.length >= 10 && v15.cambios.every((c: string) => c.length > 10))
     for (const palabra of ['Actividad', 'Pipeline', 'Propuestas', 'Cobros', 'Factura', 'WhatsApp', 'MCP', 'Hub']) assert.ok(v15.cambios.join(' ').includes(palabra), palabra)
@@ -3523,15 +3551,15 @@ describe('Historial de versiones (changelog)', () => {
 
   it('POST /versiones: el autor es el dueño de la llave, la fecha por defecto es hoy, pasa a ser la actual y avisa al equipo', async () => {
     const base = (await api('/actividad?per_page=1', { key: KEY_J })).body.meta.ultimo_id as number
-    const r = await publicar({ version: '1.6.1', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
+    const r = await publicar({ version: '1.6.6', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
     assert.equal(r.status, 201, JSON.stringify(r.body))
-    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.6.1', 'Leandro', hoy(), true, 2])
-    assert.equal((await api('/version')).body.version, '1.6.1')
-    assert.equal((await api('/versiones')).body.data[0].version, '1.6.1')
+    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.6.6', 'Leandro', hoy(), true, 2])
+    assert.equal((await api('/version')).body.version, '1.6.6')
+    assert.equal((await api('/versiones')).body.data[0].version, '1.6.6')
     assert.equal((await api('/versiones')).body.data.filter((v: any) => v.actual).length, 1)
     const ev = ((await api(`/actividad?desde_id=${base}&orden=asc`, { key: KEY_J })).body.data as any[]).filter((e) => e.tipo === 'version_nueva')
     assert.equal(ev.length, 1)
-    assert.equal(ev[0].texto, 'Nueva actualización v1.6.1 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
+    assert.equal(ev[0].texto, 'Nueva actualización v1.6.6 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
     assert.equal(ev[0].propia, false)
     // y le llega a TODOS, también a quien la publicó (su pestaña abierta también debe enterarse)
     const mio = ((await api(`/actividad?desde_id=${base}&orden=asc`)).body.data as any[]).find((e) => e.tipo === 'version_nueva')
@@ -3543,7 +3571,7 @@ describe('Historial de versiones (changelog)', () => {
 
   it('el orden es numérico (1.10.0 va después de 1.9.0) y la versión nueva siempre debe ser mayor que la actual', async () => {
     assert.equal((await publicar({ version: '1.10.0', cambios: ['x'] })).status, 201)
-    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.6.1', '1.6.0', '1.5.0', '1.0.0'])
+    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
     assert.equal((await api('/version')).body.version, '1.10.0')
     for (const v of ['1.10.0', '1.9.5', '1.4.0', '0.9.0']) {
       const r = await publicar({ version: v, cambios: ['x'] })
@@ -3880,9 +3908,10 @@ describe('Feed de oportunidades', () => {
       clave_externa: 'va-001',
       datos: { negocio: { nombre: 'Panadería La Espiga' }, fugas: ['No responde DMs', 'Sin catálogo'], guion: 'Hola, vi tu panadería…', urls: ['https://instagram.com/laespiga'] },
       fecha: '2026-10-01',
+      categoria: ' Panadería ',
     })
     assert.equal(r.status, 201, JSON.stringify(r.body))
-    assert.deepEqual([r.body.estado, r.body.tipo, r.body.fuente, r.body.publicado_por.nombre, r.body.creado, r.body.convertido, r.body.revisado_por], ['nuevo', 'prospecto', 'video-auditorias', 'Leandro', true, null, null])
+    assert.deepEqual([r.body.estado, r.body.tipo, r.body.fuente, r.body.publicado_por.nombre, r.body.creado, r.body.convertido, r.body.mi_estado, r.body.guardado, r.body.categoria], ['nuevo', 'prospecto', 'video-auditorias', 'Leandro', true, null, 'nuevo', false, 'panadería'])
     assert.equal(r.body.datos.fugas.length, 2)
     assert.match(r.body.fecha, /^2026-10-01T/)
     assert.ok(r.full.actualizado_el)
@@ -3913,6 +3942,8 @@ describe('Feed de oportunidades', () => {
       ['fecha futura', { ...ok, fecha: '2999-01-01' }],
       ['fecha basura', { ...ok, fecha: 'ayer' }],
       ['campo desconocido', { ...ok, prioridad: 'alta' }],
+      ['categoría vacía', { ...ok, categoria: '  ' }],
+      ['categoría larga', { ...ok, categoria: 'x'.repeat(41) }],
       ['faltan campos', { titulo: 'Solo título' }],
       ['ítem y lista juntos', { ...ok, items: [ok] }],
       ['lista vacía', { items: [] }],
@@ -3966,34 +3997,78 @@ describe('Feed de oportunidades', () => {
     assert.equal((await api(`/feed/${NOPE}`)).status, 404)
   })
 
-  it('marcar: revisado/descartado con motivo corto/vuelve a nuevo; el motivo solo al descartar; "convertido" no se marca a mano', async () => {
+  it('categoría y Growi: filtro por categoría y "sin_categoria", contadores, republicar completa la categoría, el nombre viejo de la fuente cae en growi', async () => {
+    const c1 = await pub({ titulo: 'Restaurante El Fogón', tipo: 'prospecto', fuente: 'growi', clave_externa: 'g-1', categoria: 'Restaurante' })
+    assert.equal(c1.status, 201, JSON.stringify(c1.body))
+    assert.equal(c1.body.categoria, 'restaurante')
+    const c2 = await pub({ titulo: 'Sin categoría todavía', tipo: 'prospecto', fuente: 'gumloop-video-auditorias', clave_externa: 'g-2' })
+    assert.equal(c2.body.fuente, 'growi', 'el nombre anterior se normaliza a growi')
+    assert.equal(c2.body.categoria, null)
+    // republicar con categoría la completa (si no tenía); no pisa una que ya tiene
+    const c2b = await pub({ titulo: 'Sin categoría todavía', tipo: 'prospecto', fuente: 'growi', clave_externa: 'g-2', categoria: 'Ferretería' })
+    assert.deepEqual([c2b.status, c2b.body.id, c2b.body.creado, c2b.body.categoria], [200, c2.body.id, false, 'ferretería'])
+    const c1b = await pub({ titulo: 'Restaurante El Fogón', tipo: 'prospecto', fuente: 'growi', clave_externa: 'g-1', categoria: 'otra' })
+    assert.equal(c1b.body.categoria, 'restaurante')
+    const sin = await api('/feed?categoria=sin_categoria&per_page=100')
+    assert.ok(sin.body.data.every((x: any) => x.categoria === null))
+    assert.equal(sin.body.meta.total, sin.body.meta.sin_categoria)
+    const rest = await api('/feed?categoria=restaurante')
+    assert.deepEqual(rest.body.data.map((x: any) => x.id), [c1.body.id])
+    assert.ok(rest.body.meta.categorias.some((c: any) => c.categoria === 'restaurante' && c.total === 1))
+    assert.ok(rest.body.meta.categorias.some((c: any) => c.categoria === 'panadería'))
+    assert.equal((await api('/feed?fuente=growi')).body.meta.total, 2)
+    assert.equal((await api('/feed?categoria=' + 'x'.repeat(41))).status, 400)
+  })
+
+  it('guardar: es personal (no lo ve otro socio), vale también en convertidos, se filtra con guardado=true y se quita con guardado:false', async () => {
+    const g = await api(`/feed/${idea}/guardar`, { body: {} })
+    assert.equal(g.status, 200, JSON.stringify(g.body))
+    assert.deepEqual([g.body.guardado, g.body.estado, g.body.mi_estado], [true, 'nuevo', 'nuevo'])
+    assert.equal((await api(`/feed/${idea}`, { key: KEY_J })).body.guardado, false, 'Jorbi no lo guardó')
+    const mios = await api('/feed?guardado=true')
+    assert.deepEqual(mios.body.data.map((x: any) => x.id), [idea])
+    assert.equal(mios.body.meta.guardados, 1)
+    assert.equal((await api('/feed?guardado=true', { key: KEY_J })).body.data.length, 0)
+    assert.ok((await api('/feed?guardado=false&per_page=100')).body.data.every((x: any) => x.guardado === false))
+    // sigue guardado aunque lo revise o descarte (son cosas distintas)
+    await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'descartado', motivo: 'luego' } })
+    const d = (await api(`/feed/${idea}`)).body
+    assert.deepEqual([d.guardado, d.mi_estado], [true, 'descartado'])
+    await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'nuevo' } })
+    const q = await api(`/feed/${idea}/guardar`, { body: { guardado: false } })
+    assert.equal(q.body.guardado, false)
+    assert.equal((await api('/feed?guardado=true')).body.data.length, 0)
+    assert.equal((await api(`/feed/${NOPE}/guardar`, { body: {} })).status, 404)
+    assert.equal((await api(`/feed/${idea}/guardar`, { body: { guardado: 'si' } })).status, 400)
+    assert.equal((await api(`/feed/${idea}/guardar`, { body: {}, key: KEY_R })).status, 403)
+  })
+
+  it('marcar: es PERSONAL (revisado/descartado con motivo corto/vuelve a nuevo); a los demás socios no les cambia nada; "convertido" no se marca a mano', async () => {
     const rev = await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'revisado' } })
     assert.equal(rev.status, 200, JSON.stringify(rev.body))
-    assert.deepEqual([rev.body.estado, rev.body.revisado_por], ['revisado', 'Leandro'])
-    assert.ok(rev.body.revisado_el)
+    assert.deepEqual([rev.body.estado, rev.body.mi_estado], ['nuevo', 'revisado'], 'estado es global; mi_estado, mío')
+    assert.equal((await api(`/feed/${idea}`, { key: KEY_J })).body.mi_estado, 'nuevo', 'Jorbi lo sigue viendo nuevo')
     const des = await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'descartado', motivo: 'Ya lo hace otro competidor' } })
-    assert.deepEqual([des.body.estado, des.body.motivo_descarte], ['descartado', 'Ya lo hace otro competidor'])
+    assert.deepEqual([des.body.mi_estado, des.body.motivo_descarte], ['descartado', 'Ya lo hace otro competidor'])
+    assert.equal((await api(`/feed/${idea}`, { key: KEY_J })).body.motivo_descarte, null)
+    // cada quien con lo suyo: Jorbi lo revisa, Leandro lo sigue teniendo descartado
+    assert.equal((await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'revisado' }, key: KEY_J })).body.mi_estado, 'revisado')
+    assert.equal((await api(`/feed/${idea}`)).body.mi_estado, 'descartado')
+    // los filtros y contadores son los de quien consulta
+    assert.ok((await api('/feed?estado=descartado&per_page=100')).body.data.some((x: any) => x.id === idea))
+    assert.ok(!(await api('/feed?estado=descartado&per_page=100', { key: KEY_J })).body.data.some((x: any) => x.id === idea))
+    const nj = (await api('/feed', { key: KEY_J })).body.meta.nuevos
+    const nl = (await api('/feed')).body.meta.nuevos
+    assert.ok(nl === nj, 'Leandro descartó 1 y Jorbi revisó 1: ambos tienen uno menos')
+    await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'nuevo' }, key: KEY_J })
     const nuevo = await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'nuevo' } })
-    assert.deepEqual([nuevo.body.estado, nuevo.body.motivo_descarte, nuevo.body.revisado_por, nuevo.body.revisado_el], ['nuevo', null, null, null])
+    assert.deepEqual([nuevo.body.mi_estado, nuevo.body.motivo_descarte], ['nuevo', null])
+    assert.equal((await admin.query(`SELECT count(*)::int AS n FROM feed_item_usuarios WHERE item_id = $1 AND status IS NOT NULL`, [idea])).rows[0].n, 0)
     assert.equal((await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'revisado', motivo: 'no aplica' } })).status, 400)
     assert.equal((await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'descartado', motivo: 'x'.repeat(201) } })).status, 400)
     assert.equal((await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'convertido' } })).status, 400)
     assert.equal((await api(`/feed/${idea}/estado`, { method: 'PATCH', body: {} })).status, 400)
     assert.equal((await api(`/feed/${NOPE}/estado`, { method: 'PATCH', body: { estado: 'revisado' } })).status, 404)
-  })
-
-  it('conflictos: si el ítem cambió mientras lo veías (actualizado_el / If-Match), 409 y no se pisa', async () => {
-    const visto = (await api(`/feed/${idea}`)).full.actualizado_el as string
-    await espera()
-    await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'revisado' } }) // otro socio lo revisó
-    const viejo = await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'descartado', actualizado_el: visto }, key: KEY_J })
-    assert.equal(viejo.status, 409, JSON.stringify(viejo.body))
-    assert.equal(viejo.body.error.codigo ?? viejo.body.codigo ?? 'conflicto', 'conflicto')
-    assert.equal((await api(`/feed/${idea}`)).body.estado, 'revisado')
-    const hdr = await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'descartado' }, headers: { 'if-match': visto }, key: KEY_J })
-    assert.equal(hdr.status, 409)
-    const fresco = (await api(`/feed/${idea}`)).full.actualizado_el
-    assert.equal((await api(`/feed/${idea}/estado`, { method: 'PATCH', body: { estado: 'descartado', actualizado_el: fresco }, key: KEY_J })).status, 200)
   })
 
   it('convertir en posible cliente: pre-llena nombre, origen, teléfono y notas con lo del ítem; queda en la bitácora; el ítem queda enlazado', async () => {
@@ -4009,6 +4084,10 @@ describe('Feed de oportunidades', () => {
     assert.equal(r.status, 200, JSON.stringify(r.body))
     assert.deepEqual([r.body.item.estado, r.body.item.convertido.a, r.body.creado.tipo], ['convertido', 'posible_cliente', 'posible_cliente'])
     assert.equal(r.body.item.convertido.id, r.body.creado.id)
+    assert.equal(r.body.item.convertido.por, 'Leandro')
+    const visto = (await api(`/feed/${it.body.id}`, { key: KEY_J })).body
+    assert.deepEqual([visto.estado, visto.convertido.por], ['convertido', 'Leandro'], 'convertir es GLOBAL: todos lo ven convertido')
+    assert.ok((await api('/feed?estado=convertido&per_page=100', { key: KEY_J })).body.data.some((x: any) => x.id === it.body.id))
     const c = await api(`/clientes/${r.body.creado.id}`)
     assert.equal(c.body.nombre, 'Charcutería El Buen Corte C.A.')
     assert.equal(c.body.estado, 'posible')
@@ -4047,6 +4126,10 @@ describe('Feed de oportunidades', () => {
     assert.equal(t1.status, 200, JSON.stringify(t1.body))
     const tarea = (await api(`/tareas/${t1.body.creado.id}`)).body
     assert.deepEqual([tarea.titulo, tarea.proyecto_id, tarea.vence], ['Probar el radar de precios', proy, '2026-11-01'])
+    assert.equal(tarea.responsable?.nombre ?? tarea.responsable, 'Leandro', 'sin responsable, la tarea queda con quien la crea')
+    const a2 = await pub({ titulo: 'Tarea para Elis', tipo: 'idea', fuente: 'radar-hayai' })
+    const t1b = await api(`/feed/${a2.body.id}/convertir`, { body: { a: 'tarea', proyecto_id: proy, responsable: 'Elis' } })
+    { const rb = (await api(`/tareas/${t1b.body.creado.id}`)).body.responsable; assert.equal(rb?.nombre ?? rb, 'Elis') }
     const b = await pub({ titulo: 'Escribir guion para la charcutería', tipo: 'oportunidad', fuente: 'manual' })
     const t2 = await api(`/feed/${b.body.id}/convertir`, { body: { a: 'tarea', titulo: 'Guion charcutería (v1)' } })
     assert.equal(t2.status, 200, JSON.stringify(t2.body))
@@ -4071,11 +4154,11 @@ describe('Feed de oportunidades', () => {
     assert.equal((await api(`/feed/${it.body.id}/convertir`, { body: { a: 'posible_cliente', origen: 'paloma' } })).status, 400)
     assert.equal((await api(`/feed/${it.body.id}/convertir`, { body: { a: 'cohete' } })).status, 400)
     assert.equal((await api(`/feed/${NOPE}/convertir`, { body: { a: 'tarea' } })).status, 404)
-    // revisado antes de fallar: vuelve a revisado, no a nuevo
+    // revisado antes de fallar: mi estado personal no se toca
     await api(`/feed/${it.body.id}/estado`, { method: 'PATCH', body: { estado: 'revisado' } })
     assert.equal((await api(`/feed/${it.body.id}/convertir`, { body: { a: 'tarea', proyecto_id: NOPE } })).status, 404)
     const rev = (await api(`/feed/${it.body.id}`)).body
-    assert.deepEqual([rev.estado, rev.revisado_por], ['revisado', 'Leandro'])
+    assert.deepEqual([rev.estado, rev.mi_estado], ['nuevo', 'revisado'])
     assert.equal((await api(`/feed/${it.body.id}/convertir`, { body: { a: 'tarea' } })).status, 200)
   })
 
@@ -4158,9 +4241,12 @@ describe('Feed de oportunidades', () => {
     assert.equal(sem2.leida, false)
     // claves inventadas no se aceptan
     assert.equal((await api('/notificaciones/leer', { body: { claves: ['feed:no-es-una-clave'] }, key: KEY_J })).status, 400)
-    // revisar o descartar quita la alerta
+    // revisar o descartar quita la alerta, pero solo a quien lo hizo (Leandro); Jorbi la sigue viendo
     const itemSolo = sola.feed.item_id as string
     await api(`/feed/${itemSolo}/estado`, { method: 'PATCH', body: { estado: 'revisado' } })
+    assert.ok(!(await lista(KEY)).data.some((x: any) => x.clave === sola.clave))
+    assert.ok((await lista()).data.some((x: any) => x.clave === sola.clave), 'a Jorbi le sigue apareciendo')
+    await api(`/feed/${itemSolo}/estado`, { method: 'PATCH', body: { estado: 'descartado' }, key: KEY_J })
     assert.ok(!(await lista()).data.some((x: any) => x.clave === sola.clave))
     // la alerta ya no vigente no se marca
     assert.equal((await api('/notificaciones/leer', { body: { claves: [sola.clave] }, key: KEY_J })).body.marcadas, 0)
@@ -4174,18 +4260,19 @@ describe('Feed de oportunidades', () => {
     assert.equal((await api(`/feed/${prospecto}`, { key: KEY_R })).status, 200)
     assert.equal((await pub({ titulo: 'X', tipo: 'idea', fuente: 'manual' }, KEY_R)).status, 403)
     assert.equal((await api(`/feed/${prospecto}/estado`, { method: 'PATCH', body: { estado: 'revisado' }, key: KEY_R })).status, 403)
+    assert.equal((await api(`/feed/${prospecto}/guardar`, { body: {}, key: KEY_R })).status, 403)
     assert.equal((await api(`/feed/${prospecto}/convertir`, { body: { a: 'tarea' }, key: KEY_R })).status, 403)
     assert.equal((await api('/feed', { key: null })).status, 401)
     assert.equal((await http(`${ROOT}/api/feed`)).status, 401)
   })
 
-  it('MCP: las cuatro herramientas (la de lectura se ve con solo lectura), publicar idempotente, marcar con conflicto y convertir', async () => {
+  it('MCP: las cinco herramientas (la de lectura se ve con solo lectura), publicar idempotente, marcar y guardar personales y convertir', async () => {
     const nombres = async (key: string) => ((await rpc('tools/list', {}, key)).body.result.tools as any[]).map((t) => t.name).filter((x: string) => x.startsWith('hayai_feed'))
-    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_convertir', 'hayai_feed_listar', 'hayai_feed_marcar', 'hayai_feed_publicar'])
+    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_convertir', 'hayai_feed_guardar', 'hayai_feed_listar', 'hayai_feed_marcar', 'hayai_feed_publicar'])
     assert.deepEqual(await nombres(KEY_R), ['hayai_feed_listar'])
     const tools = (await rpc('tools/list')).full.result.tools as any[] // full: body quita `actualizado_el`
     assert.equal(tools.find((t) => t.name === 'hayai_feed_listar').annotations.readOnlyHint, true)
-    assert.ok(tools.find((t) => t.name === 'hayai_feed_marcar').inputSchema.properties.actualizado_el, 'marcar acepta actualizado_el')
+    assert.ok(!tools.find((t) => t.name === 'hayai_feed_marcar').inputSchema.properties.actualizado_el, 'marcar es personal: no hay conflicto que cuidar')
     const p = dato(await mcp('hayai_feed_publicar', { titulo: 'Idea desde el Muse', tipo: 'idea', fuente: 'muse-leandro', clave_externa: 'm-1', datos: { nota: 'hola' } }))
     assert.deepEqual([p.creado, p.publicado_por.nombre, p.fuente], [true, 'Leandro', 'muse-leandro'])
     const again = dato(await mcp('hayai_feed_publicar', { titulo: 'Idea desde el Muse', tipo: 'idea', fuente: 'muse-leandro', clave_externa: 'm-1' }))
@@ -4196,10 +4283,14 @@ describe('Feed de oportunidades', () => {
     assert.ok(malo.result.isError)
     const visto = p.actualizado_el
     await espera()
-    dato(await mcp('hayai_feed_marcar', { id: p.id, estado: 'revisado' }))
-    const conf = await mcp('hayai_feed_marcar', { id: p.id, estado: 'descartado', actualizado_el: visto }, KEY_J)
-    assert.ok(conf.result.isError)
-    assert.match(conf.result.content[0].text, /cambió mientras lo editabas/)
+    const m = dato(await mcp('hayai_feed_marcar', { id: p.id, estado: 'revisado' }))
+    assert.deepEqual([m.estado, m.mi_estado], ['nuevo', 'revisado'])
+    const mj = dato(await mcp('hayai_feed_marcar', { id: p.id, estado: 'descartado', motivo: 'no aplica' }, KEY_J))
+    assert.equal(mj.mi_estado, 'descartado')
+    assert.equal(dato(await mcp('hayai_feed_listar', { fuente: 'muse-leandro' })).data[0].mi_estado, 'revisado', 'lo de Jorbi no cambió lo de Leandro')
+    assert.equal(dato(await mcp('hayai_feed_guardar', { id: p.id })).guardado, true)
+    assert.equal(dato(await mcp('hayai_feed_listar', { guardado: true })).meta.total, 1)
+    assert.equal(dato(await mcp('hayai_feed_guardar', { id: p.id, guardado: false })).guardado, false)
     const cv = dato(await mcp('hayai_feed_convertir', { id: p.id, a: 'tarea', titulo: 'Desde MCP' }))
     assert.equal(cv.creado.tipo, 'tarea')
     assert.equal(dato(await mcp('hayai_feed_listar', { estado: 'convertido', fuente: 'muse-leandro' })).data[0].convertido.a, 'tarea')
@@ -4219,9 +4310,10 @@ describe('Feed de oportunidades', () => {
     assert.equal(p.status, 201, JSON.stringify(p.body))
     assert.equal(p.body.publicado_por.nombre, 'Jorbi')
     const m = await web(`/feed/${p.body.id}/estado`, { method: 'PATCH', body: { estado: 'descartado', motivo: 'Fuera de foco' } })
-    assert.deepEqual([m.status, m.body.estado], [200, 'descartado'])
-    const viejo = await web(`/feed/${p.body.id}/estado`, { method: 'PATCH', body: { estado: 'nuevo' }, headers: { 'if-match': '2020-01-01T00:00:00.000Z' } })
-    assert.equal(viejo.status, 409)
+    assert.deepEqual([m.status, m.body.mi_estado, m.body.estado], [200, 'descartado', 'nuevo'])
+    const gu = await web(`/feed/${p.body.id}/guardar`, { body: { guardado: true } })
+    assert.deepEqual([gu.status, gu.body.guardado], [200, true])
+    assert.equal((await web('/feed?guardado=true')).body.data[0].id, p.body.id)
     const q = await web('/feed', { body: { titulo: 'Para convertir desde la web', tipo: 'prospecto', fuente: 'manual' } })
     const c = await web(`/feed/${q.body.id}/convertir`, { body: { a: 'posible_cliente' } })
     assert.equal(c.status, 200, JSON.stringify(c.body))
@@ -4233,6 +4325,10 @@ describe('Feed de oportunidades', () => {
     const insert = (cols: string, vals: string) => admin.query(`INSERT INTO feed_items (title, kind, source, published_by, ${cols}) SELECT 'x', 'idea', 'manual', id, ${vals} FROM users LIMIT 1`)
     await assert.rejects(insert('status', `'convertido'`), /feed_converted_ck/)
     await assert.rejects(insert('discard_reason', `'porque sí'`), /feed_discard_ck/)
+    const it = (await admin.query(`SELECT f.id, f.published_by AS u FROM feed_items f LIMIT 1`)).rows[0]
+    await assert.rejects(admin.query(`INSERT INTO feed_item_usuarios (item_id, user_id, status, discard_reason) VALUES ($1, $2, 'revisado', 'motivo')`, [it.id, it.u]), /feed_user_reason_ck/)
+    await assert.rejects(admin.query(`INSERT INTO feed_item_usuarios (item_id, user_id, status) VALUES ($1, $2, 'convertido')`, [it.id, it.u]), /check/i)
+    await assert.rejects(admin.query(`UPDATE feed_items SET category = 'Mayúscula' WHERE id = $1`, [it.id]), /check/i)
     await assert.rejects(admin.query(`INSERT INTO feed_items (title, kind, source, published_by) SELECT 'x', 'idea', 'Mala Fuente', id FROM users LIMIT 1`), /check/i)
     await assert.rejects(admin.query(`INSERT INTO feed_items (title, kind, source, published_by) SELECT 'x', 'chisme', 'manual', id FROM users LIMIT 1`), /check/i)
   })

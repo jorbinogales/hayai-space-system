@@ -3537,11 +3537,12 @@ describe('Historial de versiones (changelog)', () => {
   const hoy = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
   const publicar = (b: Record<string, unknown>, key = KEY) => api('/versiones', { key, body: b })
 
-  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6 y 1.7.0 vienen publicadas; la más nueva primero y marcada como actual', async () => {
+  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6, 1.6.7 y 1.7.0 vienen publicadas; la más nueva primero y marcada como actual', async () => {
     const r = await api('/versiones')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.7.0', true], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
-    const [v17, v166, , v16, v15, v10] = r.body.data
+    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.7.0', true], ['1.6.7', false], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
+    const [v17, v167, v166, , v16, v15, v10] = r.body.data
+    assert.deepEqual([v167.titulo, v167.autor, v167.fecha, v167.cambios.length], ['Órbita fina III', 'Equipo HAYAI', '2026-10-08', 4])
     assert.deepEqual([v166.titulo, v166.autor, v166.fecha, v166.cambios.length], ['Órbita fina II', 'Equipo HAYAI', '2026-10-08', 7])
     assert.deepEqual([v17.titulo, v17.autor, v17.fecha, v17.cambios.length], ['Chat interno', 'Equipo HAYAI', '2026-10-08', 5])
     assert.deepEqual([v16.titulo, v16.autor, v16.fecha, v16.cambios.length], ['Feed de oportunidades', 'Equipo HAYAI', '2026-10-08', 6])
@@ -3574,7 +3575,7 @@ describe('Historial de versiones (changelog)', () => {
 
   it('el orden es numérico (1.10.0 va después de 1.9.0) y la versión nueva siempre debe ser mayor que la actual', async () => {
     assert.equal((await publicar({ version: '1.10.0', cambios: ['x'] })).status, 201)
-    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.7.1', '1.7.0', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
+    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.7.1', '1.7.0', '1.6.7', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
     assert.equal((await api('/version')).body.version, '1.10.0')
     for (const v of ['1.10.0', '1.9.5', '1.4.0', '0.9.0']) {
       const r = await publicar({ version: v, cambios: ['x'] })

@@ -65,7 +65,7 @@ export const fmtDate = (s: string, year = false) => {
   const [y, m, d] = s.split('-').map(Number)
   return `${d} ${MONTHS[m - 1]}${year ? ` ${y}` : ''}`
 }
-export const money = (n: number) => `${n < 0 ? '-' : ''}$${Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 2 })}`
+export const money = (n: number) => `${n < 0 ? '-' : ''}$${Math.abs(n).toLocaleString('es-VE', { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 })}`
 /** Suma n dias a una fecha 'YYYY-MM-DD' (aritmetica de calendario en UTC: sin corrimientos por zona horaria). */
 export const addDays = (iso: string, n: number) => {
   const [y, m, d] = iso.split('-').map(Number)

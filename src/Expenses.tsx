@@ -7,8 +7,8 @@ import { useDragScroll } from './drag'
 import { fmtDate, money, todayISO } from './store'
 import { avatarFor, useAllProjects } from './projectData'
 import { isInternalExpense, useInternalFilter } from './nav'
-import { InternalChip } from './InternalChip'
-import { monthSummary, removeExpense, useExpenses, type Expense } from './expenseData'
+import { removeExpense, useExpenses, type Expense } from './expenseData'
+import type { Period } from './finance'
 import { useDive } from './warp'
 
 const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
@@ -17,22 +17,25 @@ const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 
  * Gastos: ya no es un planeta, vive dentro de Finanzas (vista «Gastos»). Resumen del mes + «Nuevo gasto», y debajo el calendario
  * del mes (o del año) y el histórico en línea de tiempo. `form`/`setForm` los maneja Finanzas (para oscurecer la pantalla al abrir el formulario).
  */
-export function ExpensesPanel({ form, setForm }: { form: boolean; setForm: (v: boolean) => void }) {
+export function ExpensesPanel({ form, setForm, period }: { form: boolean; setForm: (v: boolean) => void; period: Period }) {
   const allExpenses = useExpenses()
   const allProjects = useAllProjects()
   // atajo interno del Hub: solo gastos generales o de proyectos sin cliente
   const internal = useInternalFilter()
-  const expenses = useMemo(() => (internal ? allExpenses.filter((x) => isInternalExpense(x, allProjects)) : allExpenses), [internal, allExpenses, allProjects])
+  const today = todayISO()
+  const base = useMemo(() => (internal ? allExpenses.filter((x) => isInternalExpense(x, allProjects)) : allExpenses), [internal, allExpenses, allProjects])
+  // el periodo (Este mes / Este año / Todo) recorta el resumen y el histórico; el calendario conserva todo para poder navegar entre meses
+  const expenses = useMemo(() => (period === 'todo' ? base : base.filter((x) => x.date.startsWith(period === 'mes' ? today.slice(0, 7) : today.slice(0, 4)))), [base, period, today])
   const [tab, setTab] = useState<'cal' | 'hist'>('cal')
   const hist = useRef<HTMLDivElement>(null)
   useDragScroll(hist, 'y', [tab])
   useDive(form)
-  const sm = monthSummary(expenses)
-  const today = todayISO()
+  const sm = { total: expenses.reduce((a, x) => a + x.amount, 0), cantidad: expenses.length }
+  const cuando = period === 'mes' ? 'este mes' : period === 'anio' ? 'este año' : 'en total'
 
   const events = useMemo<CalEvent[]>(
     () =>
-      expenses.map((x) => ({
+      base.map((x) => ({
         id: x.id,
         date: x.date,
         title: x.concept,
@@ -41,7 +44,7 @@ export function ExpensesPanel({ form, setForm }: { form: boolean; setForm: (v: b
         tone: 'due' as const, // un gasto es un gasto: un solo color (ambar), sin estados
         avatar: avatarFor(x.owner),
       })),
-    [expenses, today],
+    [base],
   )
 
   // historico: de lo mas reciente a lo mas antiguo, agrupado por mes
@@ -55,10 +58,9 @@ export function ExpensesPanel({ form, setForm }: { form: boolean; setForm: (v: b
   return (
     <div className="g-panel">
       <div className="g-sum">
-        {internal && <InternalChip label="Solo internos" />}
         <p>
           <span>
-            <b>{money(sm.total)}</b> este mes
+            <b>{money(sm.total)}</b> {cuando}
           </span>
           <span>
             <b>{sm.cantidad}</b> {sm.cantidad === 1 ? 'gasto' : 'gastos'}
@@ -84,11 +86,11 @@ export function ExpensesPanel({ form, setForm }: { form: boolean; setForm: (v: b
 
       {tab === 'cal' ? (
         <div className="g-body" key="cal">
-          <CalendarView events={events} noun="gastos" />
+          <CalendarView events={events} noun="gastos" nounOne="gasto" />
         </div>
       ) : (
         <div className="g-body g-hist" key="hist" ref={hist}>
-          {groups.length === 0 && <p className="empty-note dark">{internal ? 'No hay gastos internos todavía. Quita el filtro para ver los gastos de los clientes.' : 'Aún no hay gastos registrados.'}</p>}
+          {groups.length === 0 && <p className="empty-note dark">{internal ? 'Sin gastos internos en este periodo. Quita el filtro para ver los de los clientes.' : period === 'todo' ? 'Aún no hay gastos registrados.' : 'Sin gastos en este periodo.'}</p>}
           {groups.map(([ym, list]) => (
             <section key={ym}>
               <h3>

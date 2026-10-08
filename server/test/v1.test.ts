@@ -2005,7 +2005,7 @@ describe('Actividad del equipo', () => {
       http(`${ROOT}/mcp`, { key: KEY, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } } })
     assert.equal((await mcp('hayai_pago_marcar_cobrado', { id: pagos[1].id })).body.result.isError, undefined)
     ev = await nuevos(b2)
-    assert.equal(ev[0]?.texto, 'Leandro registró el cobro de $50.50 a Aviso Cobros')
+    assert.equal(ev[0]?.texto, 'Leandro registró el cobro de $50,50 a Aviso Cobros')
     const b3 = await ultimo()
     await api(`/clientes/${c.id}/pagos`, { body: { fecha: isoDay(0), monto: 10, concepto: 'Suelto', estado: 'cobrado' } })
     assert.equal((await nuevos(b3))[0]?.texto, 'Leandro registró el cobro de $10 a Aviso Cobros')
@@ -3883,7 +3883,6 @@ describe('Feed de oportunidades', () => {
     http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: ++n, method, params } })
   const mcp = async (name: string, args: unknown = {}, key: string | null = KEY) => (await rpc('tools/call', { name, arguments: args }, key)).body
   const dato = (b: any) => JSON.parse(b.result.content[0].text)
-  const espera = (ms = 15) => new Promise((r) => setTimeout(r, ms))
   const pub = (body: unknown, key = KEY) => api('/feed', { body, key })
   const eventos = async (desde: number, key = KEY_J) =>
     ((await api(`/actividad?desde_id=${desde}&orden=asc&per_page=100`, { key })).body.data as any[]).filter((e) => e.tipo === 'feed_nuevo')
@@ -4281,8 +4280,6 @@ describe('Feed de oportunidades', () => {
     assert.equal(l.meta.total, 1)
     const malo = await mcp('hayai_feed_publicar', { titulo: 'x', tipo: 'chisme', fuente: 'manual' })
     assert.ok(malo.result.isError)
-    const visto = p.actualizado_el
-    await espera()
     const m = dato(await mcp('hayai_feed_marcar', { id: p.id, estado: 'revisado' }))
     assert.deepEqual([m.estado, m.mi_estado], ['nuevo', 'revisado'])
     const mj = dato(await mcp('hayai_feed_marcar', { id: p.id, estado: 'descartado', motivo: 'no aplica' }, KEY_J))

@@ -103,7 +103,7 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
               {projects.length === 0 && (
                 <p className="empty-note">
                   {internal
-                    ? 'HAYAI aún no tiene proyectos internos (sin cliente). Crea uno en el planeta Proyectos sin elegir cliente, o quita el filtro para ver las tareas de los clientes.'
+                    ? 'HAYAI aún no tiene proyectos internos. Crea uno en Proyectos sin elegir cliente, o quita el filtro.'
                     : 'No hay proyectos todavía. Crea uno en el planeta Proyectos para empezar a anotar tareas.'}
                 </p>
               )}

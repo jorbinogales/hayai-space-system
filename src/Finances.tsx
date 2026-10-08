@@ -89,20 +89,18 @@ export default function Finances({ onBack }: { onBack: () => void }) {
                   Gastos
                 </button>
               </div>
-              {view === 'resumen' && (
-                <div className="seg seg-light" role="tablist" aria-label="Periodo">
-                  {PERIODS.map((p) => (
-                    <button key={p.key} role="tab" aria-selected={period === p.key} className={period === p.key ? 'is-on' : ''} onClick={() => setPeriod(p.key)}>
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              )}
+              <div className="seg seg-light" role="tablist" aria-label="Periodo">
+                {PERIODS.map((p) => (
+                  <button key={p.key} role="tab" aria-selected={period === p.key} className={period === p.key ? 'is-on' : ''} onClick={() => setPeriod(p.key)}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
             </div>
           </header>
 
           {view === 'gastos' ? (
-            <ExpensesPanel form={form} setForm={setForm} />
+            <ExpensesPanel form={form} setForm={setForm} period={period} />
           ) : (
           <div className="plist-scroll" ref={scroll}>
             {internal ? (

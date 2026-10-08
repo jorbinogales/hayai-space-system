@@ -64,7 +64,7 @@ const formOf = (c: CobroT | null): Form => ({
   notas: c?.notas ?? '',
 })
 const LABELS: Record<keyof Form, string> = {
-  bs: 'Bolívares',
+  bs: 'Pagado por el cliente (Bs.)',
   tasa: 'Tasa',
   fechaTasa: 'Fecha de la tasa',
   metodo: 'Método',
@@ -633,10 +633,10 @@ export default function Cobro({ id, onClose }: { id: string; onClose: () => void
                   {!editing ? (
                     <>
                       <dl className="cobro-facts">
-                        <Fact label="Monto en dólares">
+                        <Fact label="Neto recibido ($)">
                           <b className="cobro-usd">{fmtUsd(cobro.monto)}</b>
                         </Fact>
-                        <Fact label="Monto en bolívares">{cobro.monto_bs != null ? <b className="cobro-bs">Bs. {fmtBsNum(cobro.monto_bs)}</b> : <Dash />}</Fact>
+                        <Fact label="Pagado por el cliente (Bs.)">{cobro.monto_bs != null ? <b className="cobro-bs">Bs. {fmtBsNum(cobro.monto_bs)}</b> : <Dash />}</Fact>
                         <Fact label="Tasa del día">
                           {cobro.tasa != null ? (
                             <>
@@ -695,10 +695,10 @@ export default function Cobro({ id, onClose }: { id: string; onClose: () => void
                       autoComplete="off"
                     >
                       <p className="cobro-usd-row">
-                        Monto en dólares <b>{fmtUsd(cobro.monto)}</b> <small>lo maneja Finanzas; aquí no se cambia</small>
+                        Neto recibido ($) <b>{fmtUsd(cobro.monto)}</b> <small>Se cambia desde Finanzas</small>
                       </p>
                       <label className="cobro-field">
-                        <span>Bolívares recibidos</span>
+                        <span>Pagado por el cliente (Bs.)</span>
                         <input ref={firstField} inputMode="decimal" value={form.bs} onChange={(e) => set('bs', e.target.value)} placeholder="65.540,25" />
                         {hintBs != null && <small>La tasa quedará en {fmtRate(hintBs)} al guardar.</small>}
                       </label>
@@ -800,7 +800,7 @@ export default function Cobro({ id, onClose }: { id: string; onClose: () => void
                         <small>
                           {fmtBytes(cobro.comprobante.tamano)} · subido {when(cobro.comprobante.subido_el)}
                         </small>
-                        <p>La foto se lee en el servidor. La cédula nunca se muestra completa: solo las primeras tres cifras y las últimas dos.</p>
+                        <p>La foto se lee en el servidor. La cédula nunca se muestra completa.</p>
                         <div className="cobro-actions">
                           <button type="button" className="primary cobro-btn" onClick={() => setZoom(true)} disabled={imgBad}>
                             Ver imagen

@@ -6,7 +6,7 @@ import { api } from './api'
 import { loadClients } from './store'
 import { loadProjects } from './projectData'
 import { loadTasks } from './taskData'
-import { noteVersion } from './updates'
+import { isNewer, noteVersion, onUpdates, runningVersion } from './updates'
 import { notifyFeed } from './feedData'
 
 export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta' | 'acuerdo_nuevo' | 'sistema_caido' | 'sistema_recuperado' | 'version_nueva' | 'feed_nuevo'
@@ -81,6 +81,7 @@ let es: EventSource | null = null
 let timers: number[] = []
 let running = false
 let refreshTimer = 0
+let offUpdates: (() => void) | null = null
 
 // ---------- alertas y actividad (lecturas) ----------
 type Paged<T> = { data: T[]; meta: Record<string, number> }
@@ -88,11 +89,25 @@ type Paged<T> = { data: T[]; meta: Record<string, number> }
 export async function refreshAlerts() {
   const r = await api.get<Paged<Alert>>('/notifications?per_page=50')
   set({ alerts: r.data, alertsUnread: r.meta.sin_leer })
+  readInstalled()
 }
 export async function refreshActivity() {
   const r = await api.get<Paged<Activity & { leida: boolean }>>(`/activity?per_page=${MAX_ACTIVITY}`)
   lastId = Math.max(lastId, r.meta.ultimo_id)
   set({ activity: r.data, activityUnread: r.meta.sin_leer, seenUpTo: r.meta.visto_hasta })
+}
+
+/** Instalar una versión (recargar la pestaña) cierra su aviso: la alerta «Nueva actualización» de lo que ya corre se marca leída. */
+const readingInstalled = new Set<string>()
+function readInstalled() {
+  const run = runningVersion()
+  if (!run) return
+  const keys = state.alerts.filter((a) => a.tipo === 'actualizacion' && !a.leida && a.version && !isNewer(a.version, run) && !readingInstalled.has(a.clave)).map((a) => a.clave)
+  if (!keys.length) return
+  keys.forEach((k) => readingInstalled.add(k))
+  void markAlerts(keys)
+    .catch(() => {})
+    .finally(() => keys.forEach((k) => readingInstalled.delete(k)))
 }
 
 export async function markAlerts(claves: string[] | 'todas') {
@@ -198,6 +213,7 @@ export function startLive() {
   timers.push(window.setInterval(() => void poll(), 30_000))
   timers.push(window.setInterval(() => void refreshAlerts().catch(() => {}), 60_000)) // las alertas se derivan al consultar
   document.addEventListener('visibilitychange', onVisible)
+  offUpdates = onUpdates(readInstalled)
 }
 
 export function stopLive() {
@@ -208,6 +224,7 @@ export function stopLive() {
   timers = []
   window.clearTimeout(refreshTimer)
   document.removeEventListener('visibilitychange', onVisible)
+  offUpdates?.()
   lastId = 0
   set({ alerts: [], alertsUnread: 0, activity: [], activityUnread: 0, seenUpTo: 0, toasts: [], online: true })
 }

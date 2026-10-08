@@ -9,7 +9,7 @@ import { HttpError } from './util.ts'
 export type PaymentPatch = { fecha?: string; monto?: number; concepto?: string; estado?: 'pendiente' | 'cobrado' } & Detalle
 
 /** Monto para el texto del aviso: "$120" o "$120.50". */
-export const moneyLabel = (n: number) => `$${Number.isInteger(n) ? n : n.toFixed(2)}`
+export const moneyLabel = (n: number) => `$${n.toLocaleString('es-VE', { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 })}`
 
 /**
  * Edita un pago. Si pasa de pendiente a cobrado deja el aviso 'cobro_cobrado' (cliente, monto). La inicial solo admite el

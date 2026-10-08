@@ -1866,14 +1866,14 @@ fieldset > .seg { margin-bottom: 12px; }
 .notif-cta:focus-visible { outline: 2px solid #ffd27a; outline-offset: 2px; }
 
 /* ---------- historial de versiones ---------- */
-.sheet.ver { width: min(1000px, 100%); }
+.sheet.ver { width: min(680px, 100%); }
 .ver > header { align-items: flex-start; gap: 16px; padding: 26px 30px 18px; border-bottom: 1px solid rgba(244, 235, 221, 0.14); }
 .ver > header > div { flex: 1; min-width: 0; }
 .ver-kicker { margin: 0 0 8px; font-size: 0.68rem; letter-spacing: 0.26em; font-weight: 600; color: rgba(244, 235, 221, 0.6); }
 .ver > header h2 { font-size: 2rem; }
 .ver-lede { margin: 8px 0 0; font-size: 0.9rem; line-height: 1.5; color: rgba(244, 235, 221, 0.72); max-width: 44ch; }
 .ver-now { flex: none; padding: 5px 12px; border-radius: 999px; background: rgba(239, 157, 37, 0.2); color: #ffd27a; font: 600 0.78rem / 1 var(--sans); font-variant-numeric: tabular-nums; }
-.ver-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 32px; padding: 22px 30px 26px; overflow-y: auto; min-height: 0; align-items: start; }
+.ver-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; padding: 22px 30px 26px; overflow-y: auto; min-height: 0; align-items: start; }
 .ver-list { display: grid; gap: 26px; }
 .ver-entry { display: grid; gap: 10px; padding-left: 20px; border-left: 2px solid rgba(244, 235, 221, 0.2); }
 .ver-entry.is-current { border-left-color: var(--amber); }
@@ -1891,18 +1891,6 @@ fieldset > .seg { margin-bottom: 12px; }
 .ver-more { justify-self: start; min-height: 44px; padding: 0; border: 0; background: transparent; color: rgba(244, 235, 221, 0.6); font: 600 0.8rem / 1 var(--sans); cursor: pointer; }
 .ver-foot, .ver-note { margin: 0; font-size: 0.78rem; line-height: 1.5; color: rgba(244, 235, 221, 0.5); }
 .ver-note button { border: 0; background: none; color: #ffd27a; text-decoration: underline; cursor: pointer; font: inherit; }
-.ver-form { display: grid; gap: 14px; padding: 20px; border-radius: 16px; background: rgba(244, 235, 221, 0.05); box-shadow: inset 0 0 0 1px rgba(244, 235, 221, 0.12); }
-.ver-form .ver-kicker { margin: 0; color: #ffd27a; letter-spacing: 0.2em; }
-.ver-form .draft-bar { margin: 0; }
-.ver-field { display: grid; gap: 6px; }
-.ver-field > span { font-size: 0.78rem; color: rgba(244, 235, 221, 0.7); }
-.ver-field > span i { font-style: normal; color: rgba(244, 235, 221, 0.45); }
-.ver-field small { font-size: 0.74rem; color: rgba(244, 235, 221, 0.5); }
-.ver-field small.is-bad { color: #ff9b84; }
-.ver-form .ver-field input.is-bad { border-color: #ff9b84; }
-.ver-add { justify-self: start; min-height: 44px; padding: 0; border: 0; background: none; color: #ffd27a; font: 600 0.8rem / 1 var(--sans); cursor: pointer; }
-.ver-err { margin: 0; font-size: 0.82rem; color: #ff9b84; }
-.ver-form .primary:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
 .ver :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 @media (max-width: 760px) { .ver-grid { grid-template-columns: 1fr; padding: 18px 20px 22px; } .ver > header { padding: 20px 20px 14px; } }
 .clock { position: relative; }

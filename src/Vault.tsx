@@ -149,7 +149,7 @@ export default function Vault({ onClose }: { onClose: () => void }) {
             </>
           ) : (
             <>
-              <p className="ig-lede">Lo archivado se oculta de las pantallas de trabajo, pero su historial sigue contando en Finanzas. Se archiva desde la ficha de edición del cliente o proyecto.</p>
+              <p className="ig-lede">Lo archivado se oculta, pero sigue contando en Finanzas.</p>
               {clients.length + projects.length === 0 && <p className="vt-empty">Nada archivado. Archiva a un cliente o proyecto que ya terminó para despejar tus pantallas.</p>}
               <ul className="vt-list">
                 {clients.map((c) => (

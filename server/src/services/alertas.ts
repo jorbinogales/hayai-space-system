@@ -110,7 +110,7 @@ async function calcular(userId: string): Promise<Alerta[]> {
       fecha: r.date,
       dias: d,
       titulo: `${r.client}: ${concepto} vencida`,
-      detalle: `$${r.amount.toLocaleString('en-US', { maximumFractionDigits: 2 })} · venció hace ${dias(d)}`,
+      detalle: `$${r.amount.toLocaleString('es-VE', { minimumFractionDigits: Number.isInteger(r.amount) ? 0 : 2, maximumFractionDigits: 2 })} · venció hace ${dias(d)}`,
       cliente_id: r.client_id,
       cliente: r.client,
       monto: r.amount,

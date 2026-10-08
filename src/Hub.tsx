@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { NavTarget } from './App'
 import { api } from './api'
 import { Blobvatar } from './blob'
-import Feed from './Feed'
+import { FeedEntry, FeedScreen } from './Feed'
+import { useFeedView } from './feedData'
 import { loadHub, useLoaded, type Acuerdo, type AcuerdoEstado, type Astronauta, type HubData, type Sistema } from './hubData'
 import { useLive, type Activity } from './live'
 import { setInternal } from './nav'
@@ -68,10 +69,10 @@ function Pulse({ d }: { d: HubData }) {
         <span>{p.proyectos_internos.activos === 1 ? 'activo' : 'activos'} de {p.proyectos_internos.total} en total</span>
       </article>
       <article className="hb-stat">
-        <small>Acuerdos abiertos</small>
+        <small>Acuerdos</small>
         <strong>{d.acuerdos.por_estado.abierto}</strong>
         <span>
-          {d.acuerdos.por_estado.cumplido} {d.acuerdos.por_estado.cumplido === 1 ? 'cumplido' : 'cumplidos'} hasta hoy
+          {d.acuerdos.por_estado.abierto === 1 ? 'abierto' : 'abiertos'} · {d.acuerdos.por_estado.cumplido} {d.acuerdos.por_estado.cumplido === 1 ? 'cumplido' : 'cumplidos'} hasta hoy
         </span>
       </article>
     </div>
@@ -260,7 +261,7 @@ const LOG_SHORT = 7
 function Logbook({ list: all }: { list: Activity[] }) {
   const [more, setMore] = useState(false)
   const list = more ? all : all.slice(0, LOG_SHORT)
-  if (!all.length) return <p className="hb-empty">Aún no hay movimiento interno. Cuando el equipo registre acuerdos, publique versiones o un sistema cambie de estado, lo verás aquí.</p>
+  if (!all.length) return <p className="hb-empty">Aún no hay movimiento interno.</p>
   return (
     <>
     <ol className="hb-log">
@@ -534,7 +535,7 @@ function Agreements({ initial, owners }: { initial: HubData['acuerdos']; owners:
         </p>
       )}
       {list.length === 0 && (tab === 'abierto' || closed) && (
-        <p className="hb-empty">{tab === 'abierto' ? 'No hay acuerdos abiertos. Después de la reunión semanal, registra aquí lo que quedó pendiente de cada quien.' : 'Todavía no se ha cerrado ningún acuerdo.'}</p>
+        <p className="hb-empty">{tab === 'abierto' ? 'Sin acuerdos abiertos. Anota aquí lo que quede pendiente tras la reunión.' : 'Aún no hay acuerdos cerrados.'}</p>
       )}
       {list.length > 0 && <ul className="hb-agree-list">{list.map(item)}</ul>}
       {adding ? (
@@ -552,9 +553,9 @@ function Agreements({ initial, owners }: { initial: HubData['acuerdos']; owners:
 function Shortcuts({ d, onGo }: { d: HubData; onGo: (s: NavTarget) => void }) {
   const t = d.pulso.tareas_internas
   const items: { key: NavTarget; title: string; value: string; hint: string }[] = [
-    { key: 'tareas', title: 'Tareas internas', value: `${t.pendientes} ${t.pendientes === 1 ? 'abierta' : 'abiertas'}`, hint: 'Abre Tareas ya filtrado a los proyectos de HAYAI' },
-    { key: 'gastos', title: 'Gastos internos', value: `${money(d.pulso.gastos_generales_mes)} este mes`, hint: 'Abre Finanzas en Gastos, ya filtrado a lo general y a proyectos sin cliente' },
-    { key: 'finanzas', title: 'Finanzas internas', value: 'Gastos generales', hint: 'Abre Finanzas enfocado en los gastos generales de HAYAI' },
+    { key: 'tareas', title: 'Tareas internas', value: `${t.pendientes} ${t.pendientes === 1 ? 'abierta' : 'abiertas'}`, hint: 'Abre Tareas ya filtrada a los proyectos de HAYAI' },
+    { key: 'gastos', title: 'Gastos internos', value: `${money(d.pulso.gastos_generales_mes)} este mes`, hint: 'Abre Finanzas en Gastos, ya filtrada a lo general y a proyectos sin cliente' },
+    { key: 'finanzas', title: 'Finanzas internas', value: 'Gastos generales', hint: 'Abre Finanzas enfocada en los gastos generales de HAYAI' },
   ]
   return (
     <>
@@ -570,7 +571,7 @@ function Shortcuts({ d, onGo }: { d: HubData; onGo: (s: NavTarget) => void }) {
           </li>
         ))}
       </ul>
-      <p className="hb-note">Cada atajo aterriza con el filtro ya aplicado y visible como chip; se quita con un toque. Lo de los clientes se entra por su planeta.</p>
+      <p className="hb-note">Cada atajo llega con su filtro aplicado como chip; quítalo con un toque.</p>
     </>
   )
 }
@@ -599,9 +600,12 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
   }
   const ready = !!d
   const sis = d?.sistemas
+  const feedOpen = useFeedView() // #hub/feed: el feed es una vista propia; el Hub queda montado debajo (con su scroll) y se oculta
 
   return (
-    <main className="screen layer hub-screen" aria-label="Hub central">
+    <>
+    {feedOpen && <FeedScreen owners={owners} />}
+    <main className="screen layer hub-screen" aria-label="Hub central" hidden={feedOpen}>
       <div className="hb-scroll">
         <div className="hb-wrap">
           <button className="hb-back" onClick={onBack}>
@@ -615,7 +619,7 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
               <h1>Así va la empresa hoy</h1>
             </div>
             <div className="hb-head-side">
-              <p>Todo lo que importa de los socios en una sola pantalla. Lo interno queda aquí; lo de los clientes, en su planeta.</p>
+              <p>Lo interno de HAYAI en una sola pantalla. Lo de los clientes, en su planeta.</p>
               <button type="button" className="hb-btn is-dark" onClick={() => onOpen('marketing')}>
                 Planeta Marketing <Icon name="arrow" size={15} />
               </button>
@@ -633,7 +637,7 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
 
           {ready ? <Pulse d={d} /> : <div className="hb-pulse" aria-hidden="true">{[0, 1, 2, 3].map((i) => <article key={i} className="hb-stat is-skel"><i /><i /><i /></article>)}</div>}
 
-          <Feed seed={d?.feed} />
+          <FeedEntry seed={d?.feed} />
 
           <div className="hb-grid is-7-5">
             <Block id="team" title="Los astronautas" ready={ready} aside={d && <span className="hb-aside">{plural(d.astronautas.length, 'socio', 'socios')}</span>}>
@@ -656,7 +660,7 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
                   ))}
                 </ul>
               ) : (
-                <p className="hb-empty is-dark">Aún no hay sistemas con vigilancia. Los sistemas entregados a los clientes se dan de alta desde la API o el MCP y aquí verás su semáforo.</p>
+                <p className="hb-empty is-dark">Aún no hay sistemas vigilados. Se dan de alta por la API o el MCP.</p>
               )}
             </Block>
           </div>
@@ -677,7 +681,7 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
             <Block id="analytics" title="Analítica web y redes" ready={ready} aside={<span className="hb-pill is-idle">{d?.analytics.disponible ? 'Conectada' : 'Sin conectar'}</span>}>
               <div className="hb-reserved">
                 <p>
-                  <strong>Espacio reservado.</strong> Visitas del sitio y alcance en Instagram llegarán aquí cuando se conecte una fuente de solo lectura. Se conecta después; la propuesta está en la pantalla de Marketing.
+                  <strong>Espacio reservado.</strong> Visitas del sitio y alcance en Instagram llegarán aquí cuando se conecte una fuente.
                 </p>
                 <button type="button" className="hb-btn is-ghost" onClick={() => onOpen('marketing')}>
                   Ver la propuesta <Icon name="arrow" size={14} />
@@ -688,5 +692,6 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
         </div>
       </div>
     </main>
+    </>
   )
 }

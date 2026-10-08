@@ -1,11 +1,10 @@
-// Historial de versiones: qué cambió, cuándo y quién lo publicó (lo más nuevo arriba) y el formulario para publicar una nueva.
+// Historial de versiones (solo lectura): qué cambió, cuándo y quién lo publicó, lo más nuevo arriba. Las versiones se publican por la API/MCP.
 // Se abre desde el menú del astronauta, desde la alerta «Nueva actualización» de la campana y desde el banner («Ver cambios»).
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from './api'
-import { fmtDate, todayISO } from './store'
-import { closeChangelog, isNewer, useFormGuard, useUpdates } from './updates'
-import { DraftBar } from './UpdateUI'
+import { fmtDate } from './store'
+import { closeChangelog, useUpdates } from './updates'
 import { Icon } from './ui'
 
 export interface Release {
@@ -20,12 +19,6 @@ export interface Release {
 }
 
 const SHOWN = 5
-
-/** La versión que sigue a `v` (sube el parche): lo que se propone en el formulario. */
-const nextPatch = (v: string) => {
-  const [a, b, c] = v.split('.').map(Number)
-  return `${a}.${b}.${(c ?? 0) + 1}`
-}
 
 const fmt = (iso: string) => {
   const [y] = iso.split('-')
@@ -67,91 +60,6 @@ function Entry({ r, focus }: { r: Release; focus: boolean }) {
   )
 }
 
-function PublishForm({ current, onDone }: { current: string | null; onDone: () => void }) {
-  const suggested = current ? nextPatch(current) : '1.0.0'
-  const [version, setVersion] = useState(suggested)
-  const [title, setTitle] = useState('')
-  const [date, setDate] = useState(todayISO)
-  const [changes, setChanges] = useState([''])
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  const values = { version, title, date, changes }
-  const initial = { version: suggested, title: '', date: todayISO(), changes: [''] }
-  const guard = useFormGuard({
-    id: 'version:nueva',
-    label: 'Nueva versión',
-    values,
-    initial,
-    labels: { version: 'versión', title: 'título', changes: 'cambios' },
-    apply: (v) => {
-      setVersion(v.version)
-      setTitle(v.title)
-      setDate(v.date)
-      setChanges(v.changes.length ? v.changes : [''])
-    },
-  })
-
-  const clean = changes.map((c) => c.trim()).filter(Boolean)
-  const tooLow = !!current && /^\d+\.\d+\.\d+$/.test(version.trim()) && !isNewer(version.trim(), current)
-  const bad = !/^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(version.trim()) ? 'La versión va como 1.6.0 (mayor.menor.parche).' : tooLow ? `Debe ser mayor que ${current}.` : date > todayISO() ? 'La fecha no puede ser futura.' : ''
-  const can = !bad && clean.length > 0 && !busy
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!can) return
-    setBusy(true)
-    setError('')
-    try {
-      await api.post('/versions', { version: version.trim(), titulo: title.trim() || null, cambios: clean, fecha: date })
-      guard.saved()
-      onDone()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'No se pudo publicar la versión.')
-      setBusy(false)
-    }
-  }
-
-  return (
-    <form className="ver-form" onSubmit={submit} noValidate>
-      <p className="ver-kicker">PUBLICAR VERSIÓN</p>
-      <DraftBar guard={guard} />
-      <label className="ver-field">
-        <span>Versión</span>
-        <input value={version} onChange={(e) => setVersion(e.target.value)} inputMode="decimal" autoComplete="off" aria-invalid={!!bad} className={bad ? 'is-bad' : ''} />
-        <small className={bad ? 'is-bad' : ''}>{bad || (current ? `Debe ser mayor que ${current}.` : 'La primera versión.')}</small>
-      </label>
-      <label className="ver-field">
-        <span>
-          Título <i>(opcional)</i>
-        </span>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Ej. Ajustes del cobro" maxLength={80} autoComplete="off" />
-      </label>
-      <label className="ver-field">
-        <span>Fecha</span>
-        <input type="date" value={date} max={todayISO()} onChange={(e) => setDate(e.target.value)} />
-      </label>
-      <div className="ver-field" role="group" aria-label="Cambios">
-        <span>Cambios</span>
-        {changes.map((c, i) => (
-          <input key={i} aria-label={`Cambio ${i + 1}`} value={c} placeholder="Un cambio por línea" maxLength={300} autoComplete="off" onChange={(e) => setChanges((cur) => cur.map((x, j) => (j === i ? e.target.value : x)))} />
-        ))}
-        <button type="button" className="ver-add" onClick={() => setChanges((cur) => (cur.length < 60 ? [...cur, ''] : cur))}>
-          + Agregar otro cambio
-        </button>
-      </div>
-      {error && (
-        <p className="ver-err" role="alert">
-          {error}
-        </p>
-      )}
-      <button type="submit" className="primary" disabled={!can}>
-        Publicar v{version.trim() || '…'}
-      </button>
-    </form>
-  )
-}
-
 /** Popup del historial. Lo abre y lo cierra el estado de updates.ts (changelog). */
 export default function Versions() {
   const { changelog } = useUpdates()
@@ -185,7 +93,7 @@ export default function Versions() {
           <div>
             <p className="ver-kicker">HAYAI SPACE</p>
             <h2 id="ver-h">Historial de versiones</h2>
-            <p className="ver-lede">Qué cambió, cuándo y quién lo publicó. Lo más nuevo arriba.</p>
+            <p className="ver-lede">Qué cambió y cuándo. Lo más nuevo arriba.</p>
           </div>
           {current && <span className="ver-now">Actual · v{current}</span>}
           <button type="button" className="x" onClick={closeChangelog} aria-label="Cerrar">
@@ -207,9 +115,7 @@ export default function Versions() {
             {list?.map((r) => (
               <Entry key={r.id} r={r} focus={r.version === changelog.version} />
             ))}
-            <p className="ver-foot">El historial solo se agrega: una versión publicada no se edita ni se borra.</p>
           </div>
-          {list && <PublishForm key={current ?? 'ninguna'} current={current} onDone={() => void load()} />}
         </div>
       </section>
     </div>,

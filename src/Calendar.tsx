@@ -26,7 +26,7 @@ const offset = (y: number, m: number) => (new Date(y, m, 1).getDay() + 6) % 7 //
 const cap = (s: string) => s[0].toUpperCase() + s.slice(1)
 
 /** Calendario completo: vista por mes (con los movimientos de cada dia) o por anio; arrastrable con el raton y navegable con flechas. */
-export default function CalendarView({ events, noun = 'pagos' }: { events: CalEvent[]; noun?: string }) {
+export default function CalendarView({ events, noun = 'pagos', nounOne = 'pago' }: { events: CalEvent[]; noun?: string; nounOne?: string }) {
   const today = todayISO()
   const [view, setView] = useState<'month' | 'year'>('month')
   const [cur, setCur] = useState(() => ({ y: +today.slice(0, 4), m: +today.slice(5, 7) - 1 }))
@@ -125,7 +125,7 @@ export default function CalendarView({ events, noun = 'pagos' }: { events: CalEv
                 const date = iso(cur.y, cur.m, d)
                 const list = byDay.get(date) ?? []
                 return (
-                  <button key={i} className={`cal-day${date === today ? ' is-today' : ''}${date === sel ? ' is-sel' : ''}${list.length ? ' has' : ''}`} onClick={() => setSel(date)} aria-label={`${d} de ${MONTHS[cur.m]}: ${list.length} ${noun}`} aria-pressed={date === sel}>
+                  <button key={i} className={`cal-day${date === today ? ' is-today' : ''}${date === sel ? ' is-sel' : ''}${list.length ? ' has' : ''}`} onClick={() => setSel(date)} aria-label={`${d} de ${MONTHS[cur.m]}: ${list.length} ${list.length === 1 ? nounOne : noun}`} aria-pressed={date === sel}>
                     <b>{d}</b>
                     {list.slice(0, 2).map((e) => (
                       <span key={e.id} className={`chip t-${e.tone}`}>

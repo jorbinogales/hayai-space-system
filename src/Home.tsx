@@ -4,11 +4,11 @@ import { toScreen } from './scene'
 import { money, summary, useAllClients, useClients } from './store'
 import { projectCounts, useProjects } from './projectData'
 import { useExpenses } from './expenseData'
-import { yearFinance } from './finance'
+import { owedTotal, yearFinance } from './finance'
 import { taskCounts, useTasks } from './taskData'
 import { Icon, ZoomControls } from './ui'
 import type { Screen } from './App'
-import { loadFunnel, useLoaded } from './hubData'
+import { loadFunnel, loadHub, useLoaded } from './hubData'
 import { CORE_R, PLANETS, type PlanetKey } from './world'
 import { useCosmos } from './Cosmos'
 import { setInternal } from './nav'
@@ -27,17 +27,22 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
   const { world, hot, setHot } = useCosmos()
   const cards = useRef<(HTMLElement | null)[]>([])
   const mark = useRef<HTMLButtonElement | null>(null)
+  const coreCard = useRef<HTMLDivElement | null>(null)
   const sm = summary(useClients())
   const pc = projectCounts(useProjects())
   const expenses = useExpenses()
   const funnel = useLoaded(() => loadFunnel(90), []).data
+  const hubData = useLoaded(loadHub, []).data
   const tk = taskCounts(useTasks())
-  const fin = yearFinance(useAllClients(), expenses)
+  const allClients = useAllClients()
+  const fin = yearFinance(allClients, expenses)
+  const porCobrar = owedTotal(allClients)
 
   useEffect(() => {
     const v = new THREE.Vector3()
     const lastR: number[] = []
     let lastCoreR = -1
+    let lastCoreCard = -1
 
     world.homeResize = () => {
       const ctx = world.ctx
@@ -62,6 +67,14 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
         if (Math.abs(coreR - lastCoreR) > 0.5) {
           mk.style.fontSize = `${coreR * 0.17}px`
           lastCoreR = coreR
+        }
+      }
+      const cc = coreCard.current
+      if (cc) {
+        cc.style.transform = `translate3d(${c0.x}px,${c0.y}px,0)`
+        if (Math.abs(coreR - lastCoreCard) > 0.4) {
+          cc.style.setProperty('--r', `${coreR}px`)
+          lastCoreCard = coreR
         }
       }
       world.items.forEach((it, i) => {
@@ -95,9 +108,49 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
     onOpen(k)
   }
 
+  const openHub = () => {
+    if (!shown) return
+    setHot(null)
+    setInternal(false)
+    onOpen('hub')
+  }
+  const coreLines = hubData
+    ? [
+        `${hubData.feed.nuevos} por revisar`,
+        `${hubData.pulso.tareas_internas.pendientes} ${hubData.pulso.tareas_internas.pendientes === 1 ? 'tarea interna' : 'tareas internas'}`,
+        `${hubData.acuerdos.por_estado.abierto} ${hubData.acuerdos.por_estado.abierto === 1 ? 'acuerdo' : 'acuerdos'}`,
+      ]
+    : ['Centro de HAYAI', 'Lo interno']
+
   return (
     <main className={`screen layer home${shown ? '' : ' warping'}`}>
       <div className="overlay">
+        <div className={`pcard right core-card${hot === 'hub' ? ' is-hot' : ''}`} ref={coreCard}>
+          <button
+            className="card"
+            style={{ '--k': -0.15, '--ico': '#16110b' } as CSSProperties}
+            aria-label={`Hub central: ${coreLines.join(', ')}`}
+            tabIndex={shown ? 0 : -1}
+            onClick={openHub}
+            onPointerEnter={() => shown && setHot('hub')}
+            onPointerLeave={() => setHot(null)}
+            onFocus={() => setHot('hub')}
+            onBlur={() => setHot(null)}
+          >
+            <span className="ico">
+              <Icon name="radar" size={17} />
+            </span>
+            <span className="card-head">
+              <span className="card-title">Hub</span>
+              <Icon name="arrow" size={17} />
+            </span>
+            {coreLines.map((l) => (
+              <span key={l} className="card-line">
+                {l}
+              </span>
+            ))}
+          </button>
+        </div>
         <button
           type="button"
           className={`core-mark${hot === 'hub' ? ' is-hot' : ''}`}
@@ -109,19 +162,14 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
           onPointerLeave={() => setHot(null)}
           onFocus={() => setHot('hub')}
           onBlur={() => setHot(null)}
-          onClick={() => {
-            if (!shown) return
-            setHot(null)
-            setInternal(false)
-            onOpen('hub')
-          }}
+          onClick={openHub}
         >
           HAYAI
         </button>
         {PLANETS.map((p, i) => {
           const d =
             p.key === 'clientes'
-              ? { title: 'Clientes', lines: [`${sm.activos} activos`, `${money(sm.recaudado)} recaudado`, `${sm.porCobrar} por cobrar`] }
+              ? { title: 'Clientes', lines: [`${sm.activos} activos`, `${money(sm.recaudado)} recaudado`, `${money(porCobrar)} por cobrar`] }
               : p.key === 'proyectos'
                 ? { title: 'Proyectos', lines: [`${pc.activo} activos`, `${pc.entrega} en entrega`, `${pc.planeacion} por visitar`] }
                 : p.key === 'marketing'

@@ -105,3 +105,21 @@
   .fx-tabs [role='tab'] { padding: 0 8px; font-size: 0.84rem; }
   .fx-form-foot { flex-wrap: wrap; }
 }
+
+/* v1.6.7 — de qué hallazgo del feed salió el cliente, y «Devolver al feed» */
+.fx-origin h3 { margin-bottom: 6px; }
+.fx-origin-line { margin: 0; display: grid; gap: 2px; }
+.fx-origin-line b { font-size: 0.95rem; line-height: 1.3; overflow-wrap: anywhere; }
+.fx-origin-line small { font-size: 0.78rem; opacity: 0.7; }
+.fx-origin-acts { margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.fx-linkbtn { appearance: none; min-height: 44px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(22, 17, 11, 0.22); background: transparent; color: inherit; font: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer; transition: background 0.15s ease-out, border-color 0.15s ease-out; }
+.fx-linkbtn.is-warn { border-color: rgba(160, 52, 24, 0.5); color: #8c2f14; }
+.fx-linkbtn:focus-visible { outline: 2px solid #e8891b; outline-offset: 2px; }
+.fx-linkbtn:disabled { opacity: 0.55; cursor: default; }
+@media (hover: hover) { .fx-linkbtn:hover:not(:disabled) { background: rgba(22, 17, 11, 0.06); } .fx-linkbtn.is-warn:hover:not(:disabled) { background: rgba(160, 52, 24, 0.09); } }
+.fx-origin-ask { margin-top: 12px; padding: 12px 14px; border-radius: 12px; background: rgba(160, 52, 24, 0.08); }
+.fx-origin-ask p { margin: 0 0 10px; font-size: 0.85rem; line-height: 1.45; }
+.fx-origin-ask div { display: flex; flex-wrap: wrap; gap: 8px; }
+.fx-origin-err { margin: 10px 0 0; font-size: 0.85rem; color: #8c2f14; }
+.fx-feedlink { color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { .fx-linkbtn { transition-duration: 0.01ms; } }

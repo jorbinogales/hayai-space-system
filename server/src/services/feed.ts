@@ -381,6 +381,42 @@ function contexto(f: ReturnType<typeof itemOut>, max: number): string {
   return cortar(t, max)
 }
 
+const CONTACTOS: [string, string[]][] = [
+  ['Teléfono', ['telefono', 'phone']],
+  ['WhatsApp', ['whatsapp']],
+  ['Correo', ['correo', 'email']],
+  ['Web', ['web', 'sitio']],
+  ['Instagram', ['instagram']],
+  ['Facebook', ['facebook']],
+]
+/** Los datos de contacto que trae el ítem, ya ordenados (de `datos.contacto` y, si no, de `datos.telefono` / `datos.email`). */
+function contactoDe(d: Record<string, unknown>): [string, string][] {
+  const c = d.contacto && typeof d.contacto === 'object' && !Array.isArray(d.contacto) ? (d.contacto as Record<string, unknown>) : {}
+  const out: [string, string][] = []
+  for (const [etiqueta, claves] of CONTACTOS) {
+    const v = claves.map((k) => str(c[k]) ?? str(d[k])).find(Boolean)
+    if (v) out.push([etiqueta, cortar(v, 200)])
+  }
+  return out
+}
+
+/**
+ * La nota que queda en la ficha al convertir en posible cliente: ordenada y corta (no se vuelca todo el hallazgo).
+ * «Del feed: fuente · fecha» + enlace al ítem original (ahí siguen las fugas, el guion y los enlaces), un resumen breve y el contacto en líneas.
+ */
+export function notaDeConversion(f: ReturnType<typeof itemOut>): string {
+  const fecha = new Intl.DateTimeFormat('es', { timeZone: TZ, day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(f.fecha)).replace(/\./g, '')
+  const resumen = (f.resumen ?? '').replace(/\s+/g, ' ').trim()
+  const contacto = contactoDe(f.datos)
+  return [
+    `Del feed: ${f.fuente} · ${fecha}\nÍtem original: #hub/feed/${f.id}`,
+    resumen ? `Resumen\n${cortar(resumen, 280)}` : null,
+    contacto.length ? `Contacto\n${contacto.map(([k, v]) => `${k}: ${v}`).join('\n')}` : null,
+  ]
+    .filter((x): x is string => !!x)
+    .join('\n\n')
+}
+
 /** Recorta a `max` caracteres sin partir una palabra (si la primera palabra ya no cabe, corta ahí). */
 export const cortar = (s: string, max: number) => {
   if (s.length <= max) return s
@@ -478,7 +514,7 @@ export const feedConvertir = op(convertirShape, async (actor, b) => {
         nombre: cortar(b.nombre ?? nombreDe(d) ?? f.titulo, 80),
         estado: 'posible',
         origen,
-        notas: b.notas ?? contexto(f, 4000),
+        notas: b.notas ?? notaDeConversion(f),
         ...(tel ? { telefono: tel } : {}),
         ...(mail ? { email: mail } : {}),
         ...(b.valor_estimado !== undefined ? { valor_estimado: b.valor_estimado } : {}),
@@ -531,11 +567,25 @@ export const feedConvertir = op(convertirShape, async (actor, b) => {
  * Deshacer lo que se creó desde el ítem (el «Deshacer» del aviso «Listo ✓»): solo quien lo creó y dentro de unos minutos. Lo creado va a la
  * papelera (se puede restaurar) y el ítem vuelve a como estaba. Un cliente promovido vuelve a posible cliente (si no cerró una propuesta).
  */
-export const feedDeshacer = op(z.strictObject({ id, a: z.enum(CONVERSIONES, `a inválido (${CONVERSIONES.join(', ')})`) }), async (actor, b) => {
+export const feedDeshacer = op(
+  z.strictObject({
+    id,
+    a: z.enum(CONVERSIONES, `a inválido (${CONVERSIONES.join(', ')})`),
+    // «Devolver al feed» (la red de seguridad de la ficha): sin el límite de tiempo y para cualquier socio. Solo posible_cliente que siga siendo posible.
+    devolver: z.boolean('devolver debe ser true o false').optional(),
+  }),
+  async (actor, b) => {
   const l = (await pool.query('SELECT ref_id, created_by, created_at FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])).rows[0]
   if (!l || !l.ref_id) throw new HttpError(404, 'No hay nada que deshacer en este ítem')
-  if (l.created_by !== actor.id) throw new HttpError(403, 'Solo quien lo creó puede deshacerlo')
-  if (Date.now() - (l.created_at as Date).getTime() > DESHACER_SEG * 1000) throw new HttpError(409, 'Ya pasó el tiempo para deshacer: elimínalo desde su pantalla')
+  if (b.devolver) {
+    if (b.a !== 'posible_cliente') throw new HttpError(400, 'Solo se puede devolver al feed un posible cliente')
+    const c = (await pool.query('SELECT is_prospect FROM clients WHERE id = $1', [l.ref_id])).rows[0]
+    if (!c) throw new HttpError(404, 'Ese posible cliente ya no existe')
+    if (!c.is_prospect) throw new HttpError(409, 'Ya es cliente: no se puede devolver al feed')
+  } else {
+    if (l.created_by !== actor.id) throw new HttpError(403, 'Solo quien lo creó puede deshacerlo')
+    if (Date.now() - (l.created_at as Date).getTime() > DESHACER_SEG * 1000) throw new HttpError(409, 'Ya pasó el tiempo para deshacer: elimínalo desde su pantalla')
+  }
   if (b.a === 'posible_cliente' && (await pool.query(`SELECT 1 FROM feed_item_vinculos WHERE item_id = $1 AND kind = 'cliente'`, [b.id])).rowCount)
     throw new HttpError(409, 'Primero deshaz la promoción a cliente')
   const via = actor.via ?? 'web'
@@ -549,12 +599,18 @@ export const feedDeshacer = op(z.strictObject({ id, a: z.enum(CONVERSIONES, `a i
   await tx(async (c) => {
     await c.query('SELECT 1 FROM feed_items WHERE id = $1 FOR UPDATE', [b.id])
     await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])
+    if (b.devolver) {
+      // El posible cliente se llevó a la papelera sus proyectos, tareas y propuestas: esos vínculos del ítem ya no apuntan a nada.
+      for (const v of (await c.query('SELECT kind, ref_id FROM feed_item_vinculos WHERE item_id = $1 AND ref_id IS NOT NULL', [b.id])).rows)
+        if (!(await c.query(`SELECT 1 FROM ${VINCULO_TABLA[v.kind as Vinculo]} WHERE id = $1`, [v.ref_id])).rowCount) await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, v.kind])
+    }
     const otro = (await c.query('SELECT kind, ref_id FROM feed_item_vinculos WHERE item_id = $1 AND ref_id IS NOT NULL ORDER BY created_at, kind LIMIT 1', [b.id])).rows[0]
     if (otro) await c.query(`UPDATE feed_items SET converted_to = $2, converted_id = $3 WHERE id = $1`, [b.id, otro.kind, otro.ref_id])
     else await c.query(`UPDATE feed_items SET status = 'nuevo', converted_to = NULL, converted_id = NULL, status_by = NULL, status_at = NULL WHERE id = $1`, [b.id])
   })
   return { item: await item(pool, b.id, actor.id), deshecho: b.a }
-})
+  },
+)
 
 /** Para el hub: cuántos hay nuevos PARA ESE SOCIO (el feed completo se consulta con feedListar). */
 export async function feedResumen(userId: string) {

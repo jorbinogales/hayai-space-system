@@ -1379,7 +1379,9 @@ export function FeedScreen({ owners }: { owners: string[] }) {
         heading.current?.focus({ preventScroll: true })
       }
     }
-    apply(takeFeedFocus())
+    // enlace directo (#hub/feed/<id>), como el de las notas de conversión: si nadie pidió otra cosa, se enfoca ese ítem
+    const linked = location.hash.match(/^#hub\/feed\/([0-9a-f-]{36})\/?$/i)?.[1]
+    apply(takeFeedFocus() ?? (linked ? { itemId: linked } : null))
     return onFeedFocus(() => apply(takeFeedFocus()))
   }, [reveal, applyFilters])
 

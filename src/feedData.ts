@@ -140,6 +140,8 @@ export interface ConvertResult {
 }
 export const convertFeed = (it: Pick<FeedItem, 'id'>, b: ConvertBody) => api.post<ConvertResult>(`/feed/${it.id}/convertir`, b)
 /** «Deshacer» del aviso «Listo ✓»: solo quien lo creó y en los 2 minutos siguientes. Lo creado va a la papelera. */
+/** «Devolver al feed» desde la ficha del posible cliente: sin límite de tiempo (el posible cliente va a la papelera y el ítem queda nuevo). */
+export const devolverAlFeed = (itemId: string) => api.post<{ item: FeedItem; deshecho: string }>(`/feed/${itemId}/deshacer`, { a: 'posible_cliente', devolver: true })
 export const undoFeed = (it: Pick<FeedItem, 'id'>, a: Exclude<CreadoKind, 'propuesta'>) => api.post<{ item: FeedItem; deshecho: string }>(`/feed/${it.id}/deshacer`, { a })
 
 // ---------- botones inteligentes (v1.6.6): qué acciones tiene cada tarjeta y cuál va destacada ----------

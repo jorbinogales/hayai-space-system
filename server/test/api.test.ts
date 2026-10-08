@@ -67,7 +67,7 @@ const CRM = {
   createdAt: '<ts>',
   phone: null, email: null, contactName: null, contactRole: null, address: null, notes: null, tags: [], source: null,
   stage: null, estValue: null, probability: null, expectedClose: null, lostReason: null, stageChangedAt: null,
-  nextAction: null, nextActionDate: null, lastContactAt: null, socials: [], implementationDate: null,
+  nextAction: null, nextActionDate: null, lastContactAt: null, delFeed: null, socials: [], implementationDate: null,
 }
 const CRM_KEYS = Object.keys(CRM)
 

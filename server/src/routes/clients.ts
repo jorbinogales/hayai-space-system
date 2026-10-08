@@ -23,7 +23,10 @@ export async function loadClients(db: Db, ids?: string[]) {
               c.tags, c.lead_source, c.pipeline_stage, c.est_value, c.probability, c.expected_close, c.lost_reason, c.stage_changed_at,
               c.next_action, c.next_action_date, c.socials, c.implementation_date, c.updated_at,
               -- ultimo contacto real: las entradas automaticas de etapa no cuentan
-              (SELECT max(i.occurred_at) FROM interactions i WHERE i.client_id = c.id AND i.kind <> 'etapa') AS last_contact_at
+              (SELECT max(i.occurred_at) FROM interactions i WHERE i.client_id = c.id AND i.kind <> 'etapa') AS last_contact_at,
+              -- el ítem del feed del que salió (solo si se creó con «Convertir»): da el enlace a la fuente y el «Devolver al feed»
+              (SELECT json_build_object('id', f.id, 'titulo', f.title, 'fuente', f.source, 'fecha', f.found_at)
+                 FROM feed_item_vinculos v JOIN feed_items f ON f.id = v.item_id WHERE v.kind = 'posible_cliente' AND v.ref_id = c.id LIMIT 1) AS del_feed
        FROM clients c ${ids ? 'WHERE c.id = ANY($1::uuid[])' : ''} ORDER BY c.created_at, c.id`,
       ids ? [ids] : [],
     ),
@@ -76,6 +79,7 @@ export async function loadClients(db: Db, ids?: string[]) {
     socials: (c.socials ?? []) as { red: string; url: string }[],
     implementationDate: c.implementation_date as string | null,
     lastContactAt: c.last_contact_at as Date | null,
+    delFeed: (c.del_feed ?? null) as { id: string; titulo: string; fuente: string; fecha: string } | null,
     items: itemsBy.get(c.id) ?? [],
     movements: movesBy.get(c.id) ?? [],
   }))

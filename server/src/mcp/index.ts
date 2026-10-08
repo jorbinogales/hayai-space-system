@@ -12,6 +12,7 @@ import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoActual
 import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResumen } from '../services/alertas.ts'
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
+import { chatBorrar, chatEditar, chatListar, chatMarcarLeido, chatPublicar, chatUsuarios } from '../services/chat.ts'
 import { feedConvertir, feedGuardar, feedListar, feedMarcar, feedPublicar } from '../services/feed.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
@@ -110,6 +111,13 @@ const TOOLS: Tool[] = [
   { name: 'hayai_feed_marcar', op: feedMarcar, scope: 'write', description: 'Marca un ítem del feed PARA EL SOCIO dueño de la llave: nuevo | revisado | descartado (motivo opcional y corto, solo al descartar). Es personal: no cambia lo que ven los demás socios. Un ítem ya convertido no cambia. "convertido" no se marca a mano: se logra con hayai_feed_convertir.' },
   { name: 'hayai_feed_guardar', op: feedGuardar, scope: 'write', description: 'Guarda (guardado=true, por defecto) o quita de guardados (guardado=false) un ítem del feed para el socio dueño de la llave. Es un marcador personal; hayai_feed_listar con guardado=true los trae.' },
   { name: 'hayai_feed_convertir', op: feedConvertir, scope: 'write', description: 'Convierte un ítem del feed en algo real, una sola vez: a=posible_cliente (crea el posible cliente en "prospecto" pre-llenando nombre, origen, teléfono, correo y notas con lo que traiga el ítem: fugas, guion, enlaces; deja una nota en su bitácora), a=tarea (titulo y vence opcionales; responsable opcional: sin él es el socio dueño de la llave; proyecto_id opcional: sin él va al proyecto interno de HAYAI) o a=proyecto (nombre, descripcion, cliente_id y responsable opcionales). Todo lo que pases pisa lo pre-llenado. El ítem queda "convertido" y enlazado a lo creado.' },
+  // Chat interno del equipo: un solo canal. Mismo servicio que /api/v1/chat.
+  { name: 'hayai_chat_listar', op: chatListar, scope: 'read', description: 'Lee el chat interno del equipo (un solo canal de notas entre astronautas), el mensaje más reciente primero. Cada mensaje trae autor {id, nombre}, cuerpo, fuente, clave_externa, menciones [{id, nombre}], editado_el (null si nunca se editó), creado_el y actualizado_el. limite (1-100, def. 30). Para ir hacia atrás: pasa antes_de y antes_de_id con el creado_el y el id del mensaje MÁS VIEJO que ya tienes (meta.siguiente los trae; meta.hay_mas dice si quedan más). meta trae además sin_leer y menciones_sin_leer del dueño de la llave (mensajes de otros posteriores a su «leído hasta»; las menciones son las que lo nombran a él) y leido_hasta.' },
+  { name: 'hayai_chat_publicar', op: chatPublicar, scope: 'write', description: 'Publica un mensaje en el chat interno del equipo. cuerpo (máx. 4000) y fuente (obligatoria: tu origen lógico en minúsculas, p. ej. muse-elis, growi, radar-hayai). El autor es el socio dueño de la llave, nunca se pasa. Para mencionar a alguien escribe @Nombre en el texto (Elis, Jorbi, Leandro; sin importar mayúsculas; un @ que no corresponde a nadie queda como texto) o pasa menciones=[id de astronauta] (ids con hayai_chat_usuarios; un id inexistente es un error). Se avisa en vivo a los conectados y a los mencionados se les marca en su icono de mensajes. clave_externa hace la publicación idempotente: la misma (fuente, clave_externa) no se duplica (devuelve el mensaje existente con creado=false), así que reintentar es seguro.' },
+  { name: 'hayai_chat_editar', op: chatEditar, scope: 'write', description: 'Edita un mensaje PROPIO del chat (solo su autor; si es de otro, error). cuerpo nuevo: se recalculan las menciones a partir de sus @Nombre (y de menciones=[id] si las pasas) y queda marcado «(editado)». Manda actualizado_el (el de tu última lectura) para no pisar un cambio ajeno.' },
+  { name: 'hayai_chat_borrar', op: chatBorrar, scope: 'delete', description: 'Manda un mensaje del chat A LA PAPELERA (solo su autor o un administrador). Restaurable 30 días con hayai_papelera_restaurar.' },
+  { name: 'hayai_chat_marcar_leido', op: chatMarcarLeido, scope: 'write', description: 'Mueve el «leído hasta» del chat del dueño de la llave: hasta = creado_el del mensaje más nuevo que viste (nunca retrocede), o todos=true para marcar todo. Devuelve sin_leer, menciones_sin_leer y leido_hasta.' },
+  { name: 'hayai_chat_usuarios', op: chatUsuarios, scope: 'read', description: 'Los astronautas a quienes se puede mencionar en el chat, con su id (para menciones=[id]); en el texto basta @Nombre.' },
   // Papelera: borrar nunca destruye, manda a la papelera 30 días y se puede restaurar.
   { name: 'hayai_papelera_listar', op: papeleraListar, scope: 'read', description: 'Lista lo que hay en la papelera (borrado en los últimos 30 días), con quién lo borró y hasta cuándo se puede restaurar.' },
   { name: 'hayai_papelera_restaurar', op: papeleraRestaurar, scope: 'write', description: 'Restaura algo de la papelera con su id de papelera (con todo lo que colgaba de ello). Falla si lo que lo contenía (p. ej. el cliente de un proyecto) sigue borrado: restaura eso primero.' },
@@ -136,6 +144,7 @@ const CONFLICT_AWARE = new Set([
   'hayai_pago_marcar_cobrado',
   'hayai_propuesta_actualizar',
   'hayai_acuerdo_actualizar',
+  'hayai_chat_editar',
 ])
 const actualizadoEl = z
   .string()
@@ -143,7 +152,7 @@ const actualizadoEl = z
   .describe('Opcional. El actualizado_el que devolvió la última lectura de este registro: si cambió desde entonces, la herramienta responde conflicto en vez de sobrescribir. Vuelve a leerlo y reintenta.')
 
 const INSTRUCTIONS =
-  'HAYAI Space: sistema interno de HAYAI (clientes y posibles clientes con su pipeline de ventas y bitácora, cobros, proyectos, gastos, tareas, finanzas, alertas, búsqueda y el feed de oportunidades que alimentan las máquinas y los agentes). ' +
+  'HAYAI Space: sistema interno de HAYAI (clientes y posibles clientes con su pipeline de ventas y bitácora, cobros, proyectos, gastos, tareas, finanzas, alertas, búsqueda, el feed de oportunidades que alimentan las máquinas y los agentes, y el chat interno del equipo). ' +
   'Montos en USD como número; fechas AAAA-MM-DD; zona horaria de Caracas. ' +
   'Lo que se escriba queda atribuido al socio dueño de la llave de API. Solo ves las herramientas que los permisos de tu llave permiten (lectura, escritura, borrado). Borrar manda a la papelera 30 días: nada se pierde al instante.'
 

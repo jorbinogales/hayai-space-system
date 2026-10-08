@@ -11,6 +11,7 @@ import { finanzasResumen } from '../services/finanzas.ts'
 import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResumen } from '../services/alertas.ts'
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
+import { chatBorrar, chatContadores, chatEditar, chatListar, chatMarcarLeido, chatPublicar, chatUsuarios, chatVer } from '../services/chat.ts'
 import { feedConvertir, feedGuardar, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
@@ -192,6 +193,17 @@ route('post', '/feed', feedPublicar, (o) => ((o.creado ?? o.creados) ? 201 : 200
 route('patch', '/feed/:id/estado', feedMarcar)
 route('post', '/feed/:id/guardar', feedGuardar)
 route('post', '/feed/:id/convertir', feedConvertir)
+
+// Chat interno del equipo (un solo canal). El autor SALE DE LA LLAVE, nunca del cuerpo; `fuente` es el origen lógico.
+// POST /chat: 201 si se creó; 200 si esa (fuente, clave_externa) ya existía (idempotente). Lista keyset: más reciente primero, antes_de + antes_de_id.
+route('get', '/chat/usuarios', chatUsuarios)
+route('get', '/chat/contadores', chatContadores)
+route('get', '/chat', chatListar)
+route('get', '/chat/:id', chatVer)
+route('post', '/chat', chatPublicar, (o) => (o.creado ? 201 : 200))
+route('post', '/chat/leido', chatMarcarLeido) // mueve el "leído hasta" de ESTE socio (el dueño de la llave)
+route('patch', '/chat/:id', chatEditar) // solo el autor; If-Match / actualizado_el
+route('delete', '/chat/:id', chatBorrar) // autor o ADMIN; a la papelera
 
 route('get', '/pipeline', pipelineResumen)
 route('get', '/pipeline/etapas', pipelineEtapas)

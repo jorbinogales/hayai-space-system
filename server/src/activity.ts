@@ -17,6 +17,10 @@ export const isSystemKind = (k: string) => (SYSTEM_KINDS as readonly string[]).i
 export const INTERNAL_ACTIVITY_SQL = "((a.client_id IS NULL AND a.kind NOT IN ('lead_meta', 'feed_nuevo')) OR a.kind IN ('acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado', 'version_nueva'))"
 
 export const CHANNEL = 'activity'
+/** Canal del chat interno: el payload es JSON { op: 'nuevo' | 'editado' | 'borrado', id }. Se avisa DENTRO de la transaccion del cambio. */
+export const CHAT_CHANNEL = 'chat'
+export const notifyChat = (db: Pool | PoolClient, op: 'nuevo' | 'editado' | 'borrado', id: string) =>
+  db.query('SELECT pg_notify($1, $2)', [CHAT_CHANNEL, JSON.stringify({ op, id })])
 const RETENTION_DAYS = 60
 
 export type ActivityInput = {

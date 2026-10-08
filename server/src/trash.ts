@@ -2,11 +2,12 @@
 // restaurar la vuelve a insertar con los MISMOS ids (jsonb_populate_recordset: no depende de la lista de columnas).
 // La usan la web (DELETE /api/...), la API v1 y el MCP, asi que borrar es recuperable venga de donde venga.
 import type { PoolClient } from 'pg'
+import { notifyChat } from './activity.ts'
 import { pool, tx } from './db.ts'
 import { HttpError } from './util.ts'
 
 export const RETENTION_DAYS = 30
-export type Entity = 'cliente' | 'proyecto' | 'pago' | 'gasto' | 'tarea' | 'interaccion' | 'hito' | 'checklist_item'
+export type Entity = 'cliente' | 'proyecto' | 'pago' | 'gasto' | 'tarea' | 'interaccion' | 'hito' | 'checklist_item' | 'mensaje'
 
 type Row = Record<string, unknown>
 type Snapshot = { root: Row; children: Record<string, Row[]>; label: string; detail: string | null }
@@ -20,10 +21,11 @@ const NOT_FOUND: Record<Entity, string> = {
   interaccion: 'Interacción no encontrada',
   hito: 'Hito no encontrado',
   checklist_item: 'Elemento no encontrado',
+  mensaje: 'Mensaje no encontrado',
 }
 
 // Tabla de cada entidad e hijos, en orden de insercion (los padres antes que los hijos). Lista cerrada: nunca viene del cliente.
-const TABLE: Record<Entity, string> = { cliente: 'clients', proyecto: 'projects', pago: 'payments', gasto: 'expenses', tarea: 'tasks', interaccion: 'interactions', hito: 'project_milestones', checklist_item: 'project_checklist' }
+const TABLE: Record<Entity, string> = { cliente: 'clients', proyecto: 'projects', pago: 'payments', gasto: 'expenses', tarea: 'tasks', interaccion: 'interactions', hito: 'project_milestones', checklist_item: 'project_checklist', mensaje: 'chat_messages' }
 const INSERT_ORDER: Record<Entity, string[]> = {
   cliente: ['clients', 'client_items', 'interactions', 'payments', 'payment_receipts', 'systems', 'proposals', 'proposal_items', 'projects', 'project_milestones', 'project_checklist', 'tasks', 'expenses'],
   proyecto: ['projects', 'project_milestones', 'project_checklist', 'tasks', 'expenses'],
@@ -33,6 +35,7 @@ const INSERT_ORDER: Record<Entity, string[]> = {
   interaccion: ['interactions'],
   hito: ['project_milestones'],
   checklist_item: ['project_checklist'],
+  mensaje: ['chat_messages', 'chat_mentions'],
 }
 
 const rows = async (c: PoolClient, sql: string, params: unknown[]) =>
@@ -100,6 +103,13 @@ async function snapshot(c: PoolClient, entity: Entity, entityId: string): Promis
     const summary = String(root.summary)
     return { root, children: {}, label: `${root.kind}: ${summary.length > 60 ? `${summary.slice(0, 57)}...` : summary}`, detail: owner ? `Bitácora de ${owner}` : null }
   }
+  if (entity === 'mensaje') {
+    // Las menciones (CASCADE) viajan en la foto: al restaurar el mensaje vuelven a mencionar a los mismos socios.
+    const mentions = await rows(c, 'SELECT * FROM chat_mentions WHERE message_id = $1', [entityId])
+    const author = (await c.query('SELECT name FROM users WHERE id = $1', [root.author_id])).rows[0]?.name
+    const flat = String(root.body).replace(/\s+/g, ' ')
+    return { root, children: { chat_mentions: mentions }, label: flat.length > 80 ? `${flat.slice(0, 80)}…` : flat, detail: `Mensaje de ${author ?? 'un astronauta'} en el chat${mentions.length ? ` (${plural(mentions.length, 'mención', 'menciones')})` : ''}` }
+  }
   const project = (await c.query('SELECT name FROM projects WHERE id = $1', [root.project_id])).rows[0]?.name
   if (entity === 'hito') {
     // Borrar el hito suelta sus tareas (SET NULL): se guarda cuales eran para volver a colgarlas al restaurar.
@@ -140,6 +150,7 @@ export async function sendToTrash(entity: Entity, entityId: string, userId: stri
     } else {
       await c.query(`DELETE FROM ${TABLE[entity]} WHERE id = $1`, [entityId])
     }
+    if (entity === 'mensaje') await notifyChat(c, 'borrado', entityId) // en la misma transaccion: avisa al confirmarse
 
     const { rows } = await c.query(
       `INSERT INTO trash (entity, entity_id, label, detail, data, via, deleted_by)
@@ -203,6 +214,7 @@ export async function restoreFromTrash(trashId: string) {
       if ((entity === 'hito' || entity === 'checklist_item') && !(await exists(c, 'projects', root.project_id))) throw missing('el proyecto de este elemento')
       if (entity === 'pago' && !(await exists(c, 'clients', root.client_id))) throw missing('el cliente de este cobro')
       if (entity === 'tarea' && !(await exists(c, 'projects', root.project_id))) throw missing('el proyecto de esta tarea')
+      if (entity === 'mensaje' && !(await exists(c, 'users', root.author_id))) throw missing('el autor de este mensaje')
       if (entity === 'interaccion' && !(await exists(c, 'clients', root.client_id))) throw missing('el cliente de esta interacción')
       if (entity === 'gasto') {
         if (!(await exists(c, 'clients', root.client_id))) throw missing('el cliente de este gasto')
@@ -221,6 +233,7 @@ export async function restoreFromTrash(trashId: string) {
           `UPDATE tasks t SET milestone_id = $1 WHERE t.id = ANY($2::uuid[]) AND t.milestone_id IS NULL AND t.project_id = $3`,
           [t.entity_id, children.task_links.map((l) => l.id), root.project_id],
         )
+      if (entity === 'mensaje') await notifyChat(c, 'nuevo', t.entity_id as string) // reaparece en el canal de todos
       await c.query('DELETE FROM trash WHERE id = $1', [trashId])
       return { entidad: entity, id: t.entity_id as string, nombre: t.label as string, restaurado: true }
     })

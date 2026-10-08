@@ -13,7 +13,7 @@ export type FeedEstado = (typeof FEED_ESTADOS)[number]
 /** Estado PERSONAL del socio que consulta. */
 export type MiEstado = 'nuevo' | 'revisado' | 'descartado'
 /** Lo que se puede crear a partir de un ítem (POST /feed/:id/convertir). La propuesta se arma desde la ficha del cliente (con `feed_item_id`). */
-export type FeedConversion = 'posible_cliente' | 'cliente' | 'tarea' | 'seguimiento' | 'proyecto'
+export type FeedConversion = 'posible_cliente' | 'cliente' | 'tarea' | 'seguimiento' | 'proyecto' | 'contenido'
 /** Todo lo que puede quedar enlazado a un ítem. */
 export type CreadoKind = FeedConversion | 'propuesta'
 /** v1.6.6: con qué cliente está vinculado el ítem (por conversión, por sus datos o por el nombre). */
@@ -173,8 +173,8 @@ const txt = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null
 /** Concepto con el que se prellena la propuesta, si el ítem lo trae. */
 export const conceptoDe = (d: Record<string, unknown>): string | null => txt(d.concepto) ?? txt(d.propuesta) ?? txt(d.producto) ?? txt(d.servicio) ?? txt(d.oferta)
 
-export type AccionId = 'contacto' | 'posible_cliente' | 'cliente' | 'propuesta' | 'cobro' | 'proyecto' | 'tarea' | 'seguimiento' | 'origen'
-const hechoDe: Partial<Record<AccionId, CreadoKind>> = { propuesta: 'propuesta', proyecto: 'proyecto', tarea: 'tarea', seguimiento: 'seguimiento' }
+export type AccionId = 'contacto' | 'posible_cliente' | 'cliente' | 'propuesta' | 'cobro' | 'proyecto' | 'tarea' | 'seguimiento' | 'contenido' | 'origen'
+const hechoDe: Partial<Record<AccionId, CreadoKind>> = { propuesta: 'propuesta', proyecto: 'proyecto', tarea: 'tarea', seguimiento: 'seguimiento', contenido: 'contenido' }
 /** ¿Esa acción ya se hizo desde el ítem? Entonces el botón dice «✓ Creada» y abre lo creado. */
 export const yaCreada = (it: Pick<FeedItem, 'creados'>, a: AccionId) => !!(hechoDe[a] && it.creados[hechoDe[a]!])
 
@@ -201,12 +201,14 @@ export function accionesDe(it: FeedItem): AccionesDe {
   if (puedeProponer(it)) todas.push('propuesta')
   if (cobro) todas.push('cobro')
   todas.push('tarea', 'seguimiento', 'proyecto')
+  if (it.tipo === 'idea') todas.push('contenido') // una idea también puede ser una pieza del tablero de Contenido (Marketing)
   if (origen) todas.push('origen')
 
   const candidata: AccionId | null =
     it.tipo === 'prospecto' ? (contacto && contacto.tipo !== 'email' ? 'contacto' : conv) :
     it.tipo === 'oportunidad' ? (puedeProponer(it) ? 'propuesta' : conv) :
-    it.tipo === 'idea' || it.tipo === 'proyecto' ? 'proyecto' :
+    it.tipo === 'idea' ? (it.fuente === 'marketing' ? 'contenido' : 'proyecto') :
+    it.tipo === 'proyecto' ? 'proyecto' :
     it.tipo === 'alerta' ? (cobro ? 'cobro' : null) :
     origen ? 'origen' : null
   const ok = (a: AccionId | null): a is AccionId => !!a && todas.includes(a) && !yaCreada(it, a)

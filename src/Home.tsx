@@ -19,7 +19,7 @@ function marketingLines(f: ReturnType<typeof loadFunnel> extends Promise<infer T
   if (!f) return ['Embudo comercial', 'Últimos 90 días']
   const abiertos = f.etapas.reduce((a, e) => a + e.posibles, 0)
   const ponderado = f.etapas.reduce((a, e) => a + e.valor_ponderado, 0)
-  return [`${abiertos} ${abiertos === 1 ? 'posible abierto' : 'posibles abiertos'}`, `${money(ponderado)} ponderado`, f.cierres.tasa_cierre == null ? 'Sin cierres aún' : `${f.cierres.tasa_cierre.toLocaleString('es-VE', { maximumFractionDigits: 1 })} % de cierre`]
+  return [`${abiertos} ${abiertos === 1 ? 'posible abierto' : 'posibles abiertos'}`, `${money(ponderado)} ponderado`, f.cierres.tasa_cierre == null ? 'Sin cierres aún' : `Tasa de cierre ${f.cierres.tasa_cierre.toLocaleString('es-VE', { maximumFractionDigits: 1 })} %`]
 }
 
 /** Capa HTML del Home: tarjetas de cada planeta + marca del nucleo, que siguen a los objetos 3D. Solo se ve con `shown`. */

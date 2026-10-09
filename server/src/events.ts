@@ -3,7 +3,7 @@
 // (por id), y el navegador tambien pide lo que le falte con Last-Event-ID al reconectar. Sin dependencias nuevas.
 import type { Request, Response } from 'express'
 import pg from 'pg'
-import { ACTIVITY_SELECT, activityOut, CHANNEL, CHAT_CHANNEL } from './activity.ts'
+import { ACTIVITY_SELECT, activityOut, CHANNEL, CHAT_CHANNEL, PROYECTO_CHANNEL } from './activity.ts'
 import { connectionString, pool } from './db.ts'
 import { mensajePorId } from './services/chat.ts'
 
@@ -35,6 +35,17 @@ async function broadcastChat(p: { op?: string; id?: string }) {
   const data = p.op === 'borrado' ? { op: p.op, id: p.id } : await mensajePorId(pool, p.id).then((mensaje) => (mensaje ? { op: p.op, mensaje } : null))
   if (!data) return // desaparecio entre el aviso y la lectura (se borro): el aviso de borrado llega aparte
   const out = `event: chat\ndata: ${JSON.stringify(data)}\n\n`
+  for (const s of subs) s.res.write(out)
+}
+
+// Vistas de proyecto: el aviso del trigger (sin datos, solo que seccion cambio de que proyecto) va tal cual a todas las pestañas. Igual que el chat,
+// sin `id:` en el frame: no toca el Last-Event-ID de la actividad; si el stream se corta, la pantalla se resincroniza al reconectar.
+const SECCIONES = new Set(['proyecto', 'hitos', 'checklist', 'tareas'])
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function broadcastProyecto(p: { op?: unknown; seccion?: unknown; proyecto_id?: unknown; hito?: unknown }) {
+  if (typeof p.seccion !== 'string' || !SECCIONES.has(p.seccion) || typeof p.proyecto_id !== 'string' || !UUID.test(p.proyecto_id)) return
+  const data = { op: p.op === 'nuevo' || p.op === 'borrado' ? p.op : 'editado', seccion: p.seccion, proyecto_id: p.proyecto_id, hito: p.hito === true }
+  const out = `event: proyecto\ndata: ${JSON.stringify(data)}\n\n`
   for (const s of subs) s.res.write(out)
 }
 
@@ -81,6 +92,14 @@ async function connectListener() {
       enqueue(() => broadcastChat(p))
       return
     }
+    if (m.channel === PROYECTO_CHANNEL) {
+      try {
+        broadcastProyecto(JSON.parse(m.payload ?? '{}'))
+      } catch {
+        /* aviso ilegible: se ignora, la pantalla se resincroniza sola al reconectar */
+      }
+      return
+    }
     // Cada aviso trae el id de la fila: se lee (con el nombre del autor) y se reparte. Se pide ESE id y no "todo lo posterior
     // al ultimo": un cambio con id menor puede confirmarse despues que otro con id mayor y no debe perderse.
     const id = Number(m.payload)
@@ -94,6 +113,7 @@ async function connectListener() {
     await c.connect()
     await c.query(`LISTEN ${CHANNEL}`)
     await c.query(`LISTEN ${CHAT_CHANNEL}`)
+    await c.query(`LISTEN ${PROYECTO_CHANNEL}`)
     listener = c
     // Lo que se confirmo mientras no escuchabamos.
     enqueue(async () => broadcast(await fetchAfter(lastId)))

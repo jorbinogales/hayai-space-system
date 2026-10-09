@@ -9,6 +9,7 @@ import { loadTasks } from './taskData'
 import { isNewer, noteVersion, onUpdates, runningVersion } from './updates'
 import { notifyFeed } from './feedData'
 import { chatReconnected, receiveChat, refreshChatCounters, resetChat, type ChatEvent } from './chatData'
+import { projectsResync, receiveProject, resetProjectLive, type ProjectEvent } from './projectLive'
 
 export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta' | 'acuerdo_nuevo' | 'sistema_caido' | 'sistema_recuperado' | 'version_nueva' | 'feed_nuevo'
 export interface Activity {
@@ -80,6 +81,9 @@ let toastKey = 0
 let lastId = 0
 let es: EventSource | null = null
 let timers: number[] = []
+let retryTimer = 0
+let retries = 0
+let everOpened = false
 let running = false
 let refreshTimer = 0
 let offUpdates: (() => void) | null = null
@@ -174,6 +178,7 @@ function receive(e: Activity) {
 
 // ---------- conexion ----------
 function connect() {
+  window.clearTimeout(retryTimer)
   es?.close()
   es = new EventSource(lastId ? `/api/events?desde_id=${lastId}` : '/api/events')
   es.addEventListener('actividad', (m) => {
@@ -182,14 +187,30 @@ function connect() {
   })
   // Chat interno: nuevo, editado o borrado (sin id de actividad: no toca el Last-Event-ID).
   es.addEventListener('chat', (m) => receiveChat(JSON.parse((m as MessageEvent<string>).data) as ChatEvent))
+  // Vistas de proyecto: aviso sin datos de que cambio algo (tampoco lleva id). Un aviso ilegible se ignora: no tumba el stream.
+  es.addEventListener('proyecto', (m) => {
+    try {
+      receiveProject(JSON.parse((m as MessageEvent<string>).data) as ProjectEvent)
+    } catch {
+      /* ilegible */
+    }
+  })
   es.onopen = () => {
     set({ online: true })
     chatReconnected()
+    retries = 0
+    // Tras una caida no se reenvia lo de los proyectos (los avisos no llevan id): las vistas abiertas lo vuelven a pedir.
+    if (everOpened) projectsResync()
+    everOpened = true
   }
   es.onerror = () => {
     set({ online: false })
-    // EventSource reconecta solo ante un corte; si el servidor respondio con error se cierra y hay que reabrirlo a mano.
-    if (es?.readyState === EventSource.CLOSED) timers.push(window.setTimeout(() => running && connect(), 4000))
+    // El reintento propio del navegador es fijo (cada 3 s, sin tope): se cierra y se reabre con espera creciente
+    // (1, 2, 4... hasta 30 s, con algo de azar para que las pestañas no golpeen juntas). El sondeo de 30 s sigue cubriendo lo demas.
+    es?.close()
+    const wait = Math.min(30_000, 1000 * 2 ** Math.min(retries++, 5)) + Math.random() * 500
+    window.clearTimeout(retryTimer)
+    retryTimer = window.setTimeout(() => running && connect(), wait)
   }
 }
 
@@ -227,6 +248,10 @@ export function stopLive() {
   running = false
   es?.close()
   es = null
+  window.clearTimeout(retryTimer)
+  retries = 0
+  everOpened = false
+  resetProjectLive()
   timers.forEach((t) => (window.clearTimeout(t), window.clearInterval(t)))
   timers = []
   window.clearTimeout(refreshTimer)

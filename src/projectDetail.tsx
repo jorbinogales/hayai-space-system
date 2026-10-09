@@ -7,7 +7,8 @@ import { useLoaded } from './hubData'
 import { go } from './nav'
 import { useSession } from './session'
 import { fmtDate, todayISO, useClients } from './store'
-import { addTask, removeTask, toggleTask, useTasks } from './taskData'
+import { subscribeProject } from './projectLive'
+import { addTask, loadTasks, removeTask, toggleTask, useTasks } from './taskData'
 import { Icon } from './ui'
 import { DraftBar } from './UpdateUI'
 import { saveGuarded, useFormGuard } from './updates'
@@ -669,6 +670,20 @@ export default function ProjectDetail({ id, onBack }: { id: string; onBack: () =
   const [err, setErr] = useState('')
   const session = useSession()
   const today = todayISO()
+
+  // En vivo: si otro (otra pestaña, la API, el MCP) cambia este proyecto, solo se vuelve a pedir la seccion que cambio. Al salir se da de baja.
+  // Todo en segundo plano: si la red falla no aparece ningun error, y la pantalla sigue como estaba (siempre queda «Reintentar»/recargar).
+  const refreshDetail = useRef(detail.refresh)
+  refreshDetail.current = detail.refresh
+  useEffect(
+    () =>
+      subscribeProject(id, (c) => {
+        if (c.proyecto) void loadProjects().catch(() => {}) // nombre, descripcion, estado, responsable, entrega
+        if (c.tareas) void loadTasks().catch(() => {})
+        if (c.hitos || c.checklist) refreshDetail.current() // hoja de ruta y pendientes (y el conteo de tareas de cada hito)
+      }),
+    [id],
+  )
 
   useEffect(() => {
     const esc = (e: KeyboardEvent) => {

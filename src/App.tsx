@@ -27,8 +27,8 @@ import ToastHost from './Toast'
 export type Screen = 'home' | 'clientes' | 'proyectos' | 'finanzas' | 'tareas' | 'hub' | 'marketing'
 /** A dónde se puede navegar: «gastos» ya no es una pantalla, es la vista Gastos dentro de Finanzas. */
 export type NavTarget = Screen | 'gastos'
-/** Pantallas planas: se montan encima del cosmos sin viaje 3D (el mundo se queda en el Home, tapado por la pantalla). */
-export const isFlat = (s: Screen) => s === 'hub' || s === 'marketing'
+/** Pantallas planas: se montan encima del cosmos sin viaje 3D (el mundo se queda en el Home, tapado por la pantalla). Marketing ya no: es un planeta que viaja y se ancla a la izquierda, como Finanzas. */
+export const isFlat = (s: Screen) => s === 'hub'
 const fromHash = (): Screen => {
   const h = location.hash.slice(1).split('/')[0]
   if (h === 'gastos') return 'finanzas' // enlace viejo: Gastos vive dentro de Finanzas
@@ -45,10 +45,21 @@ export default function App() {
   const [integrations, setIntegrations] = useState(false)
   const [vault, setVault] = useState(false)
   // un unico mundo 3D para todas las pantallas: navegar mueve objetos dentro de la misma escena
-  const world = useMemo(() => createWorld(route === 'home' || isFlat(route) ? null : (route as Exclude<Screen, 'home' | 'hub' | 'marketing'>)), [])
+  const world = useMemo(() => createWorld(route === 'home' || isFlat(route) ? null : (route as Exclude<Screen, 'home' | 'hub'>)), [])
 
+  // la pantalla actual y si al llegar al Home hay que mostrar el Hub (volver a él desde un planeta que se abrió desde el Hub)
+  const routeRef = useRef(route)
+  routeRef.current = route
+  const arriveHub = useRef(false)
   useEffect(() => {
-    world.onArrive = (at) => setUi(at)
+    world.onArrive = (at) => {
+      if (arriveHub.current && at === 'home') {
+        arriveHub.current = false
+        setUi('hub')
+      } else if (routeRef.current === 'hub') {
+        // el Hub es plano: solo su vista Feed ancla el núcleo, y esas llegadas/salidas no cambian la capa mostrada
+      } else setUi(at)
+    }
   }, [world])
 
   // al abrir la app: si hay sesion vigente se cargan los datos y se entra; si no, pantalla de acceso
@@ -100,7 +111,17 @@ export default function App() {
     if (world.busy() || s === route) return
     if (s === 'marketing') marketingFrom.current = route === 'hub' ? 'hub' : 'home'
     if (setHash) location.hash = s === 'home' ? '' : s === 'finanzas' && target === 'gastos' ? 'finanzas/gastos' : s
-    // las pantallas planas (hub, marketing) no viajan: se muestran al instante sobre el cosmos
+    // el Feed del Hub deja el núcleo anclado a la izquierda: si se sale de él sin volver al Hub, el mundo regresa al Home de golpe
+    if (route === 'hub' && s !== 'hub' && world.key === 'hub') world.snapHome()
+    // de un planeta de vuelta al Hub (Marketing abierto desde el Hub): el planeta viaja de regreso y al llegar se muestra el Hub
+    if (s === 'hub' && route !== 'home' && !isFlat(route)) {
+      arriveHub.current = true
+      setRoute('hub')
+      setUi(null)
+      world.go(null)
+      return
+    }
+    // las pantallas planas (hub) no viajan: se muestran al instante sobre el cosmos
     if (isFlat(s) || (isFlat(route) && s === 'home')) {
       setRoute(s)
       setUi(s)

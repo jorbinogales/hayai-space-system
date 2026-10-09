@@ -181,7 +181,7 @@ Archiva el cliente ficticio «HAYAI (interno)»: sus proyectos pasan a internos 
 
 ## Central de marketing (v1.7.5, migración 023)
 
-El planeta Marketing es una pantalla plana con cinco pestañas (`#marketing/panel | keywords | competidores | contenido | campanas`). Todo lo que hace la web existe igual en la API v1 y el MCP: una sola tabla de rutas (`MK_RUTAS`) alimenta la web (`/api/marketing/...`) y la v1 (`/api/v1/marketing/...`). Permisos de siempre: `read` (GET), `write` (POST/PATCH). **No hay borrado**: keywords descartan, competidores y piezas se archivan.
+El planeta Marketing viaja y queda anclado a la izquierda (como Finanzas), con cinco pestañas a la derecha (`#marketing/panel | keywords | competidores | contenido | campanas`). Todo lo que hace la web existe igual en la API v1 y el MCP: una sola tabla de rutas (`MK_RUTAS`) alimenta la web (`/api/marketing/...`) y la v1 (`/api/v1/marketing/...`). Permisos de siempre: `read` (GET), `write` (POST/PATCH). **No hay borrado**: keywords descartan, competidores y piezas se archivan.
 
 - **Panel**: embudo con selector 30/90/180/365 días (recalcula de verdad), «¿Cómo se calcula?» en viñetas, «Perdido» como métrica del período, «Abierto» y «Ponderado (por probabilidad)», «De dónde llegan» con el desglose completo (abiertos · ganados · perdidos · descartados · altas directas) y «Sin origen (histórico)». Meta Ads dice «Pendiente de conexión» o «N errores en M leads».
 - **Origen del lead**: obligatorio al crear un posible cliente (`lead_source`; por defecto `otro`; `null` se rechaza) más `utm_source` libre (1-80). Los clientes de antes quedan «Sin origen (histórico)».

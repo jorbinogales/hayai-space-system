@@ -463,6 +463,27 @@ details.mk-eq[open] summary { border-bottom: 1px solid rgba(22, 17, 11, 0.08); }
   .mk-col, .mk-tip-t { transition: none; }
 }
 
+/* ---------- planeta anclado (Marketing y la vista Feed): el planeta queda a la izquierda, grande y recortado por el borde; el contenido, a la derecha ---------- */
+.screen.layer.hub-screen.is-anchored { pointer-events: none; background: none; }
+.screen.layer.hub-screen.is-anchored::before { display: none; }
+.is-anchored .hb-scroll {
+  pointer-events: auto;
+  /* mismo encuadre que Finanzas (.plist): pegado al planeta, su borde derecho (1.12 radios) + un margen */
+  inset: 96px 0 0 calc(min(46dvh, 30vw) * 1.12 + 32px);
+  padding: 0 28px 24px 0;
+}
+.is-anchored .hb-wrap { max-width: none; margin: 0; }
+.is-anchored.arriving .hb-scroll, .is-anchored.arriving .clients-left { animation: arrive-in 0.5s ease 0.1s backwards; }
+.is-anchored.is-waiting .hb-scroll, .is-anchored.is-waiting .clients-left { opacity: 0; pointer-events: none; animation: none; }
+.is-anchored.exiting .hb-scroll, .is-anchored.exiting .clients-left { opacity: 0; pointer-events: none; transition: opacity 0.28s ease; }
+.is-anchored .hb-grid.is-7-5, .is-anchored .hb-grid.is-5-7 { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 700px) {
+  /* en el móvil el planeta queda arriba y el contenido debajo (como Finanzas) */
+  .is-anchored .hb-scroll { inset: 38% 0 0 0; padding: 4px 16px 12px; }
+  /* el núcleo es oscuro y en el móvil queda justo bajo la marca: ahí la marca se lee en claro */
+  .app:has(.fd-screen.is-anchored) .topbar .mark p { color: #f4ebdd; }
+}
+
 /* ---------- responsive ---------- */
 @media (max-width: 1000px) {
   .hb-grid.is-7-5, .hb-grid.is-5-7 { grid-template-columns: minmax(0, 1fr); }

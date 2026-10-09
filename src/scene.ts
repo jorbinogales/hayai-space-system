@@ -431,10 +431,11 @@ export function projectsLayout(w: number, h: number) {
   return { rpx, cx, cy, viewH: (PROJECTS_R * h) / rpx, originY: cy / h }
 }
 
-export type WarpDest = 'clientes' | 'proyectos' | 'finanzas' | 'tareas'
+/** 'hub' = el nucleo HAYAI (la vista Feed del Hub lo ancla a la izquierda, igual que Finanzas ancla su planeta). */
+export type WarpDest = 'clientes' | 'proyectos' | 'finanzas' | 'tareas' | 'marketing' | 'hub'
 /** Donde (px) y como (inclinacion) termina el planeta destino del viaje, para que la pantalla siguiente continue sin salto. */
 export function warpTarget(key: WarpDest, w: number, h: number) {
-  if (key === 'proyectos' || key === 'finanzas' || key === 'tareas') {
+  if (key !== 'clientes') {
     const l = projectsLayout(w, h)
     return { cx: l.cx, cy: l.cy, rpx: l.rpx, rx: 0.2, rz: 0.08 }
   }

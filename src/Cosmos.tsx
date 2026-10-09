@@ -22,6 +22,7 @@ export default function Cosmos({
   route,
   ui,
   onOpen,
+  onReady,
   children,
 }: {
   world: World
@@ -29,6 +30,8 @@ export default function Cosmos({
   /** capa mostrada (ya asentada); null mientras se viaja */
   ui: Screen | null
   onOpen: (s: Screen) => void
+  /** el primer frame real del mundo ya esta pintado */
+  onReady?: () => void
   children: ReactNode
 }) {
   const stage = useRef<HTMLDivElement>(null)
@@ -36,9 +39,11 @@ export default function Cosmos({
   const [hot, setHot] = useState<HotKey | null>(null)
   const [deep, setDeep] = useState(false)
   world.hot = hot
+  const ready = useRef(onReady)
+  ready.current = onReady
 
   useEffect(() => {
-    const m = mountScene(stage.current!, WORLD_TEXTURES, (ctx, tex) => buildWorld(ctx, tex, world))
+    const m = mountScene(stage.current!, WORLD_TEXTURES, (ctx, tex) => buildWorld(ctx, tex, world), () => ready.current?.())
     mounted.current = m
     world.zoomBy = m.zoomBy
     if (import.meta.env.DEV) (window as unknown as { __world: World }).__world = world // depuracion: permite pausar el viaje en un punto

@@ -11,9 +11,42 @@
     <link
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600&family=Syncopate:wght@400;700&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600&family=Syncopate:wght@400;700&display=swap" rel="stylesheet" /></noscript>
+    <style>
+      /* Pantalla de carga: se pinta con el HTML, antes de que cargue el JS, y la app la retira cuando esta lista (src/splash.ts). Sin texto. */
+      html { background: #16110b; }
+      #splash { position: fixed; inset: 0; z-index: 2147483000; display: grid; place-items: center; overflow: hidden; background: radial-gradient(ellipse 70% 60% at 50% 46%, #2a1d0f 0%, #16110b 62%, #0d0a06 100%); opacity: 1; transition: opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+      #splash.is-out { opacity: 0; pointer-events: none; }
+      #splash .sp-stars { position: absolute; inset: 0; background-image: radial-gradient(1px 1px at 12% 22%, rgba(246, 238, 226, 0.7), transparent), radial-gradient(1px 1px at 78% 14%, rgba(246, 238, 226, 0.5), transparent), radial-gradient(1.5px 1.5px at 88% 68%, rgba(239, 157, 37, 0.6), transparent), radial-gradient(1px 1px at 22% 80%, rgba(246, 238, 226, 0.45), transparent), radial-gradient(1px 1px at 55% 90%, rgba(246, 238, 226, 0.5), transparent), radial-gradient(1px 1px at 40% 8%, rgba(246, 238, 226, 0.4), transparent), radial-gradient(1.5px 1.5px at 6% 52%, rgba(239, 157, 37, 0.5), transparent), radial-gradient(1px 1px at 94% 38%, rgba(246, 238, 226, 0.4), transparent); animation: sp-twinkle 4s ease-in-out infinite alternate; }
+      #splash .sp-orbit { position: relative; width: min(46vw, 168px); aspect-ratio: 1; transform: rotateX(68deg) rotateZ(-12deg); transform-style: preserve-3d; }
+      #splash .sp-ring { position: absolute; inset: -34%; border-radius: 50%; border: 1.5px solid rgba(239, 157, 37, 0.5); box-shadow: 0 0 22px rgba(239, 157, 37, 0.18), inset 0 0 22px rgba(239, 157, 37, 0.1); }
+      #splash .sp-ring2 { inset: -12%; border-color: rgba(246, 238, 226, 0.22); box-shadow: none; }
+      #splash .sp-spin { position: absolute; inset: -34%; transform-style: preserve-3d; animation: sp-spin 3.2s linear infinite; }
+      #splash .sp-moon { position: absolute; left: 50%; top: 0; width: 9%; aspect-ratio: 1; margin: -4.5% 0 0 -4.5%; border-radius: 50%; background: #f6eee2; box-shadow: 0 0 10px rgba(246, 238, 226, 0.7); animation: sp-unspin 3.2s linear infinite; }
+      #splash .sp-planet { position: absolute; left: 50%; top: 50%; width: min(24vw, 86px); aspect-ratio: 1; margin: calc(min(24vw, 86px) / -2) 0 0 calc(min(24vw, 86px) / -2); border-radius: 50%; background: radial-gradient(circle at 34% 30%, #ffd78a 0%, #ef9d25 38%, #9a5a10 74%, #3a2308 100%); box-shadow: 0 0 46px rgba(239, 157, 37, 0.38), inset -8px -10px 18px rgba(22, 17, 11, 0.55); animation: sp-breathe 2.6s ease-in-out infinite alternate; }
+      @keyframes sp-spin { to { transform: rotate(360deg); } }
+      /* la luna contrarresta el giro y la inclinacion de la orbita para verse redonda */
+      @keyframes sp-unspin { from { transform: rotateZ(0deg) rotateZ(12deg) rotateX(-68deg); } to { transform: rotateZ(-360deg) rotateZ(12deg) rotateX(-68deg); } }
+      @keyframes sp-breathe { from { transform: scale(0.97); } to { transform: scale(1.03); } }
+      @keyframes sp-twinkle { from { opacity: 0.55; } to { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) { #splash .sp-spin { animation-duration: 14s; } #splash .sp-moon { animation-duration: 14s; } #splash .sp-planet, #splash .sp-stars { animation: none; } #splash { transition-duration: 0.01ms; } }
+    </style>
   </head>
   <body>
+    <div id="splash" role="status" aria-label="Cargando HAYAI Space">
+      <div class="sp-stars"></div>
+      <div style="perspective: 700px; position: relative; display: grid; place-items: center; width: min(46vw, 168px); aspect-ratio: 1">
+        <div class="sp-orbit">
+          <div class="sp-ring"></div>
+          <div class="sp-ring sp-ring2"></div>
+          <div class="sp-spin"><div class="sp-moon"></div></div>
+        </div>
+        <div class="sp-planet"></div>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

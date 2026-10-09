@@ -789,7 +789,7 @@ describe('MCP', () => {
     assert.equal(names.length, 97) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 108)
+    assert.equal(full.length, 109)
     assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -1156,7 +1156,8 @@ describe('llaves y papelera desde la web', () => {
 // que verifican las suites de arriba.
 // ---------------------------------------------------------------------------------------------------------------------
 const sumOf = (xs: number[]) => Math.round(xs.reduce((s, x) => s + x, 0) * 100) / 100
-const isoDay = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10)
+// «Hoy» es el de Caracas (UTC-4, sin horario de verano), como el servidor: con UTC la suite fallaba entre las 8 pm y la medianoche locales.
+const isoDay = (offset: number) => new Date(Date.now() - 4 * 3_600_000 + offset * 86_400_000).toISOString().slice(0, 10)
 const mkPosible = async (nombre: string, extra: Record<string, unknown> = {}) => {
   const r = await api('/clientes', { body: { nombre, estado: 'posible', ...extra } })
   assert.equal(r.status, 201, JSON.stringify(r.body))
@@ -4568,6 +4569,164 @@ describe('Feed de oportunidades', () => {
     await assert.rejects(admin.query(`UPDATE feed_items SET category = 'Mayúscula' WHERE id = $1`, [it.id]), /check/i)
     await assert.rejects(admin.query(`INSERT INTO feed_items (title, kind, source, published_by) SELECT 'x', 'idea', 'Mala Fuente', id FROM users LIMIT 1`), /check/i)
     await assert.rejects(admin.query(`INSERT INTO feed_items (title, kind, source, published_by) SELECT 'x', 'chisme', 'manual', id FROM users LIMIT 1`), /check/i)
+  })
+})
+
+describe('Feed: visibilidad (equipo | privado) y borrado', () => {
+  let n = 0
+  const rpc = (method: string, params: unknown = {}, key: string | null = KEY) =>
+    http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: ++n, method, params } })
+  const pub = (body: unknown, key = KEY) => api('/feed', { body, key })
+  const lista = async (key: string, q = '') => (await api(`/feed?per_page=100${q}`, { key })).body
+  const ids = (b: any) => (b.data as any[]).map((i) => i.id)
+  let cookieJ = ''
+  let KEY_RO = ''
+  let KEY_JD = '' // Jorbi, con permiso de borrado
+  let privado = ''
+  let publico = ''
+
+  before(async () => {
+    KEY_RO = newKey('Leandro', 'vis-solo-lectura', 'read')
+    KEY_JD = newKey('Jorbi', 'vis-j-borrar', 'read,write,delete')
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    cookieJ = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+  })
+
+  it('por defecto el ítem es del equipo y la salida (GET) trae visibilidad', async () => {
+    const r = await pub({ titulo: 'Alerta del equipo vis', tipo: 'alerta', fuente: 'vis-test', clave_externa: 'v-1' })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.equal(r.body.visibilidad, 'equipo')
+    publico = r.body.id
+    const g = await api(`/feed/${publico}`, { key: KEY_J })
+    assert.equal(g.body.visibilidad, 'equipo')
+    assert.ok((await lista(KEY_J)).data.every((i: any) => ['equipo', 'privado'].includes(i.visibilidad)))
+    const mala = await pub({ titulo: 'x', tipo: 'idea', fuente: 'vis-test', visibilidad: 'secreto' })
+    assert.equal(mala.status, 400)
+    assert.match(JSON.stringify(mala.body), /visibilidad/)
+  })
+
+  it('un privado de Leandro NO aparece para Jorbi (lista, contadores, filtros, detalle) y Leandro sí lo ve', async () => {
+    const antesJ = await lista(KEY_J)
+    const antesHub = (await api('/hub', { key: KEY_J })).body.feed
+    const desde = ((await api('/actividad?per_page=1')).body.meta.ultimo_id as number) ?? 0
+    const r = await pub({ titulo: 'Cuenta de Barquicinema deshabilitada (privado)', tipo: 'alerta', fuente: 'vis-priv', clave_externa: 'v-priv', visibilidad: 'privado', categoria: 'solo-privada', datos: { negocio: 'Barquicinema' } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.equal(r.body.visibilidad, 'privado')
+    privado = r.body.id
+
+    const dueno = await lista(KEY)
+    assert.ok(ids(dueno).includes(privado), 'su dueño lo ve')
+    assert.equal(dueno.data.find((i: any) => i.id === privado).visibilidad, 'privado')
+    const otro = await lista(KEY_J)
+    assert.ok(!ids(otro).includes(privado), 'otro socio NO lo ve')
+    // Nada lo delata: ni el total, ni los contadores, ni las fuentes, ni las categorías, ni la búsqueda por texto.
+    assert.equal(otro.meta.total, antesJ.meta.total)
+    assert.deepEqual(otro.meta.por_estado, antesJ.meta.por_estado)
+    assert.equal(otro.meta.nuevos, antesJ.meta.nuevos)
+    assert.deepEqual(otro.meta.por_tipo, antesJ.meta.por_tipo)
+    assert.deepEqual(otro.meta.fuentes, antesJ.meta.fuentes)
+    assert.ok(!otro.meta.categorias.some((c: any) => c.categoria === 'solo-privada'))
+    assert.equal((await lista(KEY_J, '&q=Barquicinema')).data.length, 0)
+    assert.equal((await lista(KEY_J, '&categoria=solo-privada')).data.length, 0)
+    assert.equal((await lista(KEY_J, '&visibilidad=privado')).data.length, 0)
+    assert.deepEqual(ids(await lista(KEY, '&visibilidad=privado')), [privado])
+    assert.ok(!ids(await lista(KEY, '&visibilidad=equipo')).includes(privado))
+    // Detalle, hub y campana
+    const det = await api(`/feed/${privado}`, { key: KEY_J })
+    assert.equal(det.status, 404)
+    assert.equal(det.body.error.code, 'not_found')
+    assert.equal((await api(`/feed/${privado}`, { key: KEY })).status, 200)
+    assert.deepEqual((await api('/hub', { key: KEY_J })).body.feed, antesHub, 'el contador del hub de otro socio no cambia')
+    assert.ok(!JSON.stringify((await api('/notificaciones?per_page=100', { key: KEY_J })).body).includes('Barquicinema'), 'la campana de otro socio no lo muestra')
+    const dueñoNotif = JSON.stringify((await api('/notificaciones?per_page=100', { key: KEY })).body)
+    assert.ok(dueñoNotif.includes('Barquicinema'), 'su dueño sí lo ve en su campana')
+    // Ni siquiera el aviso en la actividad del equipo
+    const ev = ((await api(`/actividad?desde_id=${desde}&orden=asc&per_page=100`, { key: KEY_J })).body.data as any[]).filter((e) => e.tipo === 'feed_nuevo')
+    assert.ok(!JSON.stringify(ev).includes('Barquicinema'))
+    // Web (sesión de Jorbi): mismo resultado
+    const web = await fetch(`${ROOT}/api/feed?per_page=100`, { headers: { cookie: cookieJ } }).then((x) => x.json())
+    assert.ok(!(web.data as any[]).some((i) => i.id === privado))
+    assert.equal((await fetch(`${ROOT}/api/feed/${privado}`, { headers: { cookie: cookieJ } })).status, 404)
+  })
+
+  it('otro socio no puede marcar, guardar, convertir, deshacer ni borrar un privado (404) ni usar su clave_externa', async () => {
+    assert.equal((await api(`/feed/${privado}/estado`, { key: KEY_J, method: 'PATCH', body: { estado: 'revisado' } })).status, 404)
+    assert.equal((await api(`/feed/${privado}/guardar`, { key: KEY_J, body: {} })).status, 404)
+    assert.equal((await api(`/feed/${privado}/convertir`, { key: KEY_J, body: { a: 'tarea' } })).status, 404)
+    assert.equal((await api(`/feed/${privado}/deshacer`, { key: KEY_J, body: { a: 'tarea' } })).status, 404)
+    assert.equal((await api(`/feed/${privado}`, { key: KEY_JD, method: 'DELETE' })).status, 404)
+    const choque = await pub({ titulo: 'Intento', tipo: 'idea', fuente: 'vis-priv', clave_externa: 'v-priv' }, KEY_J)
+    assert.equal(choque.status, 409)
+    assert.ok(!JSON.stringify(choque.body).includes('Barquicinema'))
+    const dup = await pub({ titulo: 'otra vez', tipo: 'alerta', fuente: 'vis-priv', clave_externa: 'v-priv', visibilidad: 'privado' })
+    assert.deepEqual([dup.status, dup.body.id, dup.body.creado], [200, privado, false], 'su dueño sí es idempotente')
+    // El dueño sí puede marcarlo
+    assert.equal((await api(`/feed/${privado}/estado`, { method: 'PATCH', body: { estado: 'revisado' } })).body.mi_estado, 'revisado')
+    // Competidores: el hallazgo privado de una fuente «espia» no sale en «Lo que sabemos» de otro socio
+    await pub({ titulo: 'Rivalpriv lanzó anuncios', tipo: 'noticia', fuente: 'espia-anuncios', clave_externa: 'v-esp', visibilidad: 'privado' })
+    const c = await api('/marketing/competidores', { body: { nombre: 'Rivalpriv' } })
+    assert.equal(c.status, 201, JSON.stringify(c.body))
+    assert.equal(c.body.hallazgos.length, 1, 'el dueño lo ve')
+    assert.equal((await api(`/marketing/competidores/${c.body.id}`, { key: KEY_J })).body.hallazgos.length, 0, 'otro socio no')
+    assert.equal((await api(`/marketing/competidores/${c.body.id}`, { method: 'PATCH', body: { archivado: true } })).status, 200) // no ensucia la lista de las pruebas siguientes
+  })
+
+  it('MCP: visibilidad al publicar y hayai_feed_borrar (solo con permiso de borrar)', async () => {
+    const pubM = await rpc('tools/call', { name: 'hayai_feed_publicar', arguments: { titulo: 'Privado por MCP', tipo: 'idea', fuente: 'vis-test', visibilidad: 'privado' } })
+    const creado = JSON.parse(pubM.body.result.content[0].text)
+    assert.equal(creado.visibilidad, 'privado')
+    const lj = JSON.parse((await rpc('tools/call', { name: 'hayai_feed_listar', arguments: { per_page: 100 } }, KEY_J)).body.result.content[0].text)
+    assert.ok(!(lj.data as any[]).some((i) => i.id === creado.id))
+    const sinBorrar = (await rpc('tools/list', {}, KEY)).body.result.tools.map((t: any) => t.name)
+    assert.ok(!sinBorrar.includes('hayai_feed_borrar'))
+    const conBorrar = (await rpc('tools/list', {}, KEY_D)).body.result.tools.find((t: any) => t.name === 'hayai_feed_borrar')
+    assert.ok(conBorrar)
+    assert.equal(conBorrar.annotations.destructiveHint, true)
+    const noExiste = await rpc('tools/call', { name: 'hayai_feed_borrar', arguments: { id: NOPE } }, KEY_D)
+    assert.equal(noExiste.body.result.isError, true)
+    const ok = await rpc('tools/call', { name: 'hayai_feed_borrar', arguments: { id: creado.id } }, KEY_D)
+    assert.notEqual(ok.body.result.isError, true, JSON.stringify(ok.body))
+    assert.equal(JSON.parse(ok.body.result.content[0].text).eliminado, true)
+  })
+
+  it('DELETE /feed/:id: borra, 404 estándar si no existe, exige permiso de borrar, conserva lo ya creado', async () => {
+    const nada = await api(`/feed/${NOPE}`, { key: KEY_D, method: 'DELETE' })
+    assert.equal(nada.status, 404)
+    assert.equal(nada.body.error.code, 'not_found')
+    assert.equal(typeof nada.body.error.message, 'string')
+    assert.deepEqual(Object.keys(nada.body), ['error'])
+    assert.equal((await api(`/feed/${publico}`, { key: KEY_RO, method: 'DELETE' })).status, 403, 'sin permiso de borrar')
+    assert.equal((await api(`/feed/${publico}`, { key: KEY, method: 'DELETE' })).status, 403, 'escritura sin borrar tampoco')
+    assert.equal((await api(`/feed/${publico}`, { key: KEY_D })).status, 200, 'sigue ahí')
+
+    const conv = await pub({ titulo: 'Para convertir y borrar', tipo: 'idea', fuente: 'vis-test', clave_externa: 'v-del' })
+    const t = await api(`/feed/${conv.body.id}/convertir`, { body: { a: 'tarea' } })
+    assert.equal(t.status, 200, JSON.stringify(t.body))
+    const tareaId = t.body.item?.creados?.tarea?.id ?? t.body.creados?.tarea?.id ?? t.body.creado?.id ?? t.body.id
+    const del = await api(`/feed/${conv.body.id}`, { key: KEY_D, method: 'DELETE' })
+    assert.equal(del.status, 200, JSON.stringify(del.body))
+    assert.deepEqual([del.body.id, del.body.eliminado], [conv.body.id, true])
+    assert.equal((await api(`/feed/${conv.body.id}`, { key: KEY_D })).status, 404)
+    assert.equal((await api(`/feed/${conv.body.id}`, { key: KEY_D, method: 'DELETE' })).status, 404, 'segunda vez: ya no existe')
+    assert.equal((await admin.query(`SELECT count(*)::int AS n FROM feed_item_vinculos WHERE item_id = $1`, [conv.body.id])).rows[0].n, 0, 'sus vínculos se van con él')
+    assert.equal((await admin.query(`SELECT count(*)::int AS n FROM tasks WHERE title LIKE 'Para convertir y borrar%' OR id::text = $1`, [String(tareaId)])).rows[0].n >= 1, true, 'la tarea creada se conserva')
+
+    // El dueño sí borra su privado; ya no queda ni para él
+    const mio = await api(`/feed/${privado}`, { key: KEY_JD, method: 'DELETE' })
+    assert.equal(mio.status, 404, 'Jorbi, aun con permiso de borrar, no puede borrar el privado de Leandro')
+    const KEY_LD = newKey('Leandro', 'vis-borrar', 'read,write,delete')
+    assert.equal((await api(`/feed/${privado}`, { key: KEY_LD, method: 'DELETE' })).status, 200)
+    assert.ok(!ids(await lista(KEY)).includes(privado))
+    // Web (sesión): también
+    const w = await fetch(`${ROOT}/api/feed/${NOPE}`, { method: 'DELETE', headers: { cookie: cookieJ, 'x-csrf-token': 'x' } })
+    assert.equal(w.status, 404)
+  })
+
+  it('migración 024: la columna nace en «equipo» y solo admite equipo | privado', async () => {
+    const it = (await admin.query(`INSERT INTO feed_items (title, kind, source, published_by) SELECT 'sin visibilidad', 'idea', 'vis-test', id FROM users LIMIT 1 RETURNING visibility`)).rows[0]
+    assert.equal(it.visibility, 'equipo')
+    await assert.rejects(admin.query(`UPDATE feed_items SET visibility = 'publico' WHERE source = 'vis-test'`), /check/i)
+    assert.equal((await admin.query(`SELECT count(*)::int AS n FROM feed_items WHERE visibility NOT IN ('equipo','privado')`)).rows[0].n, 0)
   })
 })
 

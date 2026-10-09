@@ -12,7 +12,7 @@ import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResum
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
 import { chatBorrar, chatContadores, chatEditar, chatListar, chatMarcarLeido, chatPublicar, chatUsuarios, chatVer } from '../services/chat.ts'
-import { feedConvertir, feedDeshacer, feedGuardar, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
+import { feedBorrar, feedConvertir, feedDeshacer, feedGuardar, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
 import { gastoActualizar, gastoRegistrar, gastosListar, gastoVer } from '../services/gastos.ts'
@@ -197,6 +197,7 @@ route('patch', '/feed/:id/estado', feedMarcar)
 route('post', '/feed/:id/guardar', feedGuardar)
 route('post', '/feed/:id/convertir', feedConvertir)
 route('post', '/feed/:id/deshacer', feedDeshacer)
+route('delete', '/feed/:id', feedBorrar) // elimina el ítem (definitivo); un privado de otro socio da 404
 
 // Chat interno del equipo (un solo canal). El autor SALE DE LA LLAVE, nunca del cuerpo; `fuente` es el origen lógico.
 // POST /chat: 201 si se creó; 200 si esa (fuente, clave_externa) ya existía (idempotente). Lista keyset: más reciente primero, antes_de + antes_de_id.

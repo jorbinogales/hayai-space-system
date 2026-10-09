@@ -66,6 +66,7 @@ import { addDays, fmtDate, loadClients, money, todayISO } from './store'
 import { loadTasks, taskNow } from './taskData'
 import { ago } from './time'
 import { Icon } from './ui'
+import { useCosmos } from './Cosmos'
 import './feed.css'
 
 const PER_PAGE = 20
@@ -1240,6 +1241,26 @@ function useSentinel(onHit: () => void, enabled: boolean, version: unknown) {
 // ---------- la vista del feed ----------
 export function FeedScreen({ owners }: { owners: string[] }) {
   const me = useSession()?.name ?? ''
+  const { world } = useCosmos()
+  // El Feed es del planeta HAYAI (el núcleo, su eyebrow lo dice): igual que Finanzas, al abrirlo ese planeta viaja a la izquierda y se queda anclado mientras dura la vista.
+  const [arrived, setArrived] = useState(() => world.key === 'hub' && world.target === 1 && world.wp >= 1)
+  const [exiting, setExiting] = useState(false)
+  useEffect(() => {
+    world.screenRate = null
+    const sub = (at: string) => at === 'hub' && setArrived(true)
+    world.arriveSubs.add(sub)
+    if (world.key !== 'hub' || world.target !== 1) world.go('hub')
+    else if (world.wp >= 1) setArrived(true)
+    return () => {
+      world.arriveSubs.delete(sub)
+      // si otra pantalla ya tomó el mundo (la campana lleva a un planeta), no se le quita; si no, el núcleo regresa al centro
+      if (world.key === 'hub') world.go(null)
+    }
+  }, [world])
+  const back = () => {
+    setExiting(true)
+    window.setTimeout(closeFeed, reduced() ? 50 : 300)
+  }
   const [f, setF] = useState<Filters>(DEFAULTS)
   const [qInput, setQInput] = useState('')
   const [items, setItems] = useState<FeedItem[]>([])
@@ -1489,14 +1510,15 @@ export function FeedScreen({ owners }: { owners: string[] }) {
     })
 
   return (
-    <main className="screen layer hub-screen fd-screen" aria-label="Feed de oportunidades">
+    <main className={`screen layer hub-screen is-anchored fd-screen arriving${arrived ? '' : ' is-waiting'}${exiting ? ' exiting' : ''}`} aria-label="Feed de oportunidades">
+      <div className="clients-left">
+        <button className="back" onClick={back}>
+          <Icon name="back" size={16} />
+          Volver al Hub
+        </button>
+      </div>
       <div className="hb-scroll">
         <div className="hb-wrap">
-          <button className="hb-back" onClick={closeFeed}>
-            <Icon name="back" size={16} />
-            Volver al Hub
-          </button>
-
           <header className="hb-head fd-phead">
             <div>
               <p className="hb-eyebrow">Planeta HAYAI · Feed</p>

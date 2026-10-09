@@ -1,5 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Icon } from './ui'
+import { useCosmos } from './Cosmos'
+import { reduced } from './warp'
 import Campanas from './mkCampanas'
 import Competidores from './mkCompetidores'
 import Contenido from './mkContenido'
@@ -22,8 +24,17 @@ const fromHash = (): Tab => {
   return TABS.some((x) => x.id === t) ? (t as Tab) : 'panel'
 }
 
-/** Planeta Marketing: la Central de marketing, una pantalla plana con cinco pestañas (Panel, Keywords, Competidores, Contenido y Campañas). */
-export default function Marketing({ from = 'hub', onBack }: { from?: 'hub' | 'home'; onBack: () => void }) {
+/** Planeta Marketing: el planeta viaja y queda anclado a la izquierda (como Finanzas) y a la derecha va la Central de marketing, con cinco pestañas (Panel, Keywords, Competidores, Contenido y Campañas). */
+export default function Marketing({ from = 'home', onBack }: { from?: 'hub' | 'home'; onBack: () => void }) {
+  const { world } = useCosmos()
+  const [exiting, setExiting] = useState(false)
+  useEffect(() => {
+    world.screenRate = null // gira a la velocidad propia del planeta
+  }, [world])
+  const back = () => {
+    setExiting(true)
+    window.setTimeout(onBack, reduced() ? 50 : 300)
+  }
   const [tab, setTab] = useState<Tab>(fromHash)
   const [visitadas, setVisitadas] = useState<Set<Tab>>(() => new Set([fromHash()]))
   const [dias, setDias] = useState(90)
@@ -44,14 +55,15 @@ export default function Marketing({ from = 'hub', onBack }: { from?: 'hub' | 'ho
   }
 
   return (
-    <main className="screen layer hub-screen mkt-screen" aria-label="Planeta Marketing">
+    <main className={`screen layer hub-screen is-anchored mkt-screen arriving${exiting ? ' exiting' : ''}`} aria-label="Planeta Marketing">
+      <div className="clients-left">
+        <button className="back" onClick={back}>
+          <Icon name="back" size={16} />
+          {from === 'home' ? 'Volver al core' : 'Volver al Hub'}
+        </button>
+      </div>
       <div className="hb-scroll">
         <div className="hb-wrap">
-          <button className="hb-back" onClick={onBack}>
-            <Icon name="back" size={16} />
-            {from === 'home' ? 'Volver al core' : 'Volver al hub'}
-          </button>
-
           <header className="hb-head">
             <div>
               <p className="hb-eyebrow">Planeta Marketing</p>

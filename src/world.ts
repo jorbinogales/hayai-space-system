@@ -70,6 +70,8 @@ export interface World {
   /** pantalla en la que arranca la app (si se abre directo en #clientes) */
   initial: WarpDest | null
   onArrive?: (at: 'home' | WarpDest) => void
+  /** otras capas que quieren enterarse de la llegada (la vista Feed espera a que el nucleo quede anclado antes de mostrarse) */
+  arriveSubs: Set<(at: 'home' | WarpDest) => void>
   /** HTML de cada pantalla: se registran al montarse sus capas (no tocan WebGL) */
   homeSync: ((dt: number) => void) | null
   homeResize: (() => void) | null
@@ -83,6 +85,8 @@ export interface World {
   pick: (cx: number, cy: number) => HotKey | null
   zoomBy: (f: number) => void
   go: (key: WarpDest | null) => void
+  /** vuelve al Home de golpe, sin viaje (cuando la pantalla que lo tapaba se va sin pasar por el Home) */
+  snapHome: () => void
   busy: () => boolean
   item: (key: PlanetKey) => Item | undefined
 }
@@ -97,6 +101,7 @@ export function createWorld(initial: WarpDest | null): World {
     wp: initial ? 1 : 0,
     dur: 1.2,
     initial,
+    arriveSubs: new Set(),
     homeSync: null,
     homeResize: null,
     screenHook: null,
@@ -115,6 +120,11 @@ export function createWorld(initial: WarpDest | null): World {
         w.target = 0
         w.dur = reduced() ? 0.4 : 1.4
       }
+    },
+    snapHome() {
+      w.key = null
+      w.target = 0
+      w.wp = 0
     },
     busy: () => (w.target === 1 && w.wp < 1) || (w.target === 0 && w.wp > 0),
     item: (key) => w.items.find((i) => i.p.key === key),
@@ -161,7 +171,8 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
   const haloBase = halo.scale.clone()
   let coreHot = 0
   const coreAir = core.pivot.children.find((c) => c instanceof THREE.Sprite) as THREE.Sprite
-  common.push({ m: core.body.material as THREE.Material, o: 1, obj: core.pivot }, { m: coreAir.material, o: 1, obj: coreAir }, { m: halo.material, o: 1, obj: halo })
+  const coreMat = core.body.material as THREE.Material
+  const haloPos = halo.position.clone()
 
   const sky = addSky(scene)
 
@@ -309,10 +320,33 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
         }
       }
 
-      // nucleo, halo y orbitas
+      // orbitas del sistema: se apagan al viajar
       for (const x of common) {
         x.m.opacity = x.o * fo
         x.obj.visible = fo > 0.01
+      }
+      // nucleo y halo: se apagan igual, salvo cuando EL NUCLEO es el destino (vista Feed del Hub): ahi viaja a la izquierda y se ancla
+      const coreKey = key === 'hub'
+      const cv = coreKey ? 1 : fo
+      coreMat.opacity = cv
+      coreAir.material.opacity = cv
+      halo.material.opacity = cv
+      core.pivot.visible = halo.visible = cv > 0.01
+      if (coreKey) {
+        const dst = warpTarget('hub', ctx.w, ctx.h)
+        const destX = (dst.cx - ctx.w / 2) * upp
+        const destY = (ctx.originY * ctx.h - dst.cy) * upp
+        const sc = 1 + ((dst.rpx * upp) / CORE_R - 1) * e
+        core.pivot.position.set(destX * e, destY * e, 0)
+        core.pivot.scale.setScalar(sc)
+        core.pivot.rotation.set(0.28 + (dst.rx - 0.28) * e, 0, 0.18 * (1 - e) + dst.rz * e)
+        halo.position.set(haloPos.x + destX * e, haloPos.y + destY * e, haloPos.z)
+        halo.scale.set(halo.scale.x * sc, halo.scale.y * sc, halo.scale.z)
+      } else {
+        core.pivot.position.set(0, 0, 0)
+        core.pivot.scale.setScalar(1)
+        core.pivot.rotation.set(0.28, 0, 0.18)
+        halo.position.copy(haloPos)
       }
       amb.intensity = 2.0 - 0.1 * e
       sun.intensity = 2.2 + 0.1 * e
@@ -344,6 +378,7 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
             fx.dir = 1
           }
           world.onArrive?.(now2)
+          world.arriveSubs.forEach((f) => f(now2))
         }
       }
     },

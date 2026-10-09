@@ -27,7 +27,7 @@ export const CATEGORIES = ['Herramientas', 'Infraestructura', 'Operación', 'Mar
 export const projectIcon = z.enum(['globe', 'phone', 'chart', 'cart', 'palette', 'box', 'code'], 'Icono inválido')
 
 // En la BD "Por visitar" es 'planeacion'; la API v1 lo llama 'visita' (como el SPEC).
-export const PROJECT_STATES = ['activo', 'entrega', 'visita', 'pausado', 'completado'] as const
+export const PROJECT_STATES = ['activo', 'entrega', 'visita', 'pausado', 'completado', 'entregado'] as const
 export const projectStateOut = (s: string) => (s === 'planeacion' ? 'visita' : s)
 export const projectStateIn = (s: string) => (s === 'visita' ? 'planeacion' : s)
 

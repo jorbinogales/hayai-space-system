@@ -15,6 +15,7 @@ import { saveGuarded, useFormGuard } from './updates'
 import {
   archiveProject,
   astronautNames,
+  entregaVencida,
   avatarFor,
   loadProjects,
   projectNow,
@@ -55,7 +56,7 @@ interface Detail {
 }
 
 const ICON_LABEL: Record<string, string> = { globe: 'Web', phone: 'App móvil', chart: 'Panel / datos', cart: 'Tienda', palette: 'Diseño', box: 'Sistema', code: 'Desarrollo' }
-const STATUSES: ProjectStatus[] = ['planeacion', 'activo', 'entrega', 'pausado', 'completado']
+const STATUSES: ProjectStatus[] = ['planeacion', 'activo', 'entrega', 'pausado', 'completado', 'entregado']
 const msg = (e: unknown, fallback: string) => (e instanceof Error ? e.message : fallback)
 const dayOf = (iso: string) => iso.slice(0, 10)
 
@@ -708,12 +709,23 @@ export default function ProjectDetail({ id, onBack }: { id: string; onBack: () =
       </div>
     )
 
+  // «Marcar entregado»: estado terminal. Pide confirmación; el proyecto sigue visible y se puede reabrir desde «Editar proyecto».
+  const markDelivered = async () => {
+    if (!window.confirm(`¿Marcar «${project.name}» como entregado?\n\nSeguirá visible, pero ya no se marcará como vencido ni cuenta como en curso. Si te equivocas, lo cambias desde «Editar proyecto».`)) return
+    setErr('')
+    try {
+      await updateProject(project.id, { status: 'entregado' })
+    } catch (e) {
+      setErr(msg(e, 'No se pudo marcar el proyecto como entregado.'))
+    }
+  }
+
   const d = detail.data
   const hitos = d?.hitos ?? []
   const done = hitos.filter((m) => m.estado === 'hecho').length
   const pct = hitos.length ? Math.round((done / hitos.length) * 100) : null
   const internal = !project.clientId
-  const late = !!project.due && project.due < today && project.status !== 'completado'
+  const late = entregaVencida(project, today)
 
   return (
     <div className="pd-flat" role="region" aria-label={`Proyecto ${project.name}`}>
@@ -739,6 +751,12 @@ export default function ProjectDetail({ id, onBack }: { id: string; onBack: () =
             </div>
             <div className="pd-head-side">
               <span className={`pd-state st-${project.status}`}>{STATUS_LABEL[project.status]}</span>
+              {project.status !== 'entregado' && (
+                <button type="button" className="pd-pill" onClick={() => void markDelivered()}>
+                  <Icon name="check" size={14} />
+                  Marcar entregado
+                </button>
+              )}
               <button type="button" className="pd-pill is-ghost" onClick={() => setEditing(true)}>
                 <Icon name="edit" size={14} />
                 Editar proyecto

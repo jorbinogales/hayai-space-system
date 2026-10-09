@@ -11,7 +11,7 @@ export const PROJECT_SELECT = `SELECT p.id, p.name, p.description, p.icon, u.nam
     p.status, p.due_date AS due, p.archived_at IS NOT NULL AS archived, COALESCE(c.archived_at IS NOT NULL, false) AS "clientArchived"
   FROM projects p JOIN users u ON u.id = p.owner_id LEFT JOIN clients c ON c.id = p.client_id`
 
-const STATES = ['activo', 'entrega', 'planeacion', 'pausado', 'completado'] as const
+const STATES = ['activo', 'entrega', 'planeacion', 'pausado', 'completado', 'entregado'] as const
 export { projectIcon }
 
 const newProject = z.object({

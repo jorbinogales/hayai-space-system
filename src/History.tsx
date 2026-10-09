@@ -18,6 +18,7 @@ import { loadProjects } from './projectData'
 import { pushToast } from './toast'
 import { loadClients } from './store'
 import { useFormGuard } from './updates'
+import type { NextAction } from './nextAction'
 import { DraftBar } from './UpdateUI'
 import './ficha.css'
 import './proposal.css'
@@ -190,18 +191,17 @@ function DelFeed({ c, onClose }: { c: Client; onClose: () => void }) {
   )
 }
 
-function FichaPanel({ c, stages, project, visit, onConvert, onClose }: { c: Client; stages: Stage[]; project?: Project | null; visit?: Task | null; onConvert?: (id: string) => void; onClose: () => void }) {
+function FichaPanel({ c, stages, project, visit, next, onConvert, onClose }: { c: Client; stages: Stage[]; project?: Project | null; visit?: Task | null; next?: NextAction | null; onConvert?: (id: string) => void; onClose: () => void }) {
   const st = stats(c)
   const crm = crmOf(c)
-  const today = todayISO()
   const initial = c.items.reduce((s, i) => s + i.amount, 0)
   const sold = st.cobrado + st.pendiente
   const pct = sold > 0 ? Math.round((st.cobrado / sold) * 100) : 0
   const stage = stageName(stages, crm.stage)
   const prob = crm.probability ?? stages.find((s) => s.etapa === crm.stage)?.probabilidad
-  const lateAction = !!crm.nextActionDate && crm.nextActionDate < today
+  const lateAction = !!next?.late
   const hasContact = !!(crm.contactName || c.phone || crm.email || crm.address || crm.source)
-  const hasFollow = !!(stage || crm.estValue != null || crm.expectedClose || crm.nextAction || crm.lastContactAt)
+  const hasFollow = !!(stage || crm.estValue != null || crm.expectedClose || next || crm.lastContactAt)
 
   return (
     <>
@@ -265,14 +265,14 @@ function FichaPanel({ c, stages, project, visit, onConvert, onClose }: { c: Clie
             )}
             {crm.estValue != null && <Row label="Valor estimado">{money(crm.estValue)}</Row>}
             {crm.expectedClose && <Row label="Cierre previsto">{fmtDate(crm.expectedClose, true)}</Row>}
-            {crm.nextAction && (
+            {next && (
               <Row label="Próxima acción">
-                {crm.nextAction}
-                {crm.nextActionDate && (
+                {next.text}
+                {next.date && (
                   <small className={lateAction ? 'is-late' : undefined}>
                     {' '}
                     · {lateAction ? 'venció el ' : ''}
-                    {fmtDate(crm.nextActionDate, true)}
+                    {fmtDate(next.date, true)}
                   </small>
                 )}
               </Row>
@@ -639,6 +639,7 @@ export default function History({
   onConvert,
   project,
   visit,
+  next,
 }: {
   client: Client | null
   onClose: () => void
@@ -648,6 +649,8 @@ export default function History({
   /** posible proyecto del prospecto y su tarea de visita */
   project?: Project | null
   visit?: Task | null
+  /** proxima accion real (visitas y cobros agendados + seguimiento manual) */
+  next?: NextAction | null
 }) {
   // se conserva el ultimo cliente para que el cajon se cierre con animacion sin vaciarse
   const last = useRef<Client | null>(null)
@@ -762,7 +765,7 @@ export default function History({
             <div className="h-scroll" ref={scroll}>
               {TABS.map((t) => (
                 <div key={t.key} role="tabpanel" id={`fx-panel-${t.key}`} aria-labelledby={`fx-tab-${t.key}`} hidden={tab !== t.key} tabIndex={0} className="fx-panel">
-                  {t.key === 'ficha' && <FichaPanel c={c} stages={stages} project={project} visit={visit} onConvert={onConvert} onClose={onClose} />}
+                  {t.key === 'ficha' && <FichaPanel c={c} stages={stages} project={project} visit={visit} next={next} onConvert={onConvert} onClose={onClose} />}
                   {t.key === 'bitacora' && <LogPanel c={c} log={log} stages={stages} />}
                   {t.key === 'cobros' && <PaysPanel c={c} onOpen={setCobroId} onEdit={onEdit} />}
                   {t.key === 'proyectos' && <ProjectsPanel projects={projects} active={tab === 'proyectos'} />}

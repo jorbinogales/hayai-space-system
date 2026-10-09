@@ -6,6 +6,7 @@ import { ago } from './time'
 import { useDragScroll } from './drag'
 import { Icon } from './ui'
 import { reduced } from './warp'
+import type { NextAction } from './nextAction'
 
 // Vistas alternativas de Clientes: «Orbital» (SVG 2D, sin WebGL) y «Pipeline» (columnas). Las etapas, sus nombres y sus
 // probabilidades salen SIEMPRE de GET /pipeline/stages (hubData.loadStages): aqui no hay ni un nombre de etapa escrito.
@@ -51,6 +52,9 @@ export function ViewSwitch({ view, onChange }: { view: ViewMode; onChange: (v: V
     </div>
   )
 }
+
+/** Proxima accion real de un cliente (visitas y cobros agendados + seguimiento manual). */
+export type NextOf = (clientId: string) => NextAction | null
 
 // ---------- datos ----------
 /** Lo que /clients ya manda de cada cliente y que el tipo base del store aun no declara. */
@@ -274,7 +278,7 @@ const closest = (m: Model) => {
   return null
 }
 
-function OrbitalBody({ model, clients, openId, onPick, onSwitch, onProspect }: { model: Model; clients: Lead[]; openId: string | null; onPick: (id: string) => void; onSwitch: (v: ViewMode) => void; onProspect: () => void }) {
+function OrbitalBody({ model, clients, openId, onPick, onSwitch, onProspect, nextOf }: { model: Model; clients: Lead[]; openId: string | null; onPick: (id: string) => void; onSwitch: (v: ViewMode) => void; onProspect: () => void; nextOf: NextOf }) {
   const [hover, setHover] = useState<string | null>(null)
   const [focus, setFocus] = useState<string | null>(null)
   const [stageOpen, setStageOpen] = useState<string | null>(null) // etapa desplegada en la lista del lateral
@@ -446,7 +450,10 @@ function OrbitalBody({ model, clients, openId, onPick, onSwitch, onProspect }: {
             </header>
             <p className="ob-card-note">
               {active === null && leadStage.tipo !== 'ganada' ? 'El más cerca de cerrar. ' : ''}
-              {lead.nextAction ? `Próxima acción: ${lead.nextAction}${lead.nextActionDate ? ` (${fmtDate(lead.nextActionDate)})` : ''}.` : leadStage.tipo === 'ganada' ? 'Ya es cliente.' : 'Sin próxima acción definida.'}
+              {(() => {
+                const nx = nextOf(lead.id)
+                return nx ? `Próxima acción: ${nx.text}${nx.date ? ` (${nx.late ? 'venció el ' : ''}${fmtDate(nx.date)})` : ''}.` : leadStage.tipo === 'ganada' ? 'Ya es cliente.' : 'Sin próxima acción definida.'
+              })()}
             </p>
             <dl className="ob-stats">
               <div>
@@ -534,20 +541,20 @@ function OrbitalBody({ model, clients, openId, onPick, onSwitch, onProspect }: {
   )
 }
 
-export function OrbitalView({ clients, stages, openId, onPick, onSwitch, onProspect }: { clients: Lead[]; stages: Loaded<PipelineStage[]>; openId: string | null; onPick: (id: string) => void; onSwitch: (v: ViewMode) => void; onProspect: () => void }) {
+export function OrbitalView({ clients, stages, openId, onPick, onSwitch, onProspect, nextOf }: { clients: Lead[]; stages: Loaded<PipelineStage[]>; openId: string | null; onPick: (id: string) => void; onSwitch: (v: ViewMode) => void; onProspect: () => void; nextOf: NextOf }) {
   return (
     <StagesGate stages={stages}>
-      {(s) => <OrbitalBodyWithModel stages={s} clients={clients} openId={openId} onPick={onPick} onSwitch={onSwitch} onProspect={onProspect} />}
+      {(s) => <OrbitalBodyWithModel stages={s} clients={clients} openId={openId} onPick={onPick} onSwitch={onSwitch} onProspect={onProspect} nextOf={nextOf} />}
     </StagesGate>
   )
 }
-function OrbitalBodyWithModel({ stages, clients, ...rest }: { stages: PipelineStage[]; clients: Lead[]; openId: string | null; onPick: (id: string) => void; onSwitch: (v: ViewMode) => void; onProspect: () => void }) {
+function OrbitalBodyWithModel({ stages, clients, ...rest }: { stages: PipelineStage[]; clients: Lead[]; openId: string | null; onPick: (id: string) => void; onSwitch: (v: ViewMode) => void; onProspect: () => void; nextOf: NextOf }) {
   const model = useMemo(() => buildModel(stages, clients), [stages, clients])
   return <OrbitalBody model={model} clients={clients} {...rest} />
 }
 
 // ---------- pipeline en columnas ----------
-function Column({ stage, leads, openId, onPick }: { stage: PipelineStage; leads: Lead[]; openId: string | null; onPick: (id: string) => void }) {
+function Column({ stage, leads, openId, onPick, nextOf }: { stage: PipelineStage; leads: Lead[]; openId: string | null; onPick: (id: string) => void; nextOf: NextOf }) {
   const total = leads.reduce((s, l) => s + (l.estValue ?? 0), 0)
   return (
     <section className={`ob-col${stage.tipo === 'perdida' ? ' is-lost' : ''}${stage.tipo === 'ganada' ? ' is-won' : ''}`} aria-labelledby={`ob-c-${stage.etapa}`}>
@@ -572,12 +579,17 @@ function Column({ stage, leads, openId, onPick }: { stage: PipelineStage; leads:
                 </span>
                 {stage.tipo === 'perdida' && l.lostReason ? (
                   <span className="ob-lnote">{l.lostReason}</span>
-                ) : l.nextAction ? (
-                  <span className="ob-lnote">
-                    {l.nextAction}
-                    {l.nextActionDate && <> · {fmtDate(l.nextActionDate)}</>}
-                  </span>
-                ) : null}
+                ) : (
+                  (() => {
+                    const nx = nextOf(l.id)
+                    return nx ? (
+                      <span className="ob-lnote">
+                        {nx.text}
+                        {nx.date && <> · {nx.late ? 'venció el ' : ''}{fmtDate(nx.date)}</>}
+                      </span>
+                    ) : null
+                  })()
+                )}
               </button>
             </li>
           ))}
@@ -588,21 +600,21 @@ function Column({ stage, leads, openId, onPick }: { stage: PipelineStage; leads:
 }
 
 /** Pipeline en columnas: una por etapa activa (con Perdido al final), con los mismos nombres y probabilidades de la API. */
-export function PipelineView({ clients, stages, openId, onPick }: { clients: Lead[]; stages: Loaded<PipelineStage[]>; openId: string | null; onPick: (id: string) => void }) {
+export function PipelineView({ clients, stages, openId, onPick, nextOf }: { clients: Lead[]; stages: Loaded<PipelineStage[]>; openId: string | null; onPick: (id: string) => void; nextOf: NextOf }) {
   return (
     <StagesGate stages={stages}>
-      {(s) => <PipelineColumns stages={s} clients={clients} openId={openId} onPick={onPick} />}
+      {(s) => <PipelineColumns stages={s} clients={clients} openId={openId} onPick={onPick} nextOf={nextOf} />}
     </StagesGate>
   )
 }
-function PipelineColumns({ stages, clients, openId, onPick }: { stages: PipelineStage[]; clients: Lead[]; openId: string | null; onPick: (id: string) => void }) {
+function PipelineColumns({ stages, clients, openId, onPick, nextOf }: { stages: PipelineStage[]; clients: Lead[]; openId: string | null; onPick: (id: string) => void; nextOf: NextOf }) {
   const model = useMemo(() => buildModel(stages, clients), [stages, clients])
   const track = useRef<HTMLDivElement>(null)
   useDragScroll(track, 'x') // las columnas se arrastran con el raton (y la rueda las desplaza)
   return (
     <div className="ob-cols" ref={track} role="group" aria-label="Pipeline por etapas">
       {model.columns.map((s) => (
-        <Column key={s.etapa} stage={s} leads={s.tipo === 'perdida' ? model.lostLeads : (model.byStage.get(s.etapa) ?? [])} openId={openId} onPick={onPick} />
+        <Column key={s.etapa} stage={s} leads={s.tipo === 'perdida' ? model.lostLeads : (model.byStage.get(s.etapa) ?? [])} openId={openId} onPick={onPick} nextOf={nextOf} />
       ))}
     </div>
   )

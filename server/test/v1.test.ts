@@ -3610,7 +3610,7 @@ describe('Historial de versiones (changelog)', () => {
     assert.deepEqual([v166.titulo, v166.autor, v166.fecha, v166.cambios.length], ['Órbita fina II', 'Equipo HAYAI', '2026-10-08', 7])
     assert.deepEqual([v17.titulo, v17.autor, v17.fecha, v17.cambios.length], ['Chat interno', 'Equipo HAYAI', '2026-10-08', 5])
     assert.deepEqual([v16.titulo, v16.autor, v16.fecha, v16.cambios.length], ['Feed de oportunidades', 'Equipo HAYAI', '2026-10-08', 6])
-    assert.equal(v10.titulo, 'Lanzamiento inicial')
+    assert.equal(v10.titulo, 'Versión de Mierda')
     assert.equal(v10.autor, 'Equipo HAYAI', 'las históricas no tienen autor individual')
     assert.ok(v15.cambios.length >= 10 && v15.cambios.every((c: string) => c.length > 10))
     for (const palabra of ['Actividad', 'Pipeline', 'Propuestas', 'Cobros', 'Factura', 'WhatsApp', 'MCP', 'Hub']) assert.ok(v15.cambios.join(' ').includes(palabra), palabra)

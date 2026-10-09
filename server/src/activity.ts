@@ -21,6 +21,8 @@ export const CHANNEL = 'activity'
 export const CHAT_CHANNEL = 'chat'
 export const notifyChat = (db: Pool | PoolClient, op: 'nuevo' | 'editado' | 'borrado', id: string) =>
   db.query('SELECT pg_notify($1, $2)', [CHAT_CHANNEL, JSON.stringify({ op, id })])
+/** Canal de las vistas de proyecto: lo dispara un trigger (migracion 026) al confirmarse un cambio en el proyecto, sus hitos, su checklist o sus tareas. */
+export const PROYECTO_CHANNEL = 'proyecto'
 const RETENTION_DAYS = 60
 
 export type ActivityInput = {

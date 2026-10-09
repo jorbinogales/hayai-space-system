@@ -92,6 +92,8 @@ export interface Loaded<T> {
   error: string | null
   loading: boolean
   reload: () => void
+  /** recarga en segundo plano: sin «cargando» ni error visible si falla (para avisos en vivo) */
+  refresh: () => void
   /** reemplaza los datos en memoria (tras guardar un cambio) */
   patch: (fn: (d: T) => T) => void
 }
@@ -129,8 +131,24 @@ export function useLoaded<T>(load: () => Promise<T>, deps: unknown[]): Loaded<T>
     return () => void seq.current++
   }, [reload])
 
+  // Recarga en segundo plano (avisos en vivo): no enciende «cargando» ni muestra error si falla; lo ultimo que llegue gana.
+  const refresh = useCallback(() => {
+    const mine = ++seq.current
+    fn.current()
+      .then((d) => {
+        if (mine !== seq.current) return
+        setData(d)
+        setError(null)
+        setLoading(false)
+      })
+      .catch(() => {
+        if (mine === seq.current) setLoading(false)
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps)
+
   const patch = useCallback((f: (d: T) => T) => setData((d) => (d ? f(d) : d)), [])
-  return { data, error, loading, reload, patch }
+  return { data, error, loading, reload, refresh, patch }
 }
 
 export const loadHub = () => api.get<HubData>('/hub')

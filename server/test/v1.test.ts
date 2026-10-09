@@ -2127,7 +2127,8 @@ describe('Actividad en vivo (web: sesión + SSE)', () => {
             const block = raw.slice(0, i)
             raw = raw.slice(i + 2)
             const data = block.split('\n').find((l) => l.startsWith('data: '))
-            if (data) {
+            // Solo la actividad (los avisos del chat y de los proyectos van con su propio evento y sin id).
+            if (data && block.includes('event: actividad')) {
               events.push(JSON.parse(data.slice(6)))
               ids.push(block.split('\n').find((l) => l.startsWith('id: '))!.slice(4))
             }
@@ -5610,5 +5611,161 @@ describe('1.7.5 Central de marketing', () => {
     assert.equal(dato(await tool('hayai_campanas_ver', { dias: 30 })).totales.leads, 6)
     assert.equal(dato(await tool('hayai_kw_listar', { q: 'agenda' })).meta.total, 1)
     assert.equal(dato(await tool('hayai_competidores_listar', {})).data.length >= 2, true)
+  })
+})
+
+describe('Proyectos en vivo (SSE «proyecto»)', () => {
+  const espera = (ms = 15) => new Promise((r) => setTimeout(r, ms))
+  let cookie = ''
+  type Ev = { event: string; id: string | null; data: any }
+  const eventos: Ev[] = []
+  let ac: AbortController
+  let proj = ''
+  let otro = ''
+
+  /** Espera un evento «proyecto» que cumpla la condicion. */
+  const llega = async (pred: (d: any) => boolean, ms = 4000) => {
+    for (let t = 0; t < ms / 25; t++) {
+      const e = eventos.find((x) => x.event === 'proyecto' && pred(x.data))
+      if (e) return e
+      await espera(25)
+    }
+    throw new Error(`no llegó el aviso; llegaron: ${JSON.stringify(eventos.filter((e) => e.event === 'proyecto').map((e) => e.data))}`)
+  }
+  const proyecto = (seccion: string, op: string, id = proj) => (d: any) => d.seccion === seccion && d.op === op && d.proyecto_id === id
+  const cuenta = (seccion: string, id = proj) => eventos.filter((e) => e.event === 'proyecto' && e.data.seccion === seccion && e.data.proyecto_id === id).length
+
+  before(async () => {
+    const r = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Elis', pin: '713904' }) })
+    assert.equal(r.status, 200, 'login Elis')
+    cookie = r.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    ac = new AbortController()
+    const res = await fetch(`${ROOT}/api/events`, { headers: { cookie }, signal: ac.signal })
+    const reader = res.body!.getReader()
+    const dec = new TextDecoder()
+    void (async () => {
+      let raw = ''
+      try {
+        for (;;) {
+          const { value, done } = await reader.read()
+          if (done) return
+          raw += dec.decode(value, { stream: true })
+          let i: number
+          while ((i = raw.indexOf('\n\n')) >= 0) {
+            const lines = raw.slice(0, i).split('\n')
+            raw = raw.slice(i + 2)
+            const ev = lines.find((l) => l.startsWith('event: '))
+            const data = lines.find((l) => l.startsWith('data: '))
+            if (ev && data) eventos.push({ event: ev.slice(7), id: lines.find((l) => l.startsWith('id: '))?.slice(4) ?? null, data: JSON.parse(data.slice(6)) })
+          }
+        }
+      } catch {
+        /* abortado */
+      }
+    })()
+    await espera(150)
+    proj = (await api('/proyectos', { body: { nombre: 'En vivo A' } })).body.id
+    otro = (await api('/proyectos', { body: { nombre: 'En vivo B' } })).body.id
+    assert.ok(proj && otro)
+    await espera(200)
+    eventos.length = 0
+  })
+  after(() => ac.abort())
+
+  it('hitos: crear, actualizar, completar y borrar avisan a las pestañas abiertas, por la API (otro cliente), sin id de actividad y sin datos', async () => {
+    const h = await api(`/proyectos/${proj}/hitos`, { body: { titulo: 'Levantamiento' } })
+    assert.equal(h.status, 201)
+    const nuevo = await llega(proyecto('hitos', 'nuevo'))
+    assert.equal(nuevo.id, null, 'sin id: no pisa el Last-Event-ID de la actividad')
+    assert.deepEqual(nuevo.data, { op: 'nuevo', seccion: 'hitos', proyecto_id: proj, hito: false }, 'solo qué cambió y dónde: nada del contenido')
+    await api(`/hitos/${h.body.id}`, { method: 'PATCH', body: { titulo: 'Levantamiento v2' } })
+    await llega(proyecto('hitos', 'editado'))
+    eventos.length = 0
+    await api(`/hitos/${h.body.id}`, { method: 'PATCH', body: { estado: 'hecho' } })
+    await llega(proyecto('hitos', 'editado'))
+    await apiD(`/hitos/${h.body.id}`, { method: 'DELETE' })
+    await llega(proyecto('hitos', 'borrado'))
+  })
+
+  it('tareas: crear, completar y borrar avisan; si cuelgan de un hito, el aviso lo dice (la hoja de ruta cuenta las tareas de cada hito)', async () => {
+    const hito = (await api(`/proyectos/${proj}/hitos`, { body: { titulo: 'Con tareas' } })).body.id
+    eventos.length = 0
+    const suelta = (await api('/tareas', { body: { titulo: 'Suelta', proyecto_id: proj } })).body.id
+    assert.equal((await llega(proyecto('tareas', 'nuevo'))).data.hito, false)
+    eventos.length = 0
+    const colgada = (await api('/tareas', { body: { titulo: 'Colgada', proyecto_id: proj, hito_id: hito } })).body.id
+    assert.equal((await llega(proyecto('tareas', 'nuevo'))).data.hito, true)
+    eventos.length = 0
+    assert.equal((await api(`/tareas/${colgada}`, { method: 'PATCH', body: { estado: 'completada' } })).status, 200)
+    assert.equal((await llega(proyecto('tareas', 'editado'))).data.hito, true)
+    await apiD(`/tareas/${suelta}`, { method: 'DELETE' })
+    await llega(proyecto('tareas', 'borrado'))
+  })
+
+  it('checklist y datos del proyecto (nombre, descripción, estado) avisan cada uno con su sección', async () => {
+    eventos.length = 0
+    const it1 = (await api(`/proyectos/${proj}/checklist`, { body: { texto: 'Pedir logo' } })).body.id
+    await llega(proyecto('checklist', 'nuevo'))
+    await api(`/checklist/${it1}`, { method: 'PATCH', body: { hecho: true } })
+    await llega(proyecto('checklist', 'editado'))
+    assert.equal((await api(`/proyectos/${proj}`, { method: 'PATCH', body: { nombre: 'En vivo A2', descripcion: 'Con descripción', estado: 'activo' } })).status, 200)
+    await llega(proyecto('proyecto', 'editado'))
+    assert.equal(cuenta('proyecto'), 1, 'un solo cambio de nombre+descripción+estado = un solo aviso')
+  })
+
+  it('reordenar varios hitos de una vez da un solo aviso (los idénticos de una transacción se funden)', async () => {
+    const ids: string[] = []
+    for (const t of ['Uno', 'Dos', 'Tres']) ids.push((await api(`/proyectos/${otro}/hitos`, { body: { titulo: t } })).body.id)
+    await espera(150)
+    eventos.length = 0
+    assert.equal((await api(`/proyectos/${otro}/hitos/orden`, { body: { ids: [ids[2], ids[0], ids[1]] } })).status, 200)
+    await llega(proyecto('hitos', 'editado', otro))
+    await espera(250)
+    assert.equal(cuenta('hitos', otro), 1)
+  })
+
+  it('el aviso lleva el proyecto: lo de un proyecto no se confunde con el de otro', async () => {
+    eventos.length = 0
+    await api(`/proyectos/${otro}/hitos`, { body: { titulo: 'Solo en B' } })
+    await llega(proyecto('hitos', 'nuevo', otro))
+    await espera(100)
+    assert.equal(cuenta('hitos', proj), 0)
+  })
+
+  it('un cambio que falla (404, 409, validación) no avisa de nada: el aviso sale al confirmar, no antes', async () => {
+    eventos.length = 0
+    assert.equal((await api(`/proyectos/${NOPE}/hitos`, { body: { titulo: 'Fantasma' } })).status, 404)
+    assert.equal((await api(`/proyectos/${proj}/hitos`, { body: { titulo: '' } })).status, 400)
+    assert.equal((await api('/tareas', { body: { titulo: 'X', proyecto_id: NOPE } })).status, 404)
+    await espera(300)
+    assert.equal(eventos.filter((e) => e.event === 'proyecto').length, 0)
+  })
+
+  it('un cambio dentro de una transacción que se deshace no avisa; el que se confirma sí', async () => {
+    eventos.length = 0
+    await admin.query('BEGIN')
+    await admin.query("INSERT INTO project_milestones (project_id, title, position) VALUES ($1, 'Rollback', 99)", [proj])
+    await admin.query('ROLLBACK')
+    await espera(300)
+    assert.equal(eventos.filter((e) => e.event === 'proyecto').length, 0)
+    await admin.query("INSERT INTO project_milestones (project_id, title, position) VALUES ($1, 'Directo a la BD', 99)", [proj])
+    await llega(proyecto('hitos', 'nuevo')) // incluso un cambio hecho fuera de la app avisa
+  })
+
+  it('borrar el proyecto avisa «proyecto borrado» (y a sus hijos), para que la vista abierta lo sepa', async () => {
+    eventos.length = 0
+    assert.equal((await apiD(`/proyectos/${otro}`, { method: 'DELETE' })).status, 200)
+    await llega(proyecto('proyecto', 'borrado', otro))
+  })
+
+  it('el stream sigue sano con un aviso ilegible en el canal: se ignora y los siguientes llegan', async () => {
+    eventos.length = 0
+    await admin.query("SELECT pg_notify('proyecto', 'esto no es json')")
+    await admin.query(`SELECT pg_notify('proyecto', '{"seccion":"hackeo","proyecto_id":"${proj}"}')`)
+    await admin.query(`SELECT pg_notify('proyecto', '{"seccion":"hitos","proyecto_id":"no-es-uuid"}')`)
+    await espera(250)
+    assert.equal(eventos.filter((e) => e.event === 'proyecto').length, 0, 'secciones o ids inválidos no se reparten')
+    await api(`/proyectos/${proj}/checklist`, { body: { texto: 'Sigue vivo' } })
+    await llega(proyecto('checklist', 'nuevo'))
   })
 })

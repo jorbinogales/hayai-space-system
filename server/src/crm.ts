@@ -1,4 +1,4 @@
-// Nucleo del CRM: ficha del cliente y pipeline de posibles clientes. Un solo lugar decide como cambia una etapa, asi que la
+// Nucleo del CRM: ficha del cliente y pipeline de clientes potenciales. Un solo lugar decide como cambia una etapa, asi que la
 // web, la API v1 y el MCP no pueden contradecirse (ni dejar la probabilidad o el motivo de perdida a medias).
 // Hoja del grafo de imports a proposito (solo db/util): lo usan routes/ y services/, y estos ya se importan entre si.
 import type { PoolClient } from 'pg'
@@ -20,7 +20,8 @@ export async function loadStages(db: Db): Promise<StageRow[]> {
 
 /** Nombres de la Fase 1 que se siguen aceptando en la ENTRADA de la API (la salida siempre usa los nuevos). Transitorio. */
 export const STAGE_ALIASES: Record<string, string> = {
-  nuevo: 'prospecto',
+  nuevo: 'potencial',
+  prospecto: 'potencial', // nombre anterior de la etapa (hasta la migración 028)
   contactado: 'visita_agendada',
   propuesta: 'propuesta_en_armado',
   negociacion: 'propuesta_presentada',
@@ -34,19 +35,19 @@ export function resolveStage(stages: StageRow[], input: string): StageRow {
   return found
 }
 
-/** La primera etapa abierta: donde entra un posible cliente nuevo. */
+/** La primera etapa abierta: donde entra un cliente potencial nuevo. */
 export const entryStage = (stages: StageRow[]) => {
   const s = stages.find((x) => x.kind === 'abierta' && x.active)
   if (!s) throw new HttpError(500, 'No hay etapas abiertas activas en el pipeline')
   return s
 }
 
-/** Posible cliente en una etapa abierta (ni ganado ni perdido). */
+/** Cliente potencial en una etapa abierta (ni ganado ni perdido). */
 export const isOpenStage = (prospect: boolean, stage: string | null) => prospect && stage !== null && stage !== 'perdido'
 
 export const SOURCES = ['referido', 'instagram', 'whatsapp', 'facebook', 'meta_ads', 'web', 'visita_frio', 'evento', 'otro'] as const
 
-/** Un posible cliente sin contacto real desde hace mas de estos dias esta "frio". */
+/** Un cliente potencial sin contacto real desde hace mas de estos dias esta "frio". */
 export const COLD_DAYS = 14
 
 // ---------- esquema compartido (REST v1 y MCP lo usan tal cual; la web lo usa tras traducir sus llaves) ----------
@@ -106,7 +107,7 @@ export const fichaShape = {
   origen: z.enum(SOURCES, `Origen inválido (${SOURCES.join(', ')})`).nullable().optional(),
   utm_source: text(80).nullable().optional(), // texto libre del utm_source con que llegó el lead (campaña, anuncio, página…)
   fecha_implementacion: isoDate.nullable().optional(), // dia en que se implementa el sistema (obligatorio al ganar)
-  // pipeline (solo posibles clientes). etapa: ver GET /pipeline/etapas (los nombres de la fase 1 se siguen aceptando).
+  // pipeline (solo clientes potenciales). etapa: ver GET /pipeline/etapas (los nombres de la fase 1 se siguen aceptando).
   etapa: z.string('Etapa inválida').trim().min(1, 'Etapa inválida').max(30, 'Etapa inválida').optional(),
   valor_estimado: money.nullable().optional(),
   probabilidad: z.number('Probabilidad inválida (entero de 0 a 100)').int('Probabilidad inválida (entero de 0 a 100)').min(0, 'Mínimo 0').max(100, 'Máximo 100').optional(),
@@ -131,7 +132,7 @@ export const transitionShape = {
 
 export type FichaPatch = z.infer<z.ZodObject<typeof fichaShape>>
 export type TransitionPatch = z.infer<z.ZodObject<typeof transitionShape>>
-export type ClientPatch = FichaPatch & Partial<TransitionPatch> & { nombre?: string; avatar?: string; estado?: 'activo' | 'posible'; archivado?: boolean }
+export type ClientPatch = FichaPatch & Partial<TransitionPatch> & { nombre?: string; avatar?: string; estado?: 'activo' | 'potencial'; archivado?: boolean }
 
 const PIPELINE_KEYS = ['etapa', 'valor_estimado', 'probabilidad', 'cierre_previsto', 'motivo_perdida'] as const
 
@@ -172,7 +173,7 @@ const liveProposal = async (c: PoolClient, clientId: string) =>
     | { id: string; status: string; version: number }
     | undefined
 
-/** Crea (o reprograma) la tarea de visita del posible cliente. Vive en su proyecto en planeacion; si no tiene, se crea uno. */
+/** Crea (o reprograma) la tarea de visita del cliente potencial. Vive en su proyecto en planeacion; si no tiene, se crea uno. */
 async function scheduleVisit(c: PoolClient, actorId: string, clientId: string, name: string, date: string) {
   let project = (
     await c.query(
@@ -220,13 +221,13 @@ async function closeWithProposal(c: PoolClient, actorId: string, clientId: strin
 /**
  * Aplica un cambio de ficha / pipeline / seguimiento (y de nombre, avatar, estado o archivo) a un cliente, dentro de la
  * transaccion `c`. Bloquea la fila, resuelve la etapa final y la valida entera ANTES de escribir:
- *  - estado 'activo' sobre un posible = ganado; estado 'posible' sobre un cliente = primera etapa; etapa 'ganado' = convertir.
+ *  - estado 'activo' sobre un potencial = ganado; estado 'potencial' sobre un cliente = primera etapa; etapa 'ganado' = convertir.
  *  - ganado fija la probabilidad en 100 y perdido en 0 (pedir otra cosa es un 400, no se ignora en silencio).
  *    Las demas etapas traen la probabilidad de la tabla pipeline_stages (se puede pisar a mano).
  *  - ganado exige fecha_implementacion; con una propuesta vigente exige ademas esquema_cobro (genera los cobros).
  *  - perdido exige motivo_perdida (y rechaza la propuesta viva); fuera de perdido el motivo no existe.
  *  - propuesta_presentada exige una propuesta y la marca como presentada.
- *  - los datos de pipeline solo se editan en un posible cliente (o en la misma peticion que lo convierte, para anotar el valor).
+ *  - los datos de pipeline solo se editan en un cliente potencial (o en la misma peticion que lo convierte, para anotar el valor).
  *  - cada cambio de etapa deja una entrada 'etapa' en la bitacora, escrita aqui y solo aqui.
  * Devuelve si cambio la etapa.
  */
@@ -247,26 +248,26 @@ export async function applyClientPatch(c: PoolClient, actorId: string, clientId:
   // ---- etapa final ----
   const asked = p.etapa !== undefined ? resolveStage(stages, p.etapa).key : undefined
   if (p.estado && asked && (p.estado === 'activo') !== (asked === 'ganado'))
-    throw new HttpError(400, 'estado y etapa se contradicen: "activo" equivale a la etapa "ganado" y "posible" a las demás')
-  if (asked === 'ganado' && !cur.is_prospect) throw new HttpError(409, 'El cliente ya no es un posible cliente')
-  if (asked === 'perdido' && !cur.is_prospect) throw new HttpError(409, 'Solo un posible cliente se marca como perdido')
+    throw new HttpError(400, 'estado y etapa se contradicen: "activo" equivale a la etapa "ganado" y "potencial" a las demás')
+  if (asked === 'ganado' && !cur.is_prospect) throw new HttpError(409, 'El cliente ya no es un cliente potencial')
+  if (asked === 'perdido' && !cur.is_prospect) throw new HttpError(409, 'Solo un cliente potencial se marca como perdido')
 
   let stage: string | null = was
   if (asked) stage = asked
   else if (p.estado === 'activo' && cur.is_prospect) stage = 'ganado'
-  else if (p.estado === 'posible' && !cur.is_prospect) stage = entryStage(stages).key
+  else if (p.estado === 'potencial' && !cur.is_prospect) stage = entryStage(stages).key
   const changed = stage !== was
   const prospect = stage !== null && stage !== 'ganado'
   const row = stage ? byKey.get(stage) : undefined
 
   const touchesPipeline = PIPELINE_KEYS.some((k) => p[k] !== undefined)
   if (touchesPipeline && !(prospect || (changed && stage === 'ganado')))
-    throw new HttpError(400, 'Los datos de pipeline (etapa, valor, probabilidad, cierre, motivo) solo aplican a un posible cliente')
+    throw new HttpError(400, 'Los datos de pipeline (etapa, valor, probabilidad, cierre, motivo) solo aplican a un cliente potencial')
 
   // ---- datos que acompañan a la etapa ----
   if (p.fecha_visita !== undefined && stage !== 'visita_agendada') throw new HttpError(400, 'fecha_visita solo aplica a la etapa "visita_agendada"')
   if (p.resumen_visita !== undefined && stage !== 'visita_realizada') throw new HttpError(400, 'resumen_visita solo aplica a la etapa "visita_realizada"')
-  if (p.esquema_cobro !== undefined && !(changed && stage === 'ganado')) throw new HttpError(400, 'esquema_cobro solo aplica al ganar un posible cliente')
+  if (p.esquema_cobro !== undefined && !(changed && stage === 'ganado')) throw new HttpError(400, 'esquema_cobro solo aplica al ganar un cliente potencial')
 
   // ---- probabilidad ----
   let prob: number | null = cur.probability
@@ -283,7 +284,7 @@ export async function applyClientPatch(c: PoolClient, actorId: string, clientId:
   let lost: string | null = null
   if (stage === 'perdido') {
     lost = p.motivo_perdida !== undefined ? p.motivo_perdida : changed ? null : cur.lost_reason
-    if (!lost) throw new HttpError(400, 'Indica motivo_perdida para marcar un posible cliente como perdido')
+    if (!lost) throw new HttpError(400, 'Indica motivo_perdida para marcar un cliente potencial como perdido')
   } else if (p.motivo_perdida != null) throw new HttpError(400, 'motivo_perdida solo aplica a la etapa "perdido"')
 
   // ---- proxima accion: la fecha siempre acompana a una accion ----
@@ -306,7 +307,7 @@ export async function applyClientPatch(c: PoolClient, actorId: string, clientId:
   let implementation: string | null | undefined = p.fecha_implementacion
   if (changed && stage === 'ganado') {
     implementation = p.fecha_implementacion ?? cur.implementation_date
-    if (!implementation) throw new HttpError(400, 'Indica fecha_implementacion (el día de implementación) para ganar un posible cliente')
+    if (!implementation) throw new HttpError(400, 'Indica fecha_implementacion (el día de implementación) para ganar un cliente potencial')
     if (live && !p.esquema_cobro) throw new HttpError(400, 'Con una propuesta vigente, indica esquema_cobro (inicio_cobro, meses y unicos_cobrados) para generar los cobros')
     if (!live && p.esquema_cobro) throw new HttpError(400, 'No hay propuesta vigente: esquema_cobro no aplica (registra los cobros con pagos)')
   }

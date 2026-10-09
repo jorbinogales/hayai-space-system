@@ -1,4 +1,4 @@
-// Propuestas comerciales de un posible cliente (mensualidad base + extras) y el catalogo de ofertas de HAYAI.
+// Propuestas comerciales de un cliente potencial (mensualidad base + extras) y el catalogo de ofertas de HAYAI.
 // El negocio vende por mensualidad: una propuesta tiene UNA mensualidad base, extras mensuales (p. ej. un lector de codigo de
 // barras en renta) y extras unicos (p. ej. una impresora). Los totales se calculan al leer, nunca se guardan.
 // La negociacion se registra como VERSIONES: crear una propuesta nueva deja la viva anterior como 'reemplazada'.

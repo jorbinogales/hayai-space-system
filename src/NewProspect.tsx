@@ -23,7 +23,7 @@ export const ORIGEN_OPCIONES: [string, string][] = [
 
 const ICON_LABEL: Record<string, string> = { globe: 'Web', phone: 'App móvil', chart: 'Panel / datos', cart: 'Tienda', palette: 'Diseño', box: 'Sistema', code: 'Desarrollo' }
 
-/** Alta de un posible cliente: su posible proyecto y la visita agendada (una tarea del proyecto). Sin pagos ni mensualidades. */
+/** Alta de un cliente potencial: su posible proyecto y la visita agendada (una tarea del proyecto). Sin pagos ni mensualidades. */
 export default function NewProspect({ onClose, onCreate }: { onClose: () => void; onCreate: (c: Client) => void }) {
   const session = useSession()
   const owners = astronautNames()
@@ -41,7 +41,7 @@ export default function NewProspect({ onClose, onCreate }: { onClose: () => void
   const first = useRef<HTMLInputElement>(null)
   const guard = useFormGuard({
     id: 'posible:nuevo',
-    label: 'Posible cliente',
+    label: 'Cliente potencial',
     values: { name, project, visitDate, visitTitle, source, utm },
     initial: { name: '', project: '', visitDate: '', visitTitle: '', source: 'otro', utm: '' },
     labels: { name: 'nombre', project: 'proyecto', visitDate: 'fecha de la visita', visitTitle: 'título de la visita', source: 'origen', utm: 'utm_source' },
@@ -66,7 +66,7 @@ export default function NewProspect({ onClose, onCreate }: { onClose: () => void
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!name.trim()) return setError('Escribe el nombre del posible cliente.')
+    if (!name.trim()) return setError('Escribe el nombre del cliente potencial.')
     if (!project.trim()) return setError('Indica el posible proyecto.')
     if (!owner) return setError('Elige quién será el responsable.')
     setBusy(true)
@@ -76,7 +76,7 @@ export default function NewProspect({ onClose, onCreate }: { onClose: () => void
       onCreate(c)
     } catch (err) {
       setBusy(false)
-      setError(err instanceof Error ? err.message : 'No se pudo guardar el posible cliente.')
+      setError(err instanceof Error ? err.message : 'No se pudo guardar el cliente potencial.')
     }
   }
 
@@ -84,7 +84,7 @@ export default function NewProspect({ onClose, onCreate }: { onClose: () => void
     <div className="modal" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <form className="sheet" role="dialog" aria-modal="true" aria-labelledby="np2-title" onSubmit={submit} noValidate>
         <header>
-          <h2 id="np2-title">Posible cliente</h2>
+          <h2 id="np2-title">Cliente potencial</h2>
           <button type="button" className="x" onClick={onClose} aria-label="Cerrar">
             <Icon name="close" size={18} />
           </button>
@@ -115,8 +115,8 @@ export default function NewProspect({ onClose, onCreate }: { onClose: () => void
           </div>
 
           <div className="field">
-            <span>Icono del posible cliente</span>
-            <AvatarPicker value={avatar} onChange={setAvatar} label="Icono del posible cliente" />
+            <span>Icono del cliente potencial</span>
+            <AvatarPicker value={avatar} onChange={setAvatar} label="Icono del cliente potencial" />
           </div>
 
           <fieldset>
@@ -172,7 +172,7 @@ export default function NewProspect({ onClose, onCreate }: { onClose: () => void
             Cancelar
           </button>
           <button type="submit" className="primary" disabled={busy}>
-            Guardar posible cliente
+            Guardar cliente potencial
           </button>
         </footer>
       </form>

@@ -5,7 +5,7 @@
 import { useSyncExternalStore } from 'react'
 import { api } from './api'
 
-export const FEED_TIPOS = ['idea', 'prospecto', 'alerta', 'noticia', 'oportunidad', 'proyecto'] as const
+export const FEED_TIPOS = ['idea', 'potencial', 'alerta', 'noticia', 'oportunidad', 'proyecto'] as const
 /** Lo que ve el socio al filtrar: su estado personal, y «convertido» (global) manda sobre lo personal. */
 export const FEED_ESTADOS = ['nuevo', 'revisado', 'descartado', 'convertido'] as const
 export type FeedTipo = (typeof FEED_TIPOS)[number]
@@ -28,7 +28,7 @@ export type Creados = Partial<Record<CreadoKind, { id: string | null; por: strin
 
 export const FEED_TIPO_LABEL: Record<FeedTipo, string> = {
   idea: 'Idea',
-  prospecto: 'Prospecto',
+  potencial: 'Potencial',
   alerta: 'Alerta',
   noticia: 'Noticia',
   oportunidad: 'Oportunidad',
@@ -58,7 +58,7 @@ export interface FeedItem {
   publicado_el: string
   /** GLOBAL: en qué se convirtió, quién y cuándo */
   convertido: { a: CreadoKind; id: string | null; por: string | null; el: string | null } | null
-  /** v1.6.6: el cliente al que apunta el ítem (decide «Convertir en posible cliente» / «en cliente» / «Crear propuesta») */
+  /** v1.6.6: el cliente al que apunta el ítem (decide «Convertir en cliente potencial» / «en cliente» / «Crear propuesta») */
   vinculo: FeedVinculo
   /** v1.6.6: lo que ya se creó desde el ítem, por clase (tarea, proyecto, propuesta...): ahí el botón dice «✓ Creada» */
   creados: Creados
@@ -130,7 +130,7 @@ export interface ConvertBody {
   responsable?: string
   cliente_id?: string
   descripcion?: string
-  /** «cliente»: día de implementación (hoy por defecto) y, si el posible cliente tiene propuesta vigente, el esquema de cobro */
+  /** «cliente»: día de implementación (hoy por defecto) y, si el cliente potencial tiene propuesta vigente, el esquema de cobro */
   fecha_implementacion?: string
   esquema_cobro?: { inicio_cobro: string; meses: number; unicos_cobrados: boolean }
 }
@@ -140,15 +140,15 @@ export interface ConvertResult {
 }
 export const convertFeed = (it: Pick<FeedItem, 'id'>, b: ConvertBody) => api.post<ConvertResult>(`/feed/${it.id}/convertir`, b)
 /** «Deshacer» del aviso «Listo ✓»: solo quien lo creó y en los 2 minutos siguientes. Lo creado va a la papelera. */
-/** «Devolver al feed» desde la ficha del posible cliente: sin límite de tiempo (el posible cliente va a la papelera y el ítem queda nuevo). */
+/** «Devolver al feed» desde la ficha del cliente potencial: sin límite de tiempo (el cliente potencial va a la papelera y el ítem queda nuevo). */
 export const devolverAlFeed = (itemId: string) => api.post<{ item: FeedItem; deshecho: string }>(`/feed/${itemId}/deshacer`, { a: 'posible_cliente', devolver: true })
 export const undoFeed = (it: Pick<FeedItem, 'id'>, a: Exclude<CreadoKind, 'propuesta'>) => api.post<{ item: FeedItem; deshecho: string }>(`/feed/${it.id}/deshacer`, { a })
 
 // ---------- botones inteligentes (v1.6.6): qué acciones tiene cada tarjeta y cuál va destacada ----------
-export const ES_LEAD: FeedTipo[] = ['prospecto', 'oportunidad']
+export const ES_LEAD: FeedTipo[] = ['potencial', 'oportunidad']
 /**
- * «Convertir» según el vínculo: sin vincular → posible cliente; vinculado a un posible cliente → cliente (lo promueve);
- * vinculado a un cliente activo → nada. Solo prospectos y oportunidades: en ideas, noticias y alertas no se muestra.
+ * «Convertir» según el vínculo: sin vincular → cliente potencial; vinculado a un cliente potencial → cliente (lo promueve);
+ * vinculado a un cliente activo → nada. Solo potenciales y oportunidades: en ideas, noticias y alertas no se muestra.
  */
 export function conversionDe(it: Pick<FeedItem, 'tipo' | 'vinculo'>): 'posible_cliente' | 'cliente' | null {
   if (!ES_LEAD.includes(it.tipo)) return null
@@ -186,7 +186,7 @@ export interface AccionesDe {
 }
 /**
  * Qué botones tiene una tarjeta y cuál es el principal:
- * prospecto con teléfono → WhatsApp/Llamar · prospecto sin teléfono → Convertir · oportunidad vinculada → Crear propuesta ·
+ * potencial con teléfono → WhatsApp/Llamar · potencial sin teléfono → Convertir · oportunidad vinculada → Crear propuesta ·
  * oportunidad sin vincular → Convertir · idea → Crear proyecto · alerta de cuota → Registrar cobro · noticia → Ver origen.
  * Lo que ya se creó no vuelve a ser el principal (queda como «✓ Creada»).
  */
@@ -205,7 +205,7 @@ export function accionesDe(it: FeedItem): AccionesDe {
   if (origen) todas.push('origen')
 
   const candidata: AccionId | null =
-    it.tipo === 'prospecto' ? (contacto && contacto.tipo !== 'email' ? 'contacto' : conv) :
+    it.tipo === 'potencial' ? (contacto && contacto.tipo !== 'email' ? 'contacto' : conv) :
     it.tipo === 'oportunidad' ? (puedeProponer(it) ? 'propuesta' : conv) :
     it.tipo === 'idea' ? (it.fuente === 'marketing' ? 'contenido' : 'proyecto') :
     it.tipo === 'proyecto' ? 'proyecto' :
@@ -218,9 +218,34 @@ export function accionesDe(it: FeedItem): AccionesDe {
 
 /** Texto de WhatsApp con el guion del ítem ya escrito (wa.me?text=…). Sin guion, el enlace queda igual. */
 export function conGuion(href: string, d: Record<string, unknown>): string {
-  const g = txt(d.guion)
+  const g = guionDe(d)
   return g ? `${href}${href.includes('?') ? '&' : '?'}text=${encodeURIComponent(g)}` : href
 }
+
+// ---------- guion sin Google Maps ----------
+/** Una frase que habla de la ficha de Google Maps del negocio (reseñas, calificación, estrellas, horarios publicados). */
+const FRASE_MAPS = /google\s*maps|\bmaps\b|ficha de google|perfil de google|google my business|rese[ñn]as?\b|calificaci[oó]n|valoraci[oó]n|estrellas?\b|opiniones en google/i
+/**
+ * El guion de contacto NO abre con observaciones de Google Maps: en Venezuela los negocios no le dan peso a su ficha de Maps, así que no es un gancho.
+ * Se quitan las frases iniciales que hablan de Maps (siempre queda al menos una frase). `quitado` dice si hubo que quitar algo.
+ */
+export function guionSinMaps(guion: string): { texto: string; quitado: boolean } {
+  const frases = guion.trim().split(/(?<=[.!?…])\s+/)
+  let i = 0
+  while (i < frases.length - 1 && FRASE_MAPS.test(frases[i])) i++
+  return i === 0 ? { texto: guion.trim(), quitado: false } : { texto: frases.slice(i).join(' ').trim(), quitado: true }
+}
+/** El guion que se muestra, se copia y se manda por WhatsApp (sin aperturas de Google Maps). */
+export function guionDe(d: Record<string, unknown>): string | null {
+  const g = txt(d.guion)
+  return g ? guionSinMaps(g).texto : null
+}
+
+// ---------- Google Maps (baja de prioridad: se muestra al final del detalle) ----------
+const CLAVE_MAPS = /maps|rese[ñn]a|calific|rating|estrella|horario|opiniones|valoraci|gmb|google/i
+const URL_MAPS = /(^|\/\/)(www\.)?(maps\.google\.|google\.[a-z.]+\/maps|maps\.app\.goo\.gl|goo\.gl\/maps)/i
+export const esClaveMaps = (k: string) => CLAVE_MAPS.test(k)
+export const esUrlMaps = (u: string) => URL_MAPS.test(u)
 
 // ---------- números ----------
 /** Conteos con punto de miles a partir de 1.000 (es-VE), sin depender de la regla de agrupación del navegador. */
@@ -475,3 +500,17 @@ export const takeFeedFocus = (): FeedFocus | null => {
 }
 /** Se dispara cuando se pide enfocar el feed estando ya en su vista. */
 export const onFeedFocus = (fn: () => void) => (focusSubs.add(fn), () => void focusSubs.delete(fn))
+
+// ---------- Instagram corregido a mano ----------
+export interface InstagramManual {
+  /** el enlace puesto a mano; null = «no tiene» (confirmado) */
+  valor: string | null
+  por: string | null
+  el: string | null
+}
+export const instagramManual = (d: Record<string, unknown>): InstagramManual | null => {
+  const m = isRec(d.contacto_manual) && isRec(d.contacto_manual.instagram) ? d.contacto_manual.instagram : null
+  return m ? { valor: str(m.valor), por: str(m.por), el: str(m.el) } : null
+}
+/** Corregir o agregar a mano el Instagram del ítem (enlace o @usuario; null = «no tiene»). */
+export const setFeedInstagram = (it: Pick<FeedItem, 'id'>, instagram: string | null) => api.patch<FeedItem>(`/feed/${it.id}/contacto`, { instagram })

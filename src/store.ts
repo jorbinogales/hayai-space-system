@@ -31,7 +31,7 @@ export interface Client {
   /** version del registro: se manda como If-Match al editar */
   updatedAt?: string
   name: string
-  /** posible cliente: aun no firmo (puede no tener inicial ni cobros) */
+  /** cliente potencial: aun no firmo (puede no tener inicial ni cobros) */
   prospect?: boolean
   /** archivado: se oculta de las pantallas de trabajo pero su historial sigue contando en Finanzas */
   archived?: boolean
@@ -132,14 +132,14 @@ export interface ProspectDraft {
   source: string
   utmSource?: string | null
 }
-/** Registra un posible cliente con su posible proyecto ("Por visitar") y una tarea de visita ligada a ese proyecto. */
+/** Registra un cliente potencial con su posible proyecto ("Por visitar") y una tarea de visita ligada a ese proyecto. */
 export async function addProspect(d: ProspectDraft): Promise<Client> {
   const r = await api.post<{ client: Client }>('/prospects', d)
   clients.update((cur) => [...cur, r.client])
   await Promise.all([loadProjects(), loadTasks()]) // el proyecto y la tarea nuevos tambien aparecen en sus pantallas
   return r.client
 }
-/** El posible cliente firmo: pasa a ser cliente (conserva su proyecto). */
+/** El cliente potencial firmo: pasa a ser cliente (conserva su proyecto). */
 export async function convertClient(id: string): Promise<Client> {
   const c = await api.post<Client>(`/clients/${id}/convert`)
   put(c)
@@ -185,11 +185,11 @@ export function stats(c: Client) {
 export function summary(list: Client[]) {
   return list.reduce(
     (a, c) => {
-      if (c.prospect) return { ...a, posibles: a.posibles + 1 }
+      if (c.prospect) return { ...a, potenciales: a.potenciales + 1 }
       const s = stats(c)
       return { ...a, activos: a.activos + 1, recaudado: a.recaudado + s.cobrado, porCobrar: a.porCobrar + s.porCobrar }
     },
-    { activos: 0, posibles: 0, recaudado: 0, porCobrar: 0 },
+    { activos: 0, potenciales: 0, recaudado: 0, porCobrar: 0 },
   )
 }
 

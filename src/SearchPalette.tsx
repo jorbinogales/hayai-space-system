@@ -17,7 +17,7 @@ interface Found {
 }
 
 const STAGE: Record<string, string> = {
-  prospecto: 'Prospecto captado',
+  potencial: 'Potencial captado',
   visita_agendada: 'Visita agendada',
   visita_realizada: 'Visita realizada',
   propuesta_en_armado: 'Propuesta en armado',
@@ -32,7 +32,7 @@ function toHits(f: Found): Hit[] {
       key: `c${c.id}`,
       group: 'Clientes',
       title: c.nombre,
-      sub: [c.estado === 'posible' ? `Posible · ${STAGE[c.etapa ?? ''] ?? 'Prospecto captado'}` : 'Cliente', c.telefono].filter(Boolean).join(' · '),
+      sub: [c.estado === 'potencial' ? `Potencial · ${STAGE[c.etapa ?? ''] ?? 'Potencial captado'}` : 'Cliente', c.telefono].filter(Boolean).join(' · '),
       open: () => go({ screen: 'clientes', clientId: c.id }),
     })),
     ...f.proyectos.map((p): Hit => ({ key: `p${p.id}`, group: 'Proyectos', title: p.nombre, sub: p.cliente, open: () => go({ screen: 'proyectos' }) })),

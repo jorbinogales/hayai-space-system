@@ -248,7 +248,7 @@ export const marketingEmbudo = op(
           etapa: s.key as string,
           nombre: s.label as string,
           probabilidad: s.probability as number,
-          posibles: (byStage.get(s.key)?.n ?? 0) as number,
+          potenciales: (byStage.get(s.key)?.n ?? 0) as number,
           valor_mensual: r2(byStage.get(s.key)?.valor ?? 0),
           valor_ponderado: r2(byStage.get(s.key)?.ponderado ?? 0),
         })),

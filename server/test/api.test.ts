@@ -62,7 +62,7 @@ const shape = (x: any): any =>
           ? '<ts>'
           : x
 
-/** Campos del CRM que trae todo cliente de la web (ficha vacía, sin pipeline); un posible cliente los pisa con su etapa. */
+/** Campos del CRM que trae todo cliente de la web (ficha vacía, sin pipeline); un cliente potencial los pisa con su etapa. */
 const CRM = {
   createdAt: '<ts>',
   phone: null, email: null, contactName: null, contactRole: null, address: null, notes: null, tags: [], source: null, utmSource: null,
@@ -672,13 +672,13 @@ describe('datos', () => {
     }
   })
 
-  it('posible cliente: POST /prospects crea cliente+proyecto+visita; convert => cliente; dos veces => 409', async () => {
+  it('cliente potencial: POST /prospects crea cliente+proyecto+visita; convert => cliente; dos veces => 409', async () => {
     const body = { name: ' Futuro SA ', avatar: 'vega', project: { name: 'Web Futuro', icon: 'globe', owner: 'leandro', due: '2020-03-01' }, visit: { date: '2020-02-10' } }
     const r = await call('/prospects', { cookie, body })
     assert.equal(r.status, 201, JSON.stringify(r.body))
     assert.deepEqual(Object.keys(r.body).sort(), ['client', 'project', 'task'])
     const { client, project, task } = r.body
-    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, archived: false, ...CRM, source: 'otro', stage: 'prospecto', probability: 10, stageChangedAt: '<ts>', items: [], movements: [] })
+    assert.deepEqual(shape(client), { id: '<uuid>', name: 'Futuro SA', avatar: 'vega', prospect: true, archived: false, ...CRM, source: 'otro', stage: 'potencial', probability: 10, stageChangedAt: '<ts>', items: [], movements: [] })
     assert.deepEqual(shape(project), {
       id: '<uuid>', name: 'Web Futuro', icon: 'globe', owner: 'Leandro', client: 'Futuro SA', clientId: '<uuid>', status: 'planeacion', due: '2020-03-01', archived: false, clientArchived: false, description: null,
     })
@@ -711,7 +711,7 @@ describe('datos', () => {
     const twice = await call(`/clients/${client.id}/convert`, { cookie, method: 'POST' })
     assert.equal(twice.status, 409)
     assert.equal(typeof twice.body.error, 'string')
-    // un cliente normal (no prospecto) tampoco se convierte
+    // un cliente normal (no potencial) tampoco se convierte
     const normal = await call('/clients', { cookie, body: { name: 'Normal', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] } })
     assert.equal(normal.body.prospect, false)
     assert.equal((await call(`/clients/${normal.body.id}/convert`, { cookie, method: 'POST' })).status, 409)

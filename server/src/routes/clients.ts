@@ -271,7 +271,7 @@ const newProspect = z.object({
 
 export const prospectsRouter = Router()
 
-// Posible cliente + su posible proyecto (planeación) + la tarea de visita, todo o nada.
+// Cliente potencial + su posible proyecto (planeación) + la tarea de visita, todo o nada.
 prospectsRouter.post('/', async (req, res) => {
   const b = parse(newProspect, req.body)
   const userId = req.user!.id
@@ -279,7 +279,7 @@ prospectsRouter.post('/', async (req, res) => {
   if (!owner) throw new HttpError(404, 'Responsable no encontrado')
 
   const ids = await tx(async (c) => {
-    // Entra al pipeline en la primera etapa abierta (prospecto, 10 %), contando desde ahora.
+    // Entra al pipeline en la primera etapa abierta (potencial, 10 %), contando desde ahora.
     const entry = entryStage(await loadStages(c))
     const client = await c.query(
       `INSERT INTO clients (name, avatar, is_prospect, pipeline_stage, probability, stage_changed_at, created_by, lead_source, utm_source)
@@ -297,7 +297,7 @@ prospectsRouter.post('/', async (req, res) => {
       b.visit.date ?? null,
       userId,
     ])
-    // Un solo aviso para todo el alta (cliente + proyecto + visita): "añadió un posible cliente", no tres.
+    // Un solo aviso para todo el alta (cliente + proyecto + visita): "añadió un cliente potencial", no tres.
     await recordActivity(c, { kind: 'posible_nuevo', actorId: userId, subject: b.name, clientId: client.rows[0].id })
     return { client: client.rows[0].id as string, project: project.rows[0].id as string, task: task.rows[0].id as string }
   })

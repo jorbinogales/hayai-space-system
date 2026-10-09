@@ -1,5 +1,5 @@
 // Feed de oportunidades (planeta HAYAI / Hub): lo que las máquinas y los agentes ENCONTRARON. No es la bitácora (lo que el equipo
-// HIZO): aquí cada hallazgo es una tarjeta que se convierte en algo (posible cliente, tarea, proyecto), se revisa, se descarta o se guarda.
+// HIZO): aquí cada hallazgo es una tarjeta que se convierte en algo (cliente potencial, tarea, proyecto), se revisa, se descarta o se guarda.
 //
 // Dos piezas: `FeedEntry` (la tarjeta compacta que vive en la página del Hub) y `FeedScreen` (la vista propia del feed, #hub/feed).
 // Revisar, descartar y guardar son PERSONALES; convertir es GLOBAL (lo ve todo el equipo).
@@ -22,8 +22,12 @@ import {
   conversionDe,
   cortar,
   destinoCobro,
+  esClaveMaps,
+  esUrlMaps,
   fmtN,
   fuenteLabel,
+  guionSinMaps,
+  instagramManual,
   isGrowi,
   isRec,
   loadFeed,
@@ -36,6 +40,7 @@ import {
   publishNuevos,
   safeUrl,
   saveFeed,
+  setFeedInstagram,
   takeFeedFocus,
   undoFeed,
   urlLabel,
@@ -73,14 +78,14 @@ const PER_PAGE = 20
 /** cuántas páginas ya cargadas se vuelven a pedir en una recarga (el resto se conserva tal cual) */
 const REFRESH_PAGES = 5
 const SOURCES = ['referido', 'instagram', 'whatsapp', 'facebook', 'meta_ads', 'web', 'visita_frio', 'evento', 'otro']
-const STAGE_LABEL: Record<string, string> = { prospecto: 'Prospecto captado', visita_agendada: 'Visita agendada', visita_realizada: 'Visita realizada', propuesta_en_armado: 'Propuesta en armado', propuesta_presentada: 'Segunda visita' }
+const STAGE_LABEL: Record<string, string> = { potencial: 'Potencial captado', visita_agendada: 'Visita agendada', visita_realizada: 'Visita realizada', propuesta_en_armado: 'Propuesta en armado', propuesta_presentada: 'Segunda visita' }
 
 // ---------- helpers de presentación ----------
 const plural = (n: number, one: string, many: string) => `${fmtN(n)} ${n === 1 ? one : many}`
 const msg = (e: unknown, fallback: string) => (e instanceof Error ? e.message : fallback)
 const fullDate = (iso: string) => new Date(iso).toLocaleString('es-VE', { dateStyle: 'long', timeStyle: 'short' })
 const reduced = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
-const scalar = (v: unknown): string | null => (typeof v === 'string' ? v.trim() || null : typeof v === 'number' && Number.isFinite(v) ? fmtN(v) : typeof v === 'boolean' ? (v ? 'Sí' : 'No') : null)
+const scalar = (v: unknown): string | null => (typeof v === 'string' ? v.trim() || null : typeof v === 'number' && Number.isFinite(v) ? (Number.isInteger(v) ? fmtN(v) : v.toLocaleString('es-VE', { maximumFractionDigits: 2 })) : typeof v === 'boolean' ? (v ? 'Sí' : 'No') : null)
 const listOf = (v: unknown): string[] => (Array.isArray(v) ? v.map(scalar).filter((x): x is string => !!x) : scalar(v) ? [scalar(v)!] : [])
 const keyLabel = (k: string) => k.replace(/[_-]+/g, ' ').replace(/^./, (c) => c.toUpperCase())
 
@@ -102,26 +107,63 @@ function negocioOf(d: Record<string, unknown>): Negocio | null {
   return null
 }
 const nombreSugerido = (it: FeedItem) => negocioOf(it.datos)?.nombre ?? it.titulo
+/** Claves de `datos` donde el agente puede dejar lo de la ficha de Google Maps (objeto o texto). */
+const MAPS_KEYS = ['google_maps', 'googlemaps', 'gmaps', 'maps', 'google_my_business', 'gmb']
+interface MapsData {
+  rows: [string, string][]
+  urls: string[]
+}
 function detailOf(it: FeedItem) {
   const d = it.datos
-  const metricas = isRec(d.metricas)
+  // Google Maps baja de prioridad: todo lo que sea de la ficha de Maps (reseñas, calificación, horarios, enlace) se aparta del detalle general
+  // y se muestra al final, después del contacto y las redes.
+  const maps: MapsData = { rows: [], urls: [] }
+  for (const k of MAPS_KEYS) {
+    const v = d[k]
+    if (isRec(v)) for (const [kk, vv] of Object.entries(v)) {
+      const val = scalar(vv) ?? (vv === null || vv === undefined ? null : JSON.stringify(vv).slice(0, 120))
+      if (val) maps.rows.push([keyLabel(kk), val])
+    }
+    else if (scalar(v)) {
+      const u = safeUrl(scalar(v)!)
+      if (u) maps.urls.push(u)
+      else maps.rows.push(['Resumen', scalar(v)!])
+    }
+  }
+  const metricasAll = isRec(d.metricas)
     ? Object.entries(d.metricas)
         .map(([k, v]) => [keyLabel(k), scalar(v) ?? (v === null || v === undefined ? null : JSON.stringify(v).slice(0, 120))] as const)
         .filter((x): x is [string, string] => !!x[1])
     : []
-  const urls = listOf(d.urls)
+  maps.rows.push(...metricasAll.filter(([k]) => esClaveMaps(k)))
+  const metricas = metricasAll.filter(([k]) => !esClaveMaps(k))
+  const urlsAll = listOf(d.urls)
     .map(safeUrl)
     .filter((x): x is string => !!x)
+  maps.urls.push(...urlsAll.filter(esUrlMaps))
+  const urls = urlsAll.filter((u) => !esUrlMaps(u))
+  const nb = negocioOf(d)
+  let negocio: Negocio | null = nb
+  if (nb) {
+    maps.rows.push(...nb.extra.filter(([k]) => esClaveMaps(k)))
+    const extra = nb.extra.filter(([k]) => !esClaveMaps(k))
+    negocio = nb.nombre || extra.length ? { nombre: nb.nombre, extra } : null
+  }
   const origen = scalar(d.origen)
-  const out = { negocio: negocioOf(d), fugas: listOf(d.fugas), guion: scalar(d.guion), urls, metricas, origen }
-  const any = !!out.negocio || out.fugas.length > 0 || !!out.guion || urls.length > 0 || metricas.length > 0 || !!origen
-  return { ...out, any }
+  const g = scalar(d.guion)
+  const sg = g ? guionSinMaps(g) : null
+  const out = { negocio, fugas: listOf(d.fugas), guion: sg?.texto ?? null, guionSinMaps: !!sg?.quitado, urls, metricas, origen, maps: { rows: maps.rows, urls: [...new Set(maps.urls)] } }
+  const hasMaps = out.maps.rows.length > 0 || out.maps.urls.length > 0
+  const any = !!out.negocio || out.fugas.length > 0 || !!out.guion || urls.length > 0 || metricas.length > 0 || !!origen || hasMaps
+  return { ...out, hasMaps, any }
 }
+/** Una fuga que afirma que el negocio no tiene Instagram (la auditoría pudo equivocarse: si hay uno, se marca como dudosa). */
+const DICE_SIN_INSTAGRAM = (f: string) => /instagram/i.test(f) && /\b(sin|no\s+(tiene|cuenta|posee|existe|hay|encontr\w*|aparece|ten[ií]a)|ausencia|carece|inexistente|falta)\b/i.test(f)
 
 // ---------- iconos y etiquetas ----------
 const TIPO_PATH: Record<FeedTipo, string> = {
   idea: 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3Z',
-  prospecto: 'M15 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M8.5 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM19 8v6M22 11h-6',
+  potencial: 'M15 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M8.5 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM19 8v6M22 11h-6',
   alerta: 'M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0ZM12 9v4M12 17h.01',
   noticia: 'M4 4h13a1 1 0 0 1 1 1v14a2 2 0 0 0 2 2H6a2 2 0 0 1-2-2V4ZM18 8h3v11a2 2 0 0 1-2 2M7 8h7M7 12h7M7 16h4',
   oportunidad: 'm12 3 2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.5l-5.3 2.9 1.2-6L3.4 9.3l6-.7L12 3Z',
@@ -166,17 +208,17 @@ function GrowiSeal() {
   )
 }
 
-const CONVERSION_LABEL: Record<CreadoKind, string> = { posible_cliente: 'posible cliente', cliente: 'cliente', tarea: 'tarea', seguimiento: 'seguimiento', proyecto: 'proyecto', propuesta: 'propuesta', contenido: 'pieza de contenido' }
+const CONVERSION_LABEL: Record<CreadoKind, string> = { posible_cliente: 'cliente potencial', cliente: 'cliente', tarea: 'tarea', seguimiento: 'seguimiento', proyecto: 'proyecto', propuesta: 'propuesta', contenido: 'pieza de contenido' }
 /** Destinos del panel «Con ajustes» (el seguimiento y la propuesta tienen su propio botón). */
 type Dest = 'posible_cliente' | 'cliente' | 'tarea' | 'proyecto'
-const DEST_LABEL: Record<Dest, string> = { posible_cliente: 'Posible cliente', cliente: 'Cliente', tarea: 'Tarea', proyecto: 'Proyecto' }
-/** Convertir en (posible) cliente según el vínculo —solo prospectos y oportunidades—, más tarea y proyecto. */
+const DEST_LABEL: Record<Dest, string> = { posible_cliente: 'Cliente potencial', cliente: 'Cliente', tarea: 'Tarea', proyecto: 'Proyecto' }
+/** Convertir en cliente (potencial) según el vínculo —solo potenciales y oportunidades—, más tarea y proyecto. */
 const destinosDe = (it: FeedItem): Dest[] => {
   const c = conversionDe(it)
   return c ? [c, 'tarea', 'proyecto'] : ['tarea', 'proyecto']
 }
 const HECHO_LABEL: Record<Exclude<CreadoKind, 'cliente' | 'posible_cliente'>, string> = { tarea: 'Tarea', seguimiento: 'Seguimiento', proyecto: 'Proyecto', propuesta: 'Propuesta', contenido: 'Contenido' }
-const LISTO: Record<FeedConversion, string> = { posible_cliente: 'Posible cliente creado', cliente: 'Cliente activado', tarea: 'Tarea creada', seguimiento: 'Seguimiento creado', proyecto: 'Proyecto creado', contenido: 'Pasó a Contenido' }
+const LISTO: Record<FeedConversion, string> = { posible_cliente: 'Cliente potencial creado', cliente: 'Cliente activado', tarea: 'Tarea creada', seguimiento: 'Seguimiento creado', proyecto: 'Proyecto creado', contenido: 'Pasó a Contenido' }
 
 /** Abre lo que ya se creó desde el ítem: el detalle de la tarea (su proyecto), el proyecto, o la ficha del cliente (propuesta, cliente). */
 function openCreated(kind: CreadoKind, id: string | null, it: FeedItem) {
@@ -236,7 +278,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 }
 
 // ---------- detalle (datos) ----------
-function Detalle({ it, d }: { it: FeedItem; d: ReturnType<typeof detailOf> }) {
+function Detalle({ it, d, tieneIg }: { it: FeedItem; d: ReturnType<typeof detailOf>; tieneIg: boolean }) {
   return (
     <div className="fd-detail">
       {d.negocio && (
@@ -259,9 +301,16 @@ function Detalle({ it, d }: { it: FeedItem; d: ReturnType<typeof detailOf> }) {
         <div>
           <h4 className="fd-lbl">Fugas detectadas · {fmtN(d.fugas.length)}</h4>
           <ul className="fd-leaks">
-            {d.fugas.map((f, i) => (
-              <li key={i}>{f}</li>
-            ))}
+            {d.fugas.map((f, i) =>
+              tieneIg && DICE_SIN_INSTAGRAM(f) ? (
+                <li key={i} className="is-stale">
+                  <s>{f}</s>
+                  <small>Dudosa: el negocio sí tiene Instagram (ver Contacto).</small>
+                </li>
+              ) : (
+                <li key={i}>{f}</li>
+              ),
+            )}
           </ul>
         </div>
       )}
@@ -269,6 +318,7 @@ function Detalle({ it, d }: { it: FeedItem; d: ReturnType<typeof detailOf> }) {
         <figure className="fd-script">
           <figcaption className="fd-lbl">Guion</figcaption>
           <blockquote>{d.guion}</blockquote>
+          {d.guionSinMaps && <small className="fd-hint">Se omitió la apertura sobre Google Maps: no es un gancho para llamar a un negocio en Venezuela.</small>}
           <CopyButton text={d.guion} label="Copiar guion" />
         </figure>
       )}
@@ -308,6 +358,35 @@ function Detalle({ it, d }: { it: FeedItem; d: ReturnType<typeof detailOf> }) {
           </div>
         </dl>
       )}
+      {d.hasMaps && (
+        <details className="fd-maps">
+          <summary>
+            Google Maps<span> · ficha pública, no es el gancho</span>
+          </summary>
+          {d.maps.rows.length > 0 && (
+            <dl className="fd-kv">
+              {d.maps.rows.map(([k, v], i) => (
+                <div key={`${k}-${i}`}>
+                  <dt>{k}</dt>
+                  <dd>{v}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {d.maps.urls.length > 0 && (
+            <ul className="fd-links">
+              {d.maps.urls.map((u) => (
+                <li key={u}>
+                  <a href={u} target="_blank" rel="noopener noreferrer">
+                    Ver en Google Maps
+                    <span className="fd-sr"> (se abre en otra pestaña)</span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </details>
+      )}
       <p className="fd-foot">
         Publicado por {it.publicado_por.nombre} · <time dateTime={it.publicado_el}>{fullDate(it.publicado_el)}</time>
       </p>
@@ -317,44 +396,146 @@ function Detalle({ it, d }: { it: FeedItem; d: ReturnType<typeof detailOf> }) {
 
 // ---------- contacto ----------
 const external = { target: '_blank', rel: 'noopener noreferrer' } as const
+/** Instagram del potencial: se muestra cuando existe y se puede corregir o agregar a mano (queda guardado en el ítem y viaja a las redes del cliente al convertir). */
+function InstagramField({ it, href, onItem }: { it: FeedItem; href: string | null; onItem: (it: FeedItem) => void }) {
+  const [edit, setEdit] = useState(false)
+  const [val, setVal] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const input = useRef<HTMLInputElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const manual = instagramManual(it.datos)
+  const handle = href ? (href.replace(/\/+$/, '').split('/').pop() ?? '') : ''
+  useEffect(() => {
+    if (edit) input.current?.focus()
+  }, [edit])
+  const close = () => {
+    setEdit(false)
+    setErr('')
+    requestAnimationFrame(() => trigger.current?.focus())
+  }
+  const open = () => {
+    setVal(href ?? '')
+    setErr('')
+    setEdit(true)
+  }
+  const send = async (instagram: string | null) => {
+    if (busy) return
+    setBusy(true)
+    setErr('')
+    try {
+      onItem(await setFeedInstagram(it, instagram))
+      setEdit(false)
+      requestAnimationFrame(() => trigger.current?.focus())
+    } catch (e) {
+      setErr(msg(e, 'No se pudo guardar el Instagram. Intenta de nuevo.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    if (!val.trim()) return setErr('Escribe el enlace o el @usuario.')
+    void send(val.trim())
+  }
+  const who = manual?.por ? ` por ${manual.por}` : ''
+  return (
+    <div className="fd-ig">
+      <div className="fd-ig-row">
+        <span className="fd-ig-k">
+          <Svg d={PATH.instagram} size={13} />
+          Instagram
+        </span>
+        {href ? (
+          <a className="fd-ig-v" href={href} {...external}>
+            <span>@{handle}</span>
+            <span className="fd-sr"> (se abre en otra pestaña)</span>
+          </a>
+        ) : (
+          <span className="fd-ig-none">{manual && manual.valor === null ? 'Sin Instagram (confirmado a mano)' : 'Sin Instagram registrado'}</span>
+        )}
+        {!edit && (
+          <button type="button" ref={trigger} className="fd-link fd-ig-btn" onClick={open} aria-label={href ? `Corregir el Instagram de ${it.titulo}` : `Agregar el Instagram de ${it.titulo}`}>
+            {href ? 'Corregir' : 'Agregar'}
+          </button>
+        )}
+      </div>
+      {manual && !edit && manual.valor && <small className="fd-hint">Corregido a mano{who}.</small>}
+      {edit && (
+        <form className="fd-ig-form" onSubmit={submit} onKeyDown={escape(close)}>
+          <label>
+            <span className="fd-sr">Instagram de {it.titulo}</span>
+            <input ref={input} type="text" inputMode="url" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="@usuario o instagram.com/usuario" value={val} maxLength={300} onChange={(e) => setVal(e.target.value)} aria-invalid={!!err} aria-describedby={err ? `${it.id}-ig-err` : undefined} />
+          </label>
+          <div className="fd-ig-act">
+            <button type="submit" className="fd-btn is-primary fd-sm" disabled={busy}>
+              {busy ? 'Guardando…' : 'Guardar'}
+            </button>
+            {href && (
+              <button type="button" className="fd-btn fd-sm" disabled={busy} onClick={() => void send(null)}>
+                Quitar
+              </button>
+            )}
+            <button type="button" className="fd-btn is-ghost fd-sm" disabled={busy} onClick={close}>
+              Cancelar
+            </button>
+          </div>
+          {err && (
+            <p id={`${it.id}-ig-err`} className="hb-err fd-err" role="alert">
+              {err}
+            </p>
+          )}
+        </form>
+      )}
+    </div>
+  )
+}
+
 /** Las otras maneras de llegar al negocio (más teléfonos, correos, redes). El botón principal (WhatsApp/Llamar) vive en la barra de acciones. */
-function Contacto({ it }: { it: FeedItem }) {
+function Contacto({ it, onItem }: { it: FeedItem; onItem: (it: FeedItem) => void }) {
   const c = useMemo(() => contactoDe(it.datos), [it.datos])
   const main = accionPrincipal(c)
+  const esPotencial = it.tipo === 'potencial'
   // lo que el botón principal ya muestra no se repite abajo
   const otherTels = c.tels.filter((t) => t.display !== main?.detalle)
   const mails = c.correos.filter((m) => main?.tipo !== 'email' || m !== main.detalle)
-  const links = c.enlaces.slice(0, 4)
-  if (otherTels.length + mails.length + links.length === 0) return null
+  // en un potencial el Instagram tiene su propia fila (editable): no se repite entre los enlaces
+  const ig = c.enlaces.find((l) => l.tipo === 'instagram')?.href ?? null
+  // los enlaces de Google Maps no van aquí: viven al final del detalle, después del contacto y las redes
+  const links = c.enlaces.filter((l) => !esUrlMaps(l.href) && (!esPotencial || l.tipo !== 'instagram')).slice(0, 4)
+  if (!esPotencial && otherTels.length + mails.length + links.length === 0) return null
   return (
     <div className="fd-contact" role="group" aria-label={`Contacto: ${it.titulo}`}>
-      <ul className="fd-reach">
-        {otherTels.map((t) => (
-          <li key={t.tel}>
-            <a href={t.tel} aria-label={`Llamar al ${t.display}`}>
-              <Svg d={PATH.phone} size={13} />
-              {t.display}
-            </a>
-          </li>
-        ))}
-        {mails.map((m) => (
-          <li key={m}>
-            <a href={`mailto:${m}`} aria-label={`Enviar correo a ${m}`}>
-              <Svg d={PATH.mail} size={13} />
-              <span>{m}</span>
-            </a>
-          </li>
-        ))}
-        {links.map((l) => (
-          <li key={l.href}>
-            <a href={l.href} {...external}>
-              <Svg d={LINK_ICON[l.tipo]} size={13} />
-              <span>{l.label}</span>
-              <span className="fd-sr"> (se abre en otra pestaña)</span>
-            </a>
-          </li>
-        ))}
-      </ul>
+      {otherTels.length + mails.length + links.length > 0 && (
+        <ul className="fd-reach">
+          {otherTels.map((t) => (
+            <li key={t.tel}>
+              <a href={t.tel} aria-label={`Llamar al ${t.display}`}>
+                <Svg d={PATH.phone} size={13} />
+                {t.display}
+              </a>
+            </li>
+          ))}
+          {mails.map((m) => (
+            <li key={m}>
+              <a href={`mailto:${m}`} aria-label={`Enviar correo a ${m}`}>
+                <Svg d={PATH.mail} size={13} />
+                <span>{m}</span>
+              </a>
+            </li>
+          ))}
+          {links.map((l) => (
+            <li key={l.href}>
+              <a href={l.href} {...external}>
+                <Svg d={LINK_ICON[l.tipo]} size={13} />
+                <span>{l.label}</span>
+                <span className="fd-sr"> (se abre en otra pestaña)</span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+      {esPotencial && <InstagramField it={it} href={ig} onItem={onItem} />}
     </div>
   )
 }
@@ -421,7 +602,7 @@ function AjustarForm({ it, busy, onClose, onSubmit, id }: PanelProps & { it: Fee
     onSubmit({ a: 'posible_cliente', nombre: nombre.trim(), origen, ...(notas.trim() ? { notas: notas.trim() } : {}) })
   }
   return (
-    <form className="fd-form" id={id} onSubmit={submit} onKeyDown={escape(onClose)} aria-label="Ajustar el posible cliente">
+    <form className="fd-form" id={id} onSubmit={submit} onKeyDown={escape(onClose)} aria-label="Ajustar el cliente potencial">
       <fieldset disabled={busy}>
         <label>
           <span>Nombre</span>
@@ -557,7 +738,7 @@ function ProyectoForm({ it, owners, me, busy, onClose, onSubmit, id }: PanelProp
   )
 }
 
-/** Promover al posible cliente vinculado: día de implementación y, si tiene una propuesta vigente, cómo se le cobra (se generan los cobros). */
+/** Promover al cliente potencial vinculado: día de implementación y, si tiene una propuesta vigente, cómo se le cobra (se generan los cobros). */
 function ClienteForm({ it, busy, onClose, onSubmit, id }: PanelProps & { it: FeedItem; id: string; onSubmit: (b: ConvertBody) => void }) {
   const hoy = todayISO()
   const [impl, setImpl] = useState(hoy)
@@ -740,7 +921,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
         setPanel(null)
         await refetch()
       } else if (e instanceof ApiError && e.status === 400 && /esquema_cobro/i.test(e.message)) {
-        // promover un posible cliente con propuesta vigente pide el esquema de cobro: se abre el formulario
+        // promover un cliente potencial con propuesta vigente pide el esquema de cobro: se abre el formulario
         setDest('cliente')
         setPanel('ajustar')
         setErr('Tiene una propuesta vigente: indica cómo se le cobra.')
@@ -760,7 +941,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
     act('convertir', async () => {
       const r = await convertFeed(it, body)
       const det = r.creado.detalle
-      const etapa = typeof det.etapa === 'string' ? (STAGE_LABEL[det.etapa] ?? 'Prospecto captado') : 'Prospecto captado'
+      const etapa = typeof det.etapa === 'string' ? (STAGE_LABEL[det.etapa] ?? 'Potencial captado') : 'Potencial captado'
       const nombre = typeof det.nombre === 'string' ? det.nombre : typeof det.titulo === 'string' ? det.titulo : undefined
       const vence = typeof det.vence === 'string' ? det.vence : undefined
       setPanel(null)
@@ -859,7 +1040,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
     if (a === 'posible_cliente' || a === 'cliente') {
       return (
         <button type="button" className={`${cls}${just(a)}`} disabled={isBusy} onClick={() => quick(a)}>
-          {busy === 'convertir' ? 'Convirtiendo…' : a === 'cliente' ? 'Convertir en cliente' : 'Convertir en posible cliente'}
+          {busy === 'convertir' ? 'Convirtiendo…' : a === 'cliente' ? 'Convertir en cliente' : 'Convertir en cliente potencial'}
         </button>
       )
     }
@@ -933,7 +1114,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
           </p>
         )}
 
-        <Contacto it={it} />
+        <Contacto it={it} onItem={onItem} />
 
         {detail.any && (
           <>
@@ -945,7 +1126,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
             </button>
             {open && (
               <div id={`${pid}-d`}>
-                <Detalle it={it} d={detail} />
+                <Detalle it={it} d={detail} tieneIg={it.tipo === 'potencial' && !!contactoDe(it.datos).enlaces.find((l) => l.tipo === 'instagram')} />
               </div>
             )}
           </>
@@ -1007,7 +1188,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
             {it.vinculo.estado !== 'sin_vinculo' && it.vinculo.cliente_id && (
               <button type="button" className="fd-btn fd-sm" onClick={() => go({ screen: 'clientes', clientId: it.vinculo.cliente_id })}>
                 Ficha de {it.vinculo.cliente}
-                <span className="fd-btn-sub">{it.vinculo.estado === 'cliente' ? 'Cliente' : 'Posible cliente'}</span>
+                <span className="fd-btn-sub">{it.vinculo.estado === 'cliente' ? 'Cliente' : 'Cliente potencial'}</span>
               </button>
             )}
             <button

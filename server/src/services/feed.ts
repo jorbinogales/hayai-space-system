@@ -1,4 +1,4 @@
-// Feed de oportunidades (planeta HAYAI / hub): lo que la máquina y los agentes ENCONTRARON (ideas del radar, prospectos del cazador,
+// Feed de oportunidades (planeta HAYAI / hub): lo que la máquina y los agentes ENCONTRARON (ideas del radar, potenciales del cazador,
 // negocios de las video-auditorías, alertas de competencia, noticias y propuestas manuales). La Bitácora cuenta lo que el equipo
 // HIZO; esto es lo que llega de afuera. Un servicio para la web, la API v1 y el MCP.
 //
@@ -7,11 +7,11 @@
 // la llave (published_by); `fuente` es el origen lógico (qué automatización o qué Muse).
 //
 // Estado por socio (v1.6.5): revisar, descartar y guardar son PERSONALES (tabla feed_item_usuarios) y no afectan a los demás. Lo global
-// es feed_items.status: 'nuevo' o 'convertido' (convertir en posible cliente / tarea / proyecto lo ve todo el equipo).
+// es feed_items.status: 'nuevo' o 'convertido' (convertir en cliente potencial / tarea / proyecto lo ve todo el equipo).
 import { z } from 'zod'
 import { recordActivity } from '../activity.ts'
 import { stamp } from '../concurrency.ts'
-import { SOURCES, esquemaCobro, fichaShape } from '../crm.ts'
+import { SOURCES, esquemaCobro, fichaShape, normalizeSocialUrl } from '../crm.ts'
 import { pool, tx, type Db } from '../db.ts'
 import { HttpError, id, text } from '../util.ts'
 import { boolFlag, exec, filters, op, pageShape, paged, TZ, type Actor } from './common.ts'
@@ -24,10 +24,10 @@ import { interaccionRegistrar } from './interacciones.ts'
 import { proyectoCrear } from './proyectos.ts'
 import { tareaCrear } from './tareas.ts'
 
-export const TIPOS = ['idea', 'prospecto', 'alerta', 'noticia', 'oportunidad', 'proyecto'] as const
+export const TIPOS = ['idea', 'potencial', 'alerta', 'noticia', 'oportunidad', 'proyecto'] as const
 export const ESTADOS = ['nuevo', 'revisado', 'descartado', 'convertido'] as const
 /** Los tipos que avisan en la campana al publicarse (el resto se ve en el feed sin interrumpir). */
-export const TIPOS_AVISO = ['alerta', 'noticia', 'prospecto'] as const
+export const TIPOS_AVISO = ['alerta', 'noticia', 'potencial'] as const
 export const CONVERSIONES = ['posible_cliente', 'cliente', 'tarea', 'proyecto', 'seguimiento', 'contenido'] as const
 /** Cuánto dura la opción de «Deshacer» lo que se creó desde un ítem. */
 const DESHACER_SEG = 120
@@ -37,7 +37,8 @@ export const VISIBILIDADES = ['equipo', 'privado'] as const
 /** Si una fuente ya avisó de un tipo hace menos de esto, la siguiente publicación no repite el aviso en vivo (una siembra de 20 es UN aviso). */
 const AVISO_AGRUPA_MIN = 10
 
-const tipo = z.enum(TIPOS, `Tipo inválido (${TIPOS.join(', ')})`)
+// «potencial» era el nombre anterior de «potencial»: los agentes que aún lo mandan siguen funcionando.
+const tipo = z.preprocess((v) => (v === 'prospecto' ? 'potencial' : v), z.enum(TIPOS, `Tipo inválido (${TIPOS.join(', ')})`))
 const estado = z.enum(ESTADOS, `Estado inválido (${ESTADOS.join(', ')})`)
 /** Nombre anterior de lo que hoy es Growi: si algún flujo viejo sigue publicando con él, cae en `growi` (misma clave externa = no se duplica). */
 const FUENTES_ANTIGUAS: Record<string, string> = { 'gumloop-video-auditorias': 'growi' }
@@ -239,7 +240,7 @@ export const feedVer = op(z.strictObject({ id }), (actor, i) => item(pool, i.id,
 // ---------- publicar ----------
 const PLURAL: Record<(typeof TIPOS)[number], [string, string]> = {
   idea: ['idea nueva', 'ideas nuevas'],
-  prospecto: ['prospecto nuevo', 'prospectos nuevos'],
+  potencial: ['potencial nuevo', 'potenciales nuevos'],
   alerta: ['alerta nueva', 'alertas nuevas'],
   noticia: ['noticia nueva', 'noticias nuevas'],
   oportunidad: ['oportunidad nueva', 'oportunidades nuevas'],
@@ -266,8 +267,8 @@ async function insertar(c: Db, actor: Actor, b: Item): Promise<Resultado> {
 }
 
 /**
- * Aviso en vivo (y en la campana) de lo recién publicado: solo alerta, noticia y prospecto, y UNO por (fuente, tipo) y lote.
- * Si esa fuente ya avisó de ese tipo hace unos minutos, no se repite: una siembra de 20 prospectos no inunda a nadie.
+ * Aviso en vivo (y en la campana) de lo recién publicado: solo alerta, noticia y potencial, y UNO por (fuente, tipo) y lote.
+ * Si esa fuente ya avisó de ese tipo hace unos minutos, no se repite: una siembra de 20 potenciales no inunda a nadie.
  */
 async function avisar(c: Db, actor: Actor, nuevos: { tipo: (typeof TIPOS)[number]; fuente: string; titulo: string; antes: number }[]) {
   const grupos = new Map<string, { tipo: (typeof TIPOS)[number]; fuente: string; titulos: string[]; antes: number }>()
@@ -369,6 +370,62 @@ export const feedGuardar = op(z.strictObject({ id, guardado: z.boolean('guardado
   return item(pool, b.id, actor.id)
 })
 
+// ---------- Instagram del ítem (corregir o agregar a mano) ----------
+const esRec = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+/** Una URL de Instagram válida (de un enlace o de un @usuario), o null. Solo instagram.com. */
+export function instagramUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null
+  // tolera «instagram.com/usuario» y «www.instagram.com/usuario» sin https:// (lo que se pega a mano)
+  const crudo = raw.trim().replace(/^((?:www\.|m\.)?instagram\.com\/)/i, 'https://$1')
+  const u = normalizeSocialUrl('instagram', crudo)
+  if (!u) return null
+  const host = new URL(u).hostname.toLowerCase()
+  if (host !== 'instagram.com' && !host.endsWith('.instagram.com')) return null
+  // canónico: https://instagram.com/usuario (sin www ni barra final ni parámetros); una URL sin usuario no es un perfil
+  const seg = new URL(u).pathname.split('/').filter(Boolean)
+  if (!seg.length) return null
+  return /^(p|reel|reels|explore|stories|tv)$/i.test(seg[0]) ? u : `https://instagram.com/${seg[0]}`
+}
+/**
+ * El Instagram de un ítem: lo corregido a mano manda (incluso «no tiene»); si no, `datos.contacto.instagram`, `datos.instagram` o un enlace de
+ * `datos.urls`. Es lo que viaja al campo de redes del cliente al convertir.
+ */
+export function instagramDe(d: Record<string, unknown>): string | null {
+  const manual = esRec(d.contacto_manual) && esRec(d.contacto_manual.instagram) ? d.contacto_manual.instagram : null
+  if (manual) return instagramUrl(manual.valor)
+  const c = esRec(d.contacto) ? d.contacto : {}
+  const urls = Array.isArray(d.urls) ? d.urls : []
+  for (const v of [c.instagram, d.instagram, ...urls]) {
+    const u = instagramUrl(v)
+    if (u) return u
+  }
+  return null
+}
+
+/**
+ * Corregir o agregar a mano el Instagram del ítem (la auditoría puede afirmar que no hay perfil y sí existe). `instagram`: enlace o @usuario;
+ * null = «no tiene». Queda anotado quién lo puso y cuándo en `datos.contacto_manual.instagram`, y reemplaza lo que trajera la fuente.
+ */
+export const feedContacto = op(z.strictObject({ id, instagram: z.string('instagram: texto con el enlace o @usuario, o null').trim().max(200, 'Máximo 200 caracteres').nullable() }), async (actor, b) => {
+  const url = b.instagram ? instagramUrl(b.instagram) : null
+  if (b.instagram && !url) throw new HttpError(400, 'Instagram inválido (usa https://instagram.com/usuario o @usuario)')
+  await tx(async (c) => {
+    const cur = (await c.query(`SELECT data FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id])).rows[0]
+    if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
+    const d: Record<string, unknown> = { ...(cur.data as Record<string, unknown>) }
+    if (esRec(d.contacto)) {
+      const { instagram: _quitado, ...resto } = d.contacto
+      d.contacto = resto
+    }
+    delete d.instagram
+    if (Array.isArray(d.urls)) d.urls = d.urls.filter((u) => !(typeof u === 'string' && /instagram\.com/i.test(u)))
+    if (url) d.instagram = url
+    d.contacto_manual = { ...(esRec(d.contacto_manual) ? d.contacto_manual : {}), instagram: { valor: url, por: actor.name, el: new Date().toISOString() } }
+    await c.query('UPDATE feed_items SET data = $2::jsonb, updated_at = now() WHERE id = $1', [b.id, JSON.stringify(d)])
+  })
+  return item(pool, b.id, actor.id)
+})
+
 // ---------- convertir ----------
 const linea = (k: string, v: unknown) => (v === undefined || v === null || v === '' ? null : `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
 const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
@@ -415,7 +472,7 @@ function contactoDe(d: Record<string, unknown>): [string, string][] {
 }
 
 /**
- * La nota que queda en la ficha al convertir en posible cliente: ordenada y corta (no se vuelca todo el hallazgo).
+ * La nota que queda en la ficha al convertir en cliente potencial: ordenada y corta (no se vuelca todo el hallazgo).
  * «Del feed: fuente · fecha» + enlace al ítem original (ahí siguen las fugas, el guion y los enlaces), un resumen breve y el contacto en líneas.
  */
 export function notaDeConversion(f: ReturnType<typeof itemOut>): string {
@@ -449,7 +506,7 @@ const convertirShape = z.strictObject({
   telefono: fichaShape.telefono,
   email: fichaShape.email,
   valor_estimado: fichaShape.valor_estimado,
-  // cliente (promover al posible cliente vinculado): día de implementación (hoy por defecto) y, si tiene propuesta vigente, el esquema de cobro
+  // cliente (promover al cliente potencial vinculado): día de implementación (hoy por defecto) y, si tiene propuesta vigente, el esquema de cobro
   fecha_implementacion: z.iso.date('Fecha inválida (usa AAAA-MM-DD)').optional(),
   esquema_cobro: esquemaCobro.optional(),
   // tarea y seguimiento
@@ -494,7 +551,7 @@ const masDias = (iso: string, n: number) => {
   const [y, m, d] = iso.split('-').map(Number)
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10)
 }
-const ETIQUETA: Record<Vinculo, string> = { posible_cliente: 'el posible cliente', cliente: 'el cliente', tarea: 'la tarea', proyecto: 'el proyecto', propuesta: 'la propuesta', seguimiento: 'el seguimiento', contenido: 'la pieza de contenido' }
+const ETIQUETA: Record<Vinculo, string> = { posible_cliente: 'el cliente potencial', cliente: 'el cliente', tarea: 'la tarea', proyecto: 'el proyecto', propuesta: 'la propuesta', seguimiento: 'el seguimiento', contenido: 'la pieza de contenido' }
 
 export const feedConvertir = op(convertirShape, async (actor, b) => {
   // Se reclama la clase ANTES de crear nada: dos socios tocando "Convertir" a la vez no duplican el cliente o la tarea.
@@ -524,21 +581,23 @@ export const feedConvertir = op(convertirShape, async (actor, b) => {
       // El teléfono y el correo del ítem solo se usan si valen (no se rompe la conversión por un dato sucio de la fuente).
       const tel = b.telefono ?? (fichaShape.telefono.safeParse(str(d.telefono)).success ? str(d.telefono) : undefined)
       const mail = b.email ?? (fichaShape.email.safeParse(str(d.email)).success ? str(d.email) : undefined)
+      const ig = instagramDe(d) // el Instagram del ítem (o el corregido a mano) viaja al campo de redes del cliente
       creado = (await exec(clienteCrear, actor, {
         nombre: cortar(b.nombre ?? nombreDe(d) ?? f.titulo, 80),
-        estado: 'posible',
+        estado: 'potencial',
         origen,
         notas: b.notas ?? notaDeConversion(f),
         ...(tel ? { telefono: tel } : {}),
         ...(mail ? { email: mail } : {}),
+        ...(ig ? { redes: [{ red: 'instagram', url: ig }] } : {}),
         ...(b.valor_estimado !== undefined ? { valor_estimado: b.valor_estimado } : {}),
       })) as { id: string }
       // Queda escrito en la bitácora del cliente de dónde salió.
       await exec(interaccionRegistrar, actor, { cliente_id: creado.id, tipo: 'nota', resumen: cortar(`Llegó del feed de oportunidades (${f.fuente}): ${f.titulo}`, 2000) })
     } else if (b.a === 'cliente') {
-      if (v.estado === 'sin_vinculo') throw new HttpError(409, 'Primero conviértelo en posible cliente (o vincúlalo a uno con datos.cliente_id)')
+      if (v.estado === 'sin_vinculo') throw new HttpError(409, 'Primero conviértelo en cliente potencial (o vincúlalo a uno con datos.cliente_id)')
       if (v.estado === 'cliente') throw new HttpError(409, `${v.cliente} ya es cliente`)
-      // Promover = ganar el posible cliente: el día de implementación es hoy salvo que se diga otro; con propuesta vigente hace falta el esquema de cobro.
+      // Promover = ganar el cliente potencial: el día de implementación es hoy salvo que se diga otro; con propuesta vigente hace falta el esquema de cobro.
       creado = (await exec(clienteActualizar, actor, {
         id: v.cliente_id!,
         estado: 'activo',
@@ -595,7 +654,7 @@ export const feedConvertir = op(convertirShape, async (actor, b) => {
 
 /**
  * Deshacer lo que se creó desde el ítem (el «Deshacer» del aviso «Listo ✓»): solo quien lo creó y dentro de unos minutos. Lo creado va a la
- * papelera (se puede restaurar) y el ítem vuelve a como estaba. Un cliente promovido vuelve a posible cliente (si no cerró una propuesta).
+ * papelera (se puede restaurar) y el ítem vuelve a como estaba. Un cliente promovido vuelve a cliente potencial (si no cerró una propuesta).
  */
 export const feedDeshacer = op(
   z.strictObject({
@@ -609,9 +668,9 @@ export const feedDeshacer = op(
   const l = (await pool.query('SELECT ref_id, created_by, created_at FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])).rows[0]
   if (!l || !l.ref_id) throw new HttpError(404, 'No hay nada que deshacer en este ítem')
   if (b.devolver) {
-    if (b.a !== 'posible_cliente') throw new HttpError(400, 'Solo se puede devolver al feed un posible cliente')
+    if (b.a !== 'posible_cliente') throw new HttpError(400, 'Solo se puede devolver al feed un cliente potencial')
     const c = (await pool.query('SELECT is_prospect FROM clients WHERE id = $1', [l.ref_id])).rows[0]
-    if (!c) throw new HttpError(404, 'Ese posible cliente ya no existe')
+    if (!c) throw new HttpError(404, 'Ese cliente potencial ya no existe')
     if (!c.is_prospect) throw new HttpError(409, 'Ya es cliente: no se puede devolver al feed')
   } else {
     if (l.created_by !== actor.id) throw new HttpError(403, 'Solo quien lo creó puede deshacerlo')
@@ -624,7 +683,7 @@ export const feedDeshacer = op(
   else if (b.a === 'cliente') {
     if ((await pool.query(`SELECT 1 FROM proposals WHERE client_id = $1 AND status = 'aceptada'`, [l.ref_id])).rowCount)
       throw new HttpError(409, 'Esa promoción cerró una propuesta y generó cobros: se revierte desde el cliente')
-    await exec(clienteActualizar, actor, { id: l.ref_id, estado: 'posible' })
+    await exec(clienteActualizar, actor, { id: l.ref_id, estado: 'potencial' })
   } else if (b.a === 'tarea' || b.a === 'seguimiento') await sendToTrash('tarea', l.ref_id, actor.id, via)
   else if (b.a === 'contenido') await pool.query('UPDATE mk_contenidos SET archived_at = now(), updated_at = now() WHERE id = $1', [l.ref_id]) // el tablero no usa la papelera: se archiva
   else await sendToTrash('proyecto', l.ref_id, actor.id, via)
@@ -632,7 +691,7 @@ export const feedDeshacer = op(
     await c.query('SELECT 1 FROM feed_items WHERE id = $1 FOR UPDATE', [b.id])
     await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])
     if (b.devolver) {
-      // El posible cliente se llevó a la papelera sus proyectos, tareas y propuestas: esos vínculos del ítem ya no apuntan a nada.
+      // El cliente potencial se llevó a la papelera sus proyectos, tareas y propuestas: esos vínculos del ítem ya no apuntan a nada.
       for (const v of (await c.query('SELECT kind, ref_id FROM feed_item_vinculos WHERE item_id = $1 AND ref_id IS NOT NULL', [b.id])).rows)
         if (!(await c.query(`SELECT 1 FROM ${VINCULO_TABLA[v.kind as Vinculo]} WHERE id = $1`, [v.ref_id])).rowCount) await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, v.kind])
     }
@@ -656,7 +715,7 @@ export async function feedResumen(userId: string) {
   return { nuevos: r.nuevos as number, total: r.total as number }
 }
 
-/** Alertas derivadas de la campana de ese socio: ítems nuevos de alerta, noticia o prospecto que aún no revisó ni descartó (junto, por fuente y día, si son varios). */
+/** Alertas derivadas de la campana de ese socio: ítems nuevos de alerta, noticia o potencial que aún no revisó ni descartó (junto, por fuente y día, si son varios). */
 export async function feedAlertas(userId: string): Promise<{ clave: string; fecha: string; titulo: string; detalle: string; cantidad: number; tipo: (typeof TIPOS)[number]; fuente: string; item_id: string | null }[]> {
   const { rows } = await pool.query(
     `SELECT f.id, f.title, f.kind, f.source, f.found_at, f.created_at, to_char(f.created_at AT TIME ZONE $1, 'YYYY-MM-DD') AS dia

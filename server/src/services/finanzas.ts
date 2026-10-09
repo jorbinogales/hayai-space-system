@@ -57,13 +57,13 @@ export const finanzasResumen = op(
     const porCobrar = filas.reduce((s, r) => s + r.por_cobrar, 0)
     const vencido = filas.reduce((s, r) => s + r.vencido, 0)
 
-    // Todo lo pendiente sin importar el periodo y sin contar posibles clientes: lo que muestra la cabecera de Clientes.
-    const prospectos = new Set(clientes.rows.filter((c) => c.is_prospect).map((c) => c.id))
+    // Todo lo pendiente sin importar el periodo y sin contar clientes potenciales: lo que muestra la cabecera de Clientes.
+    const potenciales = new Set(clientes.rows.filter((c) => c.is_prospect).map((c) => c.id))
     const porCobrarTotal = pagos.rows
-      .filter((p) => p.status === 'pendiente' && !prospectos.has(p.client_id))
+      .filter((p) => p.status === 'pendiente' && !potenciales.has(p.client_id))
       .reduce((s, p) => s + cents(p.amount), 0)
     const vencidoTotal = pagos.rows
-      .filter((p) => p.status === 'pendiente' && p.date < hoy && !prospectos.has(p.client_id))
+      .filter((p) => p.status === 'pendiente' && p.date < hoy && !potenciales.has(p.client_id))
       .reduce((s, p) => s + cents(p.amount), 0)
 
     // Ultimos 6 meses terminando en el actual (para la grafica).
@@ -108,7 +108,7 @@ export const finanzasResumen = op(
       balance: (ingresos - gastosTotal) / 100,
       por_cobrar: porCobrar / 100,
       por_cobrar_total: porCobrarTotal / 100,
-      // De lo por cobrar, lo que ya paso de fecha (del periodo / de todo el tiempo sin contar posibles clientes).
+      // De lo por cobrar, lo que ya paso de fecha (del periodo / de todo el tiempo sin contar clientes potenciales).
       vencido: vencido / 100,
       vencido_total: vencidoTotal / 100,
       gastos_generales: generales / 100,

@@ -9,6 +9,9 @@ import { DETAIL_COLUMNS, DETAIL_JOINS, detalleOut, detalleShape, hasDetalle, MET
 import { HttpError, id, isoDate, money, text } from '../util.ts'
 import { archivadosParam, AVATAR_SEEDS, dayISO, filters, op, pageShape, paged, projectStateOut, r2, todayISO } from './common.ts'
 import { interaccionOut } from './interacciones.ts'
+
+// «posible» era el nombre anterior de «potencial»: se sigue aceptando en la entrada; la salida siempre dice «potencial».
+const estadoCliente = z.preprocess((v) => (v === 'posible' ? 'potencial' : v), z.enum(['activo', 'potencial'], 'Estado inválido (activo o potencial)'))
 import { propuestasPor } from './propuestas.ts'
 
 type Loaded = Awaited<ReturnType<typeof loadClients>>[number]
@@ -47,7 +50,7 @@ function resumen(c: Loaded) {
     id: c.id,
     nombre: c.name,
     avatar: c.avatar,
-    estado: c.prospect ? 'posible' : 'activo',
+    estado: c.prospect ? 'potencial' : 'activo',
     archivado: c.archived,
     recaudado: r2(recaudado),
     por_cobrar: r2(porCobrar),
@@ -75,7 +78,7 @@ function resumen(c: Loaded) {
     cierre_previsto: c.expectedClose,
     motivo_perdida: c.lostReason,
     dias_en_etapa: c.stageChangedAt ? daysBetween(dayISO(c.stageChangedAt), hoy) : null,
-    // Frio: posible cliente en etapa abierta sin contacto real (llamada, visita, WhatsApp o nota) hace mas de COLD_DAYS dias.
+    // Frio: cliente potencial en etapa abierta sin contacto real (llamada, visita, WhatsApp o nota) hace mas de COLD_DAYS dias.
     frio: isOpenStage(c.prospect, c.stage) && daysBetween(dayISO(c.lastContactAt ?? c.createdAt), hoy) > COLD_DAYS,
     ultimo_contacto: c.lastContactAt ? c.lastContactAt.toISOString() : null,
     // seguimiento
@@ -130,14 +133,14 @@ export async function clienteDetalle(clientId: string) {
 // ---------- clientes ----------
 export const clientesListar = op(
   z.strictObject({
-    estado: z.enum(['activo', 'posible']).optional(),
+    estado: estadoCliente.optional(),
     etapa: z.string('Etapa inválida').trim().min(1).max(30).optional(), // ver GET /pipeline/etapas (los nombres de la fase 1 se siguen aceptando)
     archivados: archivadosParam,
     ...pageShape,
   }),
   async (_a, i) => {
     const f = filters()
-    if (i.estado) f.add('is_prospect = ?', i.estado === 'posible')
+    if (i.estado) f.add('is_prospect = ?', i.estado === 'potencial')
     if (i.etapa) f.add('pipeline_stage = ?', resolveStage(await loadStages(pool), i.etapa).key)
     if (i.archivados === 'excluir') f.raw('archived_at IS NULL')
     if (i.archivados === 'solo') f.raw('archived_at IS NOT NULL')
@@ -145,10 +148,10 @@ export const clientesListar = op(
     const [total, ids, head] = await Promise.all([
       pool.query(`SELECT count(*)::int AS n FROM clients ${f.where()}`, f.params()),
       pool.query(`SELECT id FROM clients ${f.where()} ORDER BY created_at, id ${clause}`, args),
-      // Mismos totales que la cabecera de Clientes en la web: solo clientes activos y no archivados (los posibles no cuentan).
+      // Mismos totales que la cabecera de Clientes en la web: solo clientes activos y no archivados (los potenciales no cuentan).
       pool.query(
         `SELECT (SELECT count(*)::int FROM clients WHERE NOT is_prospect AND archived_at IS NULL) AS activos,
-                (SELECT count(*)::int FROM clients WHERE is_prospect AND archived_at IS NULL) AS posibles,
+                (SELECT count(*)::int FROM clients WHERE is_prospect AND archived_at IS NULL) AS potenciales,
                 (SELECT count(*)::int FROM clients WHERE archived_at IS NOT NULL) AS archivados,
                 COALESCE(sum(p.amount) FILTER (WHERE p.status = 'cobrado'), 0) AS recaudado,
                 count(*) FILTER (WHERE p.status = 'pendiente')::int AS cuotas_por_cobrar
@@ -158,7 +161,7 @@ export const clientesListar = op(
     const list = ids.rows.length ? await loadClients(pool, ids.rows.map((r) => r.id)) : []
     const h = head.rows[0]
     return paged(list.map(resumen), total.rows[0].n, i.page, i.per_page, {
-      resumen: { activos: h.activos, posibles: h.posibles, archivados: h.archivados, recaudado: r2(h.recaudado), cuotas_por_cobrar: h.cuotas_por_cobrar },
+      resumen: { activos: h.activos, potenciales: h.potenciales, archivados: h.archivados, recaudado: r2(h.recaudado), cuotas_por_cobrar: h.cuotas_por_cobrar },
     })
   },
 )
@@ -175,19 +178,19 @@ export const clienteCrear = op(
       .array(z.strictObject({ fecha: isoDate, monto: money, concepto: text(120), repetir_meses: repeatMonths.optional() }))
       .max(100, 'Máximo 100 cobros')
       .default([]),
-    // estado 'posible' lo mete al pipeline (en la primera etapa salvo que se pida otra etapa abierta); la ficha y el seguimiento valen para ambos.
-    estado: z.enum(['activo', 'posible'], 'Estado inválido (activo o posible)').default('activo'),
+    // estado 'potencial' lo mete al pipeline (en la primera etapa salvo que se pida otra etapa abierta); la ficha y el seguimiento valen para ambos.
+    estado: estadoCliente.default('activo'),
     ...fichaShape,
   }),
   async (actor, b) => {
-    const posible = b.estado === 'posible'
+    const posible = b.estado === 'potencial'
     if (!posible && [b.etapa, b.valor_estimado, b.probabilidad, b.cierre_previsto, b.motivo_perdida].some((v) => v !== undefined))
-      throw new HttpError(400, 'Los datos de pipeline (etapa, valor, probabilidad, cierre, motivo) solo aplican a un posible cliente: usa estado "posible"')
-    if (posible && b.origen === null) throw new HttpError(400, 'origen: el origen de un posible cliente es obligatorio (usa "otro" si no lo sabes)')
+      throw new HttpError(400, 'Los datos de pipeline (etapa, valor, probabilidad, cierre, motivo) solo aplican a un cliente potencial: usa estado "potencial"')
+    if (posible && b.origen === null) throw new HttpError(400, 'origen: el origen de un cliente potencial es obligatorio (usa "otro" si no lo sabes)')
     const stages = await loadStages(pool)
     const entry = posible ? (b.etapa ? resolveStage(stages, b.etapa) : entryStage(stages)) : null
     if (entry && entry.kind !== 'abierta')
-      throw new HttpError(400, `Un posible cliente entra en una etapa abierta (${stages.filter((s) => s.kind === 'abierta' && s.active).map((s) => s.key).join(', ')}); ganar o perder se hace después`)
+      throw new HttpError(400, `Un cliente potencial entra en una etapa abierta (${stages.filter((s) => s.kind === 'abierta' && s.active).map((s) => s.key).join(', ')}); ganar o perder se hace después`)
     if (entry?.key === 'propuesta_presentada') throw new HttpError(400, 'Arma una propuesta antes de pasar a "propuesta_presentada": entra en otra etapa y avanza después')
     const stage = entry?.key ?? null
     const ficha: ClientPatch = Object.fromEntries(
@@ -231,7 +234,7 @@ export const clienteActualizar = op(
       id,
       nombre: text(80).optional(),
       avatar: text(40).optional(),
-      estado: z.enum(['activo', 'posible'], 'Estado inválido (activo o posible)').optional(), // activo = ganado; posible = vuelve al pipeline en la primera etapa
+      estado: estadoCliente.optional(), // activo = ganado; potencial = vuelve al pipeline en la primera etapa
       archivado: z.boolean().optional(), // true = archivar (se oculta pero conserva su historial), false = desarchivar
       ...fichaShape,
       ...transitionShape,

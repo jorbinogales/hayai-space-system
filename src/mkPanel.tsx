@@ -54,8 +54,8 @@ function buildSteps(f: Funnel, stages: PipelineStage[] | null): { steps: Step[];
   const open = f.etapas
   const ganado = stages?.find((s) => s.tipo === 'ganada')?.nombre ?? 'Ganado'
   const perdido = stages?.find((s) => s.tipo === 'perdida')?.nombre ?? 'Perdido'
-  // posibles abiertos hoy en la etapa i o más allá, más los ganados del período (un ganado ya pasó por todas)
-  const reached = (i: number) => sum(open.slice(i).map((e) => e.posibles)) + f.cierres.ganados
+  // potenciales abiertos hoy en la etapa i o más allá, más los ganados del período (un ganado ya pasó por todas)
+  const reached = (i: number) => sum(open.slice(i).map((e) => e.potenciales)) + f.cierres.ganados
   const onward = (i: number) => [...open.slice(i + 1).map((e) => e.nombre), ganado].map((n) => `«${n}»`).join(', ')
   const steps: Step[] = []
   if (open[0]) steps.push({ key: 'alcance', name: 'Alcance', n: sum(f.por_origen.map((o) => o.entraron)), eq: `Todo lo que entró en el período, desde «${open[0].nombre}», perdidos incluidos.` })
@@ -84,7 +84,7 @@ function FunnelBlock({ f, stages, busy }: { f: Funnel; stages: PipelineStage[] |
     <>
       <div className={`mk-funnel${busy ? ' is-busy' : ''}`}>
         {total === 0 && steps.every((s) => s.n === 0) ? (
-          <p className="hb-empty is-dark">Todavía no hay leads en estos {f.dias} días. Cuando entren posibles clientes (a mano, por Meta Ads o por la API), verás aquí cómo avanzan.</p>
+          <p className="hb-empty is-dark">Todavía no hay leads en estos {f.dias} días. Cuando entren clientes potenciales (a mano, por Meta Ads o por la API), verás aquí cómo avanzan.</p>
         ) : (
           <ol className="mk-bars" aria-label={`Embudo de los últimos ${f.dias} días`}>
             {steps.map((s, i) => (
@@ -128,7 +128,7 @@ function FunnelBlock({ f, stages, busy }: { f: Funnel; stages: PipelineStage[] |
           </div>
           <div>
             <dt>
-              Ponderado (por probabilidad) <Tip>Valor de cada posible × la probabilidad de su etapa: lo que se espera cerrar.</Tip>
+              Ponderado (por probabilidad) <Tip>Valor de cada potencial × la probabilidad de su etapa: lo que se espera cerrar.</Tip>
             </dt>
             <dd>{money(pond)}</dd>
           </div>

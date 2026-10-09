@@ -17,9 +17,9 @@ import './hub.css'
 /** Líneas de la tarjeta de Marketing, del embudo de los últimos 90 días (mientras carga, un texto neutro). */
 function marketingLines(f: ReturnType<typeof loadFunnel> extends Promise<infer T> ? T | null : never): string[] {
   if (!f) return ['Embudo comercial', 'Últimos 90 días']
-  const abiertos = f.etapas.reduce((a, e) => a + e.posibles, 0)
+  const abiertos = f.etapas.reduce((a, e) => a + e.potenciales, 0)
   const ponderado = f.etapas.reduce((a, e) => a + e.valor_ponderado, 0)
-  return [`${abiertos} ${abiertos === 1 ? 'posible abierto' : 'posibles abiertos'}`, `${money(ponderado)} ponderado`, f.cierres.tasa_cierre == null ? 'Sin cierres aún' : `Tasa de cierre ${f.cierres.tasa_cierre.toLocaleString('es-VE', { maximumFractionDigits: 1 })} %`]
+  return [`${abiertos} ${abiertos === 1 ? 'potencial abierto' : 'potenciales abiertos'}`, `${money(ponderado)} ponderado`, f.cierres.tasa_cierre == null ? 'Sin cierres aún' : `Tasa de cierre ${f.cierres.tasa_cierre.toLocaleString('es-VE', { maximumFractionDigits: 1 })} %`]
 }
 
 /** Capa HTML del Home: tarjetas de cada planeta + marca del nucleo, que siguen a los objetos 3D. Solo se ve con `shown`. */

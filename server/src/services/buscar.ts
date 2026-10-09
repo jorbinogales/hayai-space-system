@@ -83,7 +83,7 @@ export const buscar = op(
       clientes: (clientes?.rows ?? []).map((r) => ({
         id: r.id as string,
         nombre: r.name as string,
-        estado: r.is_prospect ? 'posible' : 'activo',
+        estado: r.is_prospect ? 'potencial' : 'activo',
         etapa: r.pipeline_stage as string | null,
         telefono: r.phone as string | null,
         etiquetas: r.tags as string[],

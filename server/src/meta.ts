@@ -1,10 +1,10 @@
 // Ingesta de leads de Meta Lead Ads (planeta Marketing). Meta avisa por webhook ("llego el lead X"); aqui se pide el detalle a la
-// Graph API, se crea el posible cliente y se avisa al equipo. APAGADO por defecto: con META_LEADS_ENABLED distinto de "true" las dos
+// Graph API, se crea el cliente potencial y se avisa al equipo. APAGADO por defecto: con META_LEADS_ENABLED distinto de "true" las dos
 // rutas responden 404 y no se crea nada (las credenciales llegan despues de la revision de Meta).
 //  - Idempotente: meta_leads.leadgen_id es la llave; el mismo lead jamas crea dos clientes aunque Meta reintente el webhook.
 //  - Si Graph falla, el lead queda 'error' y se reintenta con espera creciente (hasta MAX_ATTEMPTS); nada se pierde.
 //  - Duplicados (mismo telefono o email que un cliente existente) NO crean otro cliente: se anota en su bitacora.
-//  - No crea proyecto ni tarea: solo el posible cliente (origen meta_ads, etiqueta "Meta Ads"), su bitacora y el aviso.
+//  - No crea proyecto ni tarea: solo el cliente potencial (origen meta_ads, etiqueta "Meta Ads"), su bitacora y el aviso.
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import express, { Router } from 'express'
 import { z } from 'zod'
@@ -134,7 +134,7 @@ export function mapLead(g: Graph) {
 }
 
 // ---------- procesar un lead ----------
-/** Crea el posible cliente (o anota el duplicado) y avisa. Idempotente: un lead ya procesado no se vuelve a procesar. */
+/** Crea el cliente potencial (o anota el duplicado) y avisa. Idempotente: un lead ya procesado no se vuelve a procesar. */
 export async function processLead(leadgenId: string): Promise<'procesado' | 'duplicado' | 'omitido'> {
   const row = (await pool.query(`SELECT status FROM meta_leads WHERE leadgen_id = $1`, [leadgenId])).rows[0]
   if (!row || row.status === 'procesado' || row.status === 'duplicado') return 'omitido'

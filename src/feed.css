@@ -179,7 +179,7 @@
 @media (hover: hover) { .fd-save:hover:not(:disabled) { background: var(--fd-wash-2); color: var(--ink); } }
 .fd-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px 4px 9px; border-radius: var(--fd-r-pill); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; white-space: nowrap; }
 .fd-badge.t-idea { background: rgba(154, 91, 0, 0.16); color: #6b4000; }
-.fd-badge.t-prospecto { background: var(--night); color: var(--fd-gold); }
+.fd-badge.t-potencial { background: var(--night); color: var(--fd-gold); }
 .fd-badge.t-alerta { background: rgba(190, 59, 31, 0.13); color: var(--fd-danger-ink); }
 .fd-badge.t-noticia { background: var(--fd-wash-2); color: var(--ink); }
 .fd-badge.t-oportunidad { background: rgba(47, 138, 91, 0.17); color: var(--fd-ok-ink); }
@@ -256,6 +256,34 @@
 .fd-reach a svg { flex: none; }
 .fd-reach a span { min-width: 0; max-width: 30ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (hover: hover) { .fd-reach a:hover { color: var(--ink); } }
+
+/* Instagram del potencial: fila propia (se muestra cuando existe; se corrige o agrega a mano) */
+.fd-ig { flex: 1 1 100%; display: grid; gap: var(--fd-s2); min-width: 0; }
+.fd-ig-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--fd-s3); min-width: 0; }
+.fd-ig-k { display: inline-flex; align-items: center; gap: 6px; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-2); }
+.fd-ig-v { display: inline-flex; align-items: center; min-height: var(--fd-hit-sm); min-width: 0; max-width: 100%; color: var(--fd-amber-ink); font-size: 0.86rem; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.fd-ig-v span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fd-ig-none { font-size: 0.84rem; color: var(--ink-2); }
+.fd-ig-btn { margin-left: auto; }
+@media (hover: hover) { .fd-ig-v:hover { color: var(--ink); } }
+.fd-ig-form { display: grid; gap: var(--fd-s2); padding: var(--fd-s3); border-radius: 14px; background: var(--fd-wash); }
+.fd-ig-form input { width: 100%; min-width: 0; min-height: var(--fd-hit); padding: 0 var(--fd-s3); border: 1px solid var(--fd-line-strong); border-radius: var(--fd-r-field); background: var(--fd-field); color: var(--ink); font: inherit; font-size: 0.88rem; }
+.fd-ig-form input:focus-visible { outline: var(--fd-ring); outline-offset: 1px; border-color: transparent; }
+.fd-ig-form input[aria-invalid='true'] { border-color: var(--fd-danger); }
+@media (hover: hover) { .fd-ig-form input:hover { border-color: var(--ink-2); } }
+.fd-ig-act { display: flex; flex-wrap: wrap; gap: var(--fd-s2); }
+
+/* fuga dudosa (afirma «sin Instagram» y el negocio sí tiene) y la sección de Google Maps, al final del detalle */
+.fd-leaks li.is-stale { opacity: 0.72; }
+.fd-leaks li.is-stale s { text-decoration-thickness: 1px; }
+.fd-leaks li.is-stale small { display: block; margin-top: 2px; font-size: 0.74rem; color: var(--ink-2); }
+.fd-leaks li.is-stale::before { background: var(--ink-2); opacity: 0.5; }
+.fd-maps { padding-top: var(--fd-s3); border-top: 1px dashed var(--fd-line-strong); color: var(--ink-2); }
+.fd-maps > summary { display: flex; align-items: center; min-height: var(--fd-hit-sm); cursor: pointer; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-2); border-radius: 6px; }
+.fd-maps > summary span { margin-left: 0.4em; font-weight: 500; letter-spacing: 0; text-transform: none; font-size: 0.74rem; }
+.fd-maps > summary:focus-visible { outline: var(--fd-ring); outline-offset: 2px; }
+.fd-maps[open] > summary { margin-bottom: var(--fd-s2); }
+.fd-maps .fd-kv dd { font-weight: 500; }
 
 /* convertir: destino (se elige antes) + «Convertir» / «Convertir con ajustes» */
 .fd-conv { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--fd-s3) var(--fd-s4); margin-top: var(--fd-s1); }

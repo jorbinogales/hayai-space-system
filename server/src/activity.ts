@@ -57,7 +57,7 @@ export function activityText(kind: ActivityKind, actor: string, subject: string,
     case 'cliente_nuevo':
       return `${actor} añadió un cliente nuevo: ${subject}`
     case 'posible_nuevo':
-      return `${actor} añadió un posible cliente: ${subject}`
+      return `${actor} añadió un cliente potencial: ${subject}`
     case 'tarea_nueva':
       return `${actor} añadió la tarea «${subject}»${detail ? ` en ${detail}` : ''}`
     case 'tarea_completada':
@@ -71,7 +71,7 @@ export function activityText(kind: ActivityKind, actor: string, subject: string,
     case 'cliente_perdido':
       return `${actor} marcó como perdido a ${subject}${detail ? ` (${detail})` : ''}`
     case 'lead_meta':
-      return `Llegó un posible cliente de Meta Ads: ${subject}` // lo trae el sistema, no un socio: no nombra a nadie
+      return `Llegó un cliente potencial de Meta Ads: ${subject}` // lo trae el sistema, no un socio: no nombra a nadie
     case 'acuerdo_nuevo':
       return `${actor} registró un acuerdo: ${subject}`
     case 'version_nueva':

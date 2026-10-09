@@ -90,7 +90,7 @@ export interface Model {
   columns: PipelineStage[]
   lost: PipelineStage | null
   byStage: Map<string, Lead[]>
-  /** posibles perdidos: solo viven en la columna del pipeline */
+  /** potenciales perdidos: solo viven en la columna del pipeline */
   lostLeads: Lead[]
 }
 
@@ -165,7 +165,7 @@ export function FlatFrame({
               </button>
               <button type="button" className="ob-btn" onClick={onProspect}>
                 <Icon name="plus" size={15} />
-                Posible cliente
+                Cliente potencial
               </button>
             </div>
           </div>
@@ -440,7 +440,7 @@ function OrbitalBody({ model, clients, openId, onPick, onSwitch, onProspect, nex
       </div>
 
       <div className="ob-side">
-        <p className="ob-lead">Cada punto es un posible cliente: mientras más cerca del planeta, más cerca de ganarse.</p>
+        <p className="ob-lead">Cada punto es un cliente potencial: mientras más cerca del planeta, más cerca de ganarse.</p>
 
         {lead && leadStage ? (
           <article className="ob-card" aria-live="polite">
@@ -477,16 +477,16 @@ function OrbitalBody({ model, clients, openId, onPick, onSwitch, onProspect, nex
         ) : (
           <article className="ob-card is-empty">
             <strong>Todavía no hay a quién perseguir</strong>
-            <p className="ob-card-note">Cuando registres un posible cliente aparecerá en la órbita de su etapa.</p>
+            <p className="ob-card-note">Cuando registres un cliente potencial aparecerá en la órbita de su etapa.</p>
             <button type="button" className="ob-open" onClick={onProspect}>
-              Registrar un posible cliente
+              Registrar un cliente potencial
               <Icon name="plus" size={15} />
             </button>
           </article>
         )}
 
         <p className="ob-sum" aria-live="polite">
-          <b>{openLeads.length}</b> {openLeads.length === 1 ? 'posible en juego' : 'posibles en juego'} · <b>{money(estimated)}</b> estimados · <b>{money(Math.round(weighted * 100) / 100)}</b> ponderados
+          <b>{openLeads.length}</b> {openLeads.length === 1 ? 'potencial en juego' : 'potenciales en juego'} · <b>{money(estimated)}</b> estimados · <b>{money(Math.round(weighted * 100) / 100)}</b> ponderados
         </p>
 
         {/* la leyenda es también la lista por etapa: cada fila se despliega con sus clientes (alternativa al dibujo) */}
@@ -533,7 +533,7 @@ function OrbitalBody({ model, clients, openId, onPick, onSwitch, onProspect, nex
               (<button type="button" className="ob-link" onClick={() => onSwitch('pipeline')}>ver {model.lostLeads.length} {model.lostLeads.length === 1 ? 'perdido' : 'perdidos'}</button>)
             </>
           )}
-          . Con más de {MAX_LEADS} posibles, las órbitas exteriores se agrupan en «+N».
+          . Con más de {MAX_LEADS} potenciales, las órbitas exteriores se agrupan en «+N».
         </p>
       </div>
       {clients.length === 0 && <span className="ob-sr">No hay clientes todavía.</span>}

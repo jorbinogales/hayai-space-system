@@ -1242,19 +1242,18 @@ function useSentinel(onHit: () => void, enabled: boolean, version: unknown) {
 export function FeedScreen({ owners }: { owners: string[] }) {
   const me = useSession()?.name ?? ''
   const { world } = useCosmos()
-  // El Feed es del planeta HAYAI (el núcleo, su eyebrow lo dice): igual que Finanzas, al abrirlo ese planeta viaja a la izquierda y se queda anclado mientras dura la vista.
-  const [arrived, setArrived] = useState(() => world.key === 'hub' && world.target === 1 && world.wp >= 1)
+  // El Feed es del planeta HAYAI (el núcleo, su eyebrow lo dice): el Hub lo deja de fondo y centrado; en el Feed pasa a la izquierda y se queda anclado, igual que Finanzas.
+  const [arrived, setArrived] = useState(false)
   const [exiting, setExiting] = useState(false)
   useEffect(() => {
-    world.screenRate = null
+    world.coreMode = 'left'
     const sub = (at: string) => at === 'hub' && setArrived(true)
     world.arriveSubs.add(sub)
-    if (world.key !== 'hub' || world.target !== 1) world.go('hub')
-    else if (world.wp >= 1) setArrived(true)
+    const t = window.setTimeout(() => setArrived(true), 6000) // red de seguridad si el mundo 3D no avanza
     return () => {
       world.arriveSubs.delete(sub)
-      // si otra pantalla ya tomó el mundo (la campana lleva a un planeta), no se le quita; si no, el núcleo regresa al centro
-      if (world.key === 'hub') world.go(null)
+      window.clearTimeout(t)
+      world.coreMode = 'center' // al volver al Hub, el núcleo vuelve al centro (si el Hub se cierra, no importa: ya no se usa)
     }
   }, [world])
   const back = () => {

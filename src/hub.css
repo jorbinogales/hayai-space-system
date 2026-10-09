@@ -481,7 +481,32 @@ details.mk-eq[open] summary { border-bottom: 1px solid rgba(22, 17, 11, 0.08); }
   /* en el móvil el planeta queda arriba y el contenido debajo (como Finanzas) */
   .is-anchored .hb-scroll { inset: 38% 0 0 0; padding: 4px 16px 12px; }
   /* el núcleo es oscuro y en el móvil queda justo bajo la marca: ahí la marca se lee en claro */
-  .app:has(.fd-screen.is-anchored) .topbar .mark p { color: #f4ebdd; }
+  .app:has(.fd-screen.is-anchored, .hub-screen.is-bg:not([hidden])) .topbar .mark p { color: #f4ebdd; }
+}
+
+/* ---------- Hub con el nucleo de fondo: el planeta (WebGL) queda centrado y enorme detras; los paneles flotan encima con fondo propio ---------- */
+.screen.layer.hub-screen.is-bg { background: none; }
+.screen.layer.hub-screen.is-bg::before { display: none; }
+.is-bg .hb-scroll { pointer-events: auto; }
+.is-bg.arriving .hb-scroll { animation: arrive-in 0.6s ease 0.05s backwards; }
+.is-bg.is-waiting .hb-scroll { opacity: 0; pointer-events: none; animation: none; }
+.is-bg.exiting .hb-scroll { opacity: 0; pointer-events: none; transition: opacity 0.28s ease; }
+/* el texto suelto (titulo y bloques claros) lleva su propio panel esmerilado: el contraste no depende del planeta */
+.is-bg .hb-head,
+.is-bg .hb-block:not(.is-dark),
+.is-bg .hb-alert {
+  padding: 18px 22px;
+  border-radius: 22px;
+  background: rgba(244, 236, 222, 0.88);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  backdrop-filter: blur(14px) saturate(1.1);
+  box-shadow: 0 18px 40px -26px rgba(22, 17, 11, 0.7), inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+.is-bg .hb-stat:not(.is-dark) { background: rgba(248, 242, 232, 0.95); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+.is-bg .hb-block.is-dark { box-shadow: 0 18px 40px -22px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(244, 235, 221, 0.08); }
+.is-bg .hb-block.is-dark:has(.mk-funnel) { padding: 18px 22px; background: rgba(244, 236, 222, 0.88); }
+@media (max-width: 640px) {
+  .is-bg .hb-head, .is-bg .hb-block:not(.is-dark), .is-bg .hb-alert { padding: 16px 16px; border-radius: 18px; }
 }
 
 /* ---------- responsive ---------- */

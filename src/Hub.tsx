@@ -12,6 +12,8 @@ import { ago } from './time'
 import { saveGuarded, useFormGuard } from './updates'
 import { DraftBar } from './UpdateUI'
 import { Icon } from './ui'
+import { useCosmos } from './Cosmos'
+import { reduced } from './warp'
 import './hub.css'
 
 const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
@@ -578,6 +580,34 @@ function Shortcuts({ d, onGo }: { d: HubData; onGo: (s: NavTarget) => void }) {
 
 // ---------- pantalla ----------
 export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s: NavTarget) => void }) {
+  const { world } = useCosmos()
+  // Al entrar, la camara hace zoom hacia el nucleo HAYAI, que queda centrado y enorme como fondo vivo; el contenido flota encima y aparece al terminar el zoom.
+  const [arrived, setArrived] = useState(() => world.coreReady())
+  const [exiting, setExiting] = useState(false)
+  useEffect(() => {
+    world.screenRate = null
+    const sub = (at: string) => at === 'hub' && setArrived(true)
+    world.arriveSubs.add(sub)
+    if (world.key !== 'hub' || world.target !== 1) world.go('hub')
+    const t = window.setTimeout(() => setArrived(true), 6000) // si el mundo 3D no avanza (sin WebGL, pestaña oculta), el contenido no se queda escondido
+    return () => {
+      world.arriveSubs.delete(sub)
+      window.clearTimeout(t)
+    }
+  }, [world])
+  // salir: el contenido se funde y la camara hace zoom-out de regreso al Home 3D; al llegar, se muestra el Home
+  const back = () => {
+    if (exiting) return
+    setExiting(true)
+    const done = (at: string) => {
+      if (at !== 'home') return
+      world.arriveSubs.delete(done)
+      onBack()
+    }
+    world.arriveSubs.add(done)
+    world.go(null)
+    window.setTimeout(() => world.arriveSubs.has(done) && !world.busy() && done('home'), reduced() ? 900 : 2600) // red de seguridad si la llegada ya pasó
+  }
   const hub = useLoaded(loadHub, [])
   const live = useLive()
   const d = hub.data
@@ -605,10 +635,10 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
   return (
     <>
     {feedOpen && <FeedScreen owners={owners} />}
-    <main className="screen layer hub-screen" aria-label="Hub central" hidden={feedOpen}>
+    <main className={`screen layer hub-screen is-bg arriving${arrived ? '' : ' is-waiting'}${exiting ? ' exiting' : ''}`} aria-label="Hub central" hidden={feedOpen}>
       <div className="hb-scroll">
         <div className="hb-wrap">
-          <button className="hb-back" onClick={onBack}>
+          <button className="hb-back" onClick={back}>
             <Icon name="back" size={16} />
             Volver al core
           </button>

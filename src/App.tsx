@@ -23,6 +23,7 @@ import { UpdateHost } from './UpdateUI'
 import { setFinanceView } from './nav'
 import Versions from './Versions'
 import ToastHost from './Toast'
+import { hideSplash } from './splash'
 
 export type Screen = 'home' | 'clientes' | 'proyectos' | 'finanzas' | 'tareas' | 'hub' | 'marketing'
 /** A dónde se puede navegar: «gastos» ya no es una pantalla, es la vista Gastos dentro de Finanzas. */
@@ -42,6 +43,7 @@ export default function App() {
   // capa mostrada: solo cuando el viaje ya llego (null mientras se viaja)
   const [ui, setUi] = useState<Screen | null>(route)
   const [profile, setProfile] = useState(false)
+  const [sceneReady, setSceneReady] = useState(false) // primer frame 3D pintado
   const [integrations, setIntegrations] = useState(false)
   const [vault, setVault] = useState(false)
   // un unico mundo 3D para todas las pantallas: navegar mueve objetos dentro de la misma escena
@@ -75,6 +77,17 @@ export default function App() {
       alive = false
     }
   }, [])
+
+  // la pantalla de carga (index.html) se retira cuando ya se sabe si hay sesion y, con sesion, el mundo 3D tiene su primer frame; si algo no llega, a los 12 s se retira igual
+  useEffect(() => {
+    if (session === undefined) return
+    if (session === null || sceneReady) {
+      hideSplash()
+      return
+    }
+    const t = window.setTimeout(hideSplash, 12000)
+    return () => clearTimeout(t)
+  }, [session, sceneReady])
 
   // con sesion: avisos del equipo en vivo (stream + alertas); sin sesion: todo apagado y vaciado
   useEffect(() => {
@@ -141,7 +154,7 @@ export default function App() {
   return (
     <SessionProvider value={session ?? null}>
     <div className="app">
-      <Cosmos world={world} route={route} ui={ui} onOpen={navigate}>
+      <Cosmos world={world} route={route} ui={ui} onOpen={navigate} onReady={() => setSceneReady(true)}>
         <Home shown={ui === 'home'} onOpen={navigate} />
         {ui === 'clientes' && <Clients onBack={() => navigate('home')} />}
         {ui === 'proyectos' && <Projects onBack={() => navigate('home')} />}

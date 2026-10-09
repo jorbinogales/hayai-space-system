@@ -431,10 +431,25 @@ export function projectsLayout(w: number, h: number) {
   return { rpx, cx, cy, viewH: (PROJECTS_R * h) / rpx, originY: cy / h }
 }
 
-/** 'hub' = el nucleo HAYAI (la vista Feed del Hub lo ancla a la izquierda, igual que Finanzas ancla su planeta). */
+/** Encuadre del Hub: el nucleo HAYAI centrado y enorme, como fondo vivo de toda la vista (el contenido flota encima). */
+export function hubBackdrop(w: number, h: number) {
+  const phone = w < 700
+  return { cx: w / 2, cy: h * 0.5, rpx: phone ? Math.max(h * 0.46, w * 0.95) : Math.min(w * 0.42, h * 0.7) }
+}
+/** Encuadre del nucleo en la vista Feed: anclado a la izquierda, igual que Finanzas ancla su planeta. */
+export function coreLeftTarget(w: number, h: number) {
+  const l = projectsLayout(w, h)
+  return { cx: l.cx, cy: l.cy, rpx: l.rpx, rx: 0.2, rz: 0.08 }
+}
+
+/** 'hub' = el nucleo HAYAI: la pantalla del Hub lo deja centrado de fondo; la vista Feed lo pasa a la izquierda (ver World.coreMode). */
 export type WarpDest = 'clientes' | 'proyectos' | 'finanzas' | 'tareas' | 'marketing' | 'hub'
 /** Donde (px) y como (inclinacion) termina el planeta destino del viaje, para que la pantalla siguiente continue sin salto. */
 export function warpTarget(key: WarpDest, w: number, h: number) {
+  if (key === 'hub') {
+    const b = hubBackdrop(w, h)
+    return { cx: b.cx, cy: b.cy, rpx: b.rpx, rx: 0.2, rz: 0.08 }
+  }
   if (key !== 'clientes') {
     const l = projectsLayout(w, h)
     return { cx: l.cx, cy: l.cy, rpx: l.rpx, rx: 0.2, rz: 0.08 }

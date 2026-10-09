@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { addLights, addSky, ellipse, glow, makePlanet, warpTarget, type Ctx, type Live, type WarpDest } from './scene'
+import { addLights, addSky, coreLeftTarget, ellipse, glow, makePlanet, warpTarget, type Ctx, type Live, type WarpDest } from './scene'
 import type { IconName } from './ui'
 import { fx, reduced } from './warp'
 
@@ -85,6 +85,10 @@ export interface World {
   pick: (cx: number, cy: number) => HotKey | null
   zoomBy: (f: number) => void
   go: (key: WarpDest | null) => void
+  /** donde se queda el nucleo cuando es el destino: 'center' = de fondo del Hub, 'left' = anclado a la izquierda (vista Feed); cambiar de uno a otro se anima */
+  coreMode: 'center' | 'left'
+  /** true cuando el nucleo ya esta quieto en su sitio (llego y termino de acomodarse) */
+  coreReady: () => boolean
   /** vuelve al Home de golpe, sin viaje (cuando la pantalla que lo tapaba se va sin pasar por el Home) */
   snapHome: () => void
   busy: () => boolean
@@ -121,6 +125,8 @@ export function createWorld(initial: WarpDest | null): World {
         w.dur = reduced() ? 0.4 : 1.4
       }
     },
+    coreMode: 'center',
+    coreReady: () => false,
     snapHome() {
       w.key = null
       w.target = 0
@@ -173,6 +179,9 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
   const coreAir = core.pivot.children.find((c) => c instanceof THREE.Sprite) as THREE.Sprite
   const coreMat = core.body.material as THREE.Material
   const haloPos = halo.position.clone()
+  let cm = 0 // 0 = nucleo centrado (fondo del Hub), 1 = anclado a la izquierda (Feed)
+  let coreWasOk = false
+  let lastMode: 'center' | 'left' = 'center'
 
   const sky = addSky(scene)
 
@@ -235,7 +244,6 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
 
   let lastNow = performance.now()
   let at: 'home' | WarpDest | 'moving' = world.initial ?? 'home'
-  let settleUntil = 0
 
   return {
     resize() {
@@ -325,22 +333,31 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
         x.m.opacity = x.o * fo
         x.obj.visible = fo > 0.01
       }
-      // nucleo y halo: se apagan igual, salvo cuando EL NUCLEO es el destino (vista Feed del Hub): ahi viaja a la izquierda y se ancla
+      // nucleo y halo: se apagan igual, salvo cuando EL NUCLEO es el destino (pantalla Hub y su vista Feed): ahi viaja a su sitio y se queda.
+      // Sin movimiento (prefers-reduced-motion) no hay zoom: el nucleo aparece ya en su sitio y solo se funde.
       const coreKey = key === 'hub'
-      const cv = coreKey ? 1 : fo
+      const rm = reduced()
+      const settled = coreKey && world.target === 1 && wp >= 1
+      const cmT = world.coreMode === 'left' ? 1 : 0
+      cm = settled && !rm ? cm + (cmT - cm) * (1 - Math.exp(-real * 4.5)) : cmT // quieto en el sitio: se anima el cambio de encuadre; viajando, ya sale con el encuadre final
+      if (Math.abs(cm - cmT) < 0.002) cm = cmT
+      const cv = coreKey ? (rm ? clamp01(wp * 2) : 1) : fo
       coreMat.opacity = cv
       coreAir.material.opacity = cv
-      halo.material.opacity = cv
+      halo.material.opacity = cv * (1 - 0.55 * (1 - cm) * (coreKey ? (rm ? 1 : e) : 0)) // de fondo, el halo se suaviza para no teñir todo el Hub
       core.pivot.visible = halo.visible = cv > 0.01
       if (coreKey) {
-        const dst = warpTarget('hub', ctx.w, ctx.h)
+        const a = warpTarget('hub', ctx.w, ctx.h)
+        const b = coreLeftTarget(ctx.w, ctx.h)
+        const dst = { cx: a.cx + (b.cx - a.cx) * cm, cy: a.cy + (b.cy - a.cy) * cm, rpx: a.rpx + (b.rpx - a.rpx) * cm, rx: a.rx, rz: a.rz }
+        const ee = rm ? 1 : e
         const destX = (dst.cx - ctx.w / 2) * upp
         const destY = (ctx.originY * ctx.h - dst.cy) * upp
-        const sc = 1 + ((dst.rpx * upp) / CORE_R - 1) * e
-        core.pivot.position.set(destX * e, destY * e, 0)
+        const sc = 1 + ((dst.rpx * upp) / CORE_R - 1) * ee
+        core.pivot.position.set(destX * ee, destY * ee, 0)
         core.pivot.scale.setScalar(sc)
-        core.pivot.rotation.set(0.28 + (dst.rx - 0.28) * e, 0, 0.18 * (1 - e) + dst.rz * e)
-        halo.position.set(haloPos.x + destX * e, haloPos.y + destY * e, haloPos.z)
+        core.pivot.rotation.set(0.28 + (dst.rx - 0.28) * ee, 0, 0.18 * (1 - ee) + dst.rz * ee)
+        halo.position.set(haloPos.x + destX * ee, haloPos.y + destY * ee, haloPos.z)
         halo.scale.set(halo.scale.x * sc, halo.scale.y * sc, halo.scale.z)
       } else {
         core.pivot.position.set(0, 0, 0)
@@ -348,6 +365,14 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
         core.pivot.rotation.set(0.28, 0, 0.18)
         halo.position.copy(haloPos)
       }
+      if (world.coreMode !== lastMode) {
+        lastMode = world.coreMode
+        coreWasOk = false // cambio de encuadre: se vuelve a avisar cuando quede asentado (tambien sin animacion)
+      }
+      const coreOk = settled && cm === cmT
+      if (coreOk && !coreWasOk) world.arriveSubs.forEach((f) => f('hub'))
+      coreWasOk = coreOk
+      world.coreReady = () => coreWasOk
       amb.intensity = 2.0 - 0.1 * e
       sun.intensity = 2.2 + 0.1 * e
       sun.position.set(-4 + 9 * e, 5 - 2 * e, 7 - e)
@@ -357,7 +382,7 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
       if (moving) {
         fx.dir = fwd ? 1 : -1
         fx.k = wp ** 1.4 * (fwd ? 1 : Math.min(1, (1 - wp) * 8)) * rd
-      } else if (now < settleUntil) fx.k *= Math.exp(-real * 5)
+      } else fx.k *= Math.exp(-real * 5) // al llegar las estelas se apagan solas (por tiempo, no por cuadros: en equipos lentos tambien)
       if (at !== 'moving' && moving) at = 'moving'
 
       camera.updateMatrixWorld() // en el primer frame aun no se ha renderizado: sin esto toScreen da NaN
@@ -372,13 +397,12 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
         const now2: 'home' | WarpDest = world.target === 1 ? key! : 'home'
         if (at !== now2) {
           at = now2
-          settleUntil = now + 1000
           if (now2 === 'home') {
             world.key = null
             fx.dir = 1
           }
           world.onArrive?.(now2)
-          world.arriveSubs.forEach((f) => f(now2))
+          if (now2 !== 'hub') world.arriveSubs.forEach((f) => f(now2)) // la llegada del nucleo la avisa coreReady (cuando ademas termina de acomodarse)
         }
       }
     },

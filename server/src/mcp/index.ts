@@ -18,6 +18,28 @@ import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
 import { comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
 import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
+import {
+  campanasVer,
+  competidorActualizar,
+  competidorCrear,
+  competidorKeywords,
+  competidoresListar,
+  competidorVer,
+  contenidoActualizar,
+  contenidoCrear,
+  contenidoMover,
+  contenidosListar,
+  contenidoVer,
+  kwActualizar,
+  kwContenido,
+  kwGuardar,
+  kwIdea,
+  kwInvestigar,
+  kwListar,
+  kwSerp,
+  kwSerpAviso,
+  kwVer,
+} from '../services/marketing.ts'
 import { currentVersionString, versionesListar, versionHeader, versionPublicar, versionVer } from '../services/versiones.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 import { finanzasResumen } from '../services/finanzas.ts'
@@ -105,6 +127,27 @@ const TOOLS: Tool[] = [
   { name: 'hayai_sistema_actualizar', op: sistemaActualizar, scope: 'write', description: 'Edita un sistema (campos de hayai_sistema_crear; null borra un dato; activo=false lo oculta). Cambiar una URL reinicia su semáforo.' },
   { name: 'hayai_sistema_verificar', op: sistemaVerificar, scope: 'write', description: 'Verifica un sistema ahora (GET a su URL; 2xx/3xx = arriba). Un fallo se confirma con un segundo intento antes de declararlo caído.' },
   { name: 'hayai_marketing_embudo', op: marketingEmbudo, scope: 'read', description: 'Embudo del planeta Marketing: posibles clientes por etapa abierta con su valor mensual y ponderado, cierres (ganados, perdidos y tasa) de los últimos dias (7-365, def. 90), cohorte por origen y los leads de Meta Ads de 30 días.' },
+  // Central de marketing (v1.7.5): keywords, competidores, contenido y campañas (solo lectura).
+  { name: 'hayai_kw_investigar', op: kwInvestigar, scope: 'read', description: 'Investiga una palabra semilla con el autocompletado de Google (gratis, sin llave): devuelve sugerencias y preguntas tipo «la gente también pregunta», cada una con la intención sugerida (informacional | comercial | local | marca) y si ya está guardada. No guarda nada: usa hayai_kw_guardar con las que sirvan.' },
+  { name: 'hayai_kw_guardar', op: kwGuardar, scope: 'write', description: 'Guarda una keyword (texto; intencion y fuente opcionales: autocompletado | serp | manual) o varias a la vez (items=[{texto, intencion?, fuente?}], hasta 100). Sin duplicados: si ya existe (sin importar mayúsculas ni acentos) devuelve la existente con creada=false (✓ Guardada). Estado inicial: por_atacar.' },
+  { name: 'hayai_kw_listar', op: kwListar, scope: 'read', description: 'Keywords guardadas (paginado, más recientes primero). Filtros: q (busca en el texto), intencion, estado (por_atacar | en_contenido | posicionada | descartada) y fuente. meta.por_estado trae los conteos.' },
+  { name: 'hayai_kw_ver', op: kwVer, scope: 'read', description: 'Una keyword con su último SERP consultado (posición, título, dominio y el competidor marcado si aparece) y las piezas de contenido vinculadas.' },
+  { name: 'hayai_kw_actualizar', op: kwActualizar, scope: 'write', description: 'Cambia el estado (por_atacar | en_contenido | posicionada | descartada; descartar es estado=descartada), la intención o el texto de una keyword.' },
+  { name: 'hayai_kw_serp_aviso', op: kwSerpAviso, scope: 'read', description: 'Antes de pedir el SERP real: devuelve el aviso «Esta consulta consume saldo de tu cuenta de Brightdata» con el costo estimado, si Brightdata está conectado y el último SERP guardado. No gasta nada.' },
+  { name: 'hayai_kw_serp', op: kwSerp, scope: 'write', description: 'SERP real: top 10 de Google para la keyword vía Brightdata. CONSUME SALDO de Brightdata: sin confirmar_costo=true responde 409 con el costo estimado y no consulta nada. Guarda el resultado y marca los competidores que aparecen. Muéstrale el costo al usuario antes de confirmar.' },
+  { name: 'hayai_kw_idea', op: kwIdea, scope: 'write', description: 'Crea una idea de contenido en el feed vinculada a la keyword, firmada por quien tiene la llave. Una sola por keyword (si ya existe, creada=false).' },
+  { name: 'hayai_kw_contenido', op: kwContenido, scope: 'write', description: 'Mueve la keyword a contenido: crea una pieza en «Idea» (titulo, responsable, fecha_objetivo y notas opcionales; por defecto el responsable es quien tiene la llave) y pasa la keyword a «En contenido». Si ya tiene una pieza abierta, devuelve esa (creado=false).' },
+  { name: 'hayai_competidores_listar', op: competidoresListar, scope: 'read', description: 'Competidores registrados a mano (paginado). Filtros: q y archivados (excluir | incluir | solo).' },
+  { name: 'hayai_competidor_ver', op: competidorVer, scope: 'read', description: 'Un competidor con «lo que sabemos»: los hallazgos del espía de anuncios (feed, fuentes espia-…) que lo mencionan por nombre. Si no hay, la lista viene vacía.' },
+  { name: 'hayai_competidor_crear', op: competidorCrear, scope: 'write', description: 'Registra un competidor. Solo nombre es obligatorio; web, instagram y notas son opcionales. La fecha de alta es la de hoy.' },
+  { name: 'hayai_competidor_actualizar', op: competidorActualizar, scope: 'write', description: 'Edita un competidor (nombre, web, instagram, notas) o lo archiva/restaura con archivado=true|false.' },
+  { name: 'hayai_competidor_keywords', op: competidorKeywords, scope: 'read', description: 'En qué keywords aparece el competidor según los SERP YA consultados (por su web o su Instagram). No consulta nada nuevo ni gasta saldo.' },
+  { name: 'hayai_contenidos_listar', op: contenidosListar, scope: 'read', description: 'Tablero de contenido (Idea | En producción | Publicado), más cercano a vencer primero. Filtros: estado (idea | produccion | publicado), responsable, keyword_id, archivados. Cada pieza trae semaforo (vencida | proxima | en_plazo) mientras no esté publicada.' },
+  { name: 'hayai_contenido_ver', op: contenidoVer, scope: 'read', description: 'Una pieza de contenido con su keyword, responsable, fecha objetivo y, si está publicada, dónde y el enlace.' },
+  { name: 'hayai_contenido_crear', op: contenidoCrear, scope: 'write', description: 'Crea una pieza en «Idea»: titulo (obligatorio), keyword_id, responsable (por defecto quien tiene la llave), fecha_objetivo y notas.' },
+  { name: 'hayai_contenido_actualizar', op: contenidoActualizar, scope: 'write', description: 'Edita una pieza (titulo, keyword_id, responsable, fecha_objetivo, notas; publicado_en y enlace solo si ya está publicada) o la archiva con archivado=true.' },
+  { name: 'hayai_contenido_mover', op: contenidoMover, scope: 'write', description: 'Mueve la pieza en el tablero: estado = idea | produccion | publicado. Publicar EXIGE publicado_en (dónde se publicó) y enlace (http/https); sin ellos responde 400.' },
+  { name: 'hayai_campanas_ver', op: campanasVer, scope: 'read', description: 'Campañas de Meta Ads en SOLO LECTURA: gasto, leads y costo por lead (CPL) de los últimos dias (7-90, def. 30) por campaña, con totales y filtro por cuenta. Si no hay credenciales en el servidor responde conectado=false con el motivo. Nada crea, edita ni pausa campañas.' },
   // Feed de oportunidades: lo que las máquinas y los agentes ENCONTRARON (la bitácora es lo que el equipo HIZO). Mismo servicio que POST /api/v1/feed.
   { name: 'hayai_feed_listar', op: feedListar, scope: 'read', description: 'Feed de oportunidades del planeta HAYAI (paginado, lo más reciente primero): ideas del radar, prospectos de Growi, alertas de competencia, noticias y propuestas manuales. Filtros: tipo (idea | prospecto | alerta | noticia | oportunidad | proyecto), estado (el que ve el socio dueño de la llave: nuevo | revisado | descartado | convertido), fuente (p. ej. growi, radar-hayai, muse-elis, manual), categoria (p. ej. restaurante, panaderia, salud; sin_categoria para los que no tienen), guardado=true (solo los que guardó este socio) y q (busca en título y resumen). Revisado, descartado y guardado son PERSONALES de cada socio; convertido es global. Cada ítem trae mi_estado, guardado y datos (JSON libre: negocio, fugas, guion, contacto, origen_url, urls, métricas). meta.nuevos es el contador del hub; meta trae también guardados y los conteos por estado, tipo, fuente y categoría. Úsalo antes de publicar para no repetir lo que ya está.' },
   { name: 'hayai_feed_publicar', op: feedPublicar, scope: 'write', description: 'Publica en el feed de oportunidades. Un ítem: titulo (máx. 160), tipo, fuente (origen lógico en minúsculas: growi para lo que encuentra Growi, radar-hayai, muse-<socio>, manual), categoria opcional (restaurante, panaderia, salud, mercado, servicios…), resumen opcional (corto: dos frases), datos opcional (objeto JSON libre: negocio, fugas, guion, contacto {telefono, whatsapp, correo, web, instagram, facebook}, origen_url para noticias, urls, metricas, origen) y fecha opcional del hallazgo (no futura). clave_externa hace la publicación idempotente: la misma (fuente, clave_externa) no se duplica (devuelve el ítem existente con creado=false; si el ítem no tenía categoría, se la pone), así que reintentar es seguro; úsala siempre que la fuente tenga un id propio. Varios a la vez: items=[{…}] (hasta 50; una siembra de 20 negocios es una sola llamada). Quién publica se toma de la llave. Alerta, noticia y prospecto avisan en la campana (agrupados: un lote es un solo aviso).' },

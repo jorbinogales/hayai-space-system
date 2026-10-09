@@ -104,6 +104,7 @@ export const fichaShape = {
   etiquetas: z.array(tag).max(10, 'Máximo 10 etiquetas').optional(), // [] las quita todas
   redes: z.array(social).max(8, 'Máximo 8 redes').optional(), // reemplazo completo; [] las quita todas
   origen: z.enum(SOURCES, `Origen inválido (${SOURCES.join(', ')})`).nullable().optional(),
+  utm_source: text(80).nullable().optional(), // texto libre del utm_source con que llegó el lead (campaña, anuncio, página…)
   fecha_implementacion: isoDate.nullable().optional(), // dia en que se implementa el sistema (obligatorio al ganar)
   // pipeline (solo posibles clientes). etapa: ver GET /pipeline/etapas (los nombres de la fase 1 se siguen aceptando).
   etapa: z.string('Etapa inválida').trim().min(1, 'Etapa inválida').max(30, 'Etapa inválida').optional(),
@@ -328,6 +329,7 @@ export async function applyClientPatch(c: PoolClient, actorId: string, clientId:
   if (p.etiquetas !== undefined) set('tags', normTags(p.etiquetas), '::text[]')
   if (p.redes !== undefined) set('socials', JSON.stringify(normSocials(p.redes)), '::jsonb')
   if (p.origen !== undefined) set('lead_source', p.origen)
+  if (p.utm_source !== undefined) set('utm_source', p.utm_source)
   if (implementation !== undefined) set('implementation_date', implementation, '::date')
   if (p.valor_estimado !== undefined) set('est_value', p.valor_estimado)
   if (p.cierre_previsto !== undefined) set('expected_close', p.cierre_previsto)

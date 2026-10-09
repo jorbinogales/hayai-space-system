@@ -42,6 +42,18 @@ let bcvServer: Server
 const bcvPayload: { principal: unknown; respaldo: unknown } = { principal: null, respaldo: null }
 const bcvHits = { principal: 0, respaldo: 0 }
 
+// Servicios externos falsos de la Central de marketing: autocompletado de Google, Brightdata (SERP) y Meta (campañas, solo lectura).
+const EXT_PORT = 3195
+let ext: Server
+const extDown = { google: false, brightdata: false, meta: false }
+const extHits = { google: [] as string[], brightdata: [] as unknown[], meta: [] as string[] }
+const SERP_FALSO = [
+  { rank: 1, title: 'Guía de automatización para negocios', link: 'https://www.ejemplo-blog.com/guia' },
+  { rank: 2, title: 'Rivalia Sistemas | Automatización', link: 'https://rivalia.com.ve/servicios' },
+  { rank: 3, title: 'Rivalia (@rivaliave) • Instagram', link: 'https://www.instagram.com/rivaliave/' },
+  { rank: 4, title: 'Otro sitio', link: 'https://otro.net/x' },
+]
+
 type Res = { status: number; body: any; headers: Headers; full?: any }
 type Opts = { method?: string; body?: unknown; raw?: string; key?: string | null; headers?: Record<string, string> }
 
@@ -109,6 +121,45 @@ before(async () => {
   })
   await new Promise<void>((ok) => graph.listen(GRAPH_PORT, ok))
 
+  ext = createServer((req, res) => {
+    const url = req.url ?? ''
+    const json = (o: unknown, status = 200) => void res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(o))
+    if (url.startsWith('/complete/search')) {
+      const q = new URL(url, 'http://x').searchParams.get('q') ?? ''
+      extHits.google.push(q)
+      if (extDown.google) return void res.writeHead(500).end('{}')
+      // «semilla», «semilla » y «cómo semilla…»: cada consulta devuelve dos variantes (hay repetidas a propósito, y una con la semilla igual)
+      return json([q, [`${q.trim()} precio`, `${q.trim()} en barquisimeto`, q.trim().length ? q.trim() : 'x']])
+    }
+    if (url.startsWith('/request')) {
+      let raw = ''
+      req.on('data', (c) => (raw += c))
+      req.on('end', () => {
+        extHits.brightdata.push({ auth: req.headers.authorization, body: JSON.parse(raw || '{}') })
+        if (extDown.brightdata) return json({}, 500)
+        json({ organic: SERP_FALSO })
+      })
+      return
+    }
+    // Meta Marketing API: /v21.0/act_111, /act_111/campaigns, /act_111/insights (y act_222 en otra moneda)
+    const m = /^\/v[\d.]+\/act_(\d+)(\/campaigns|\/insights)?/.exec(url)
+    if (m) {
+      extHits.meta.push(url)
+      if (extDown.meta) return json({}, 500)
+      const [, cuenta, sub] = m
+      if (!sub) return json({ name: cuenta === '111' ? 'Cuenta HAYAI' : 'Cuenta Dos', currency: cuenta === '111' ? 'USD' : 'EUR' })
+      if (sub === '/campaigns') return json({ data: cuenta === '111' ? [{ id: 'c1', name: 'Leads octubre', effective_status: 'ACTIVE' }, { id: 'c2', name: 'Marca', effective_status: 'PAUSED' }] : [{ id: 'c9', name: 'Otra cuenta', effective_status: 'ACTIVE' }] })
+      return json({
+        data:
+          cuenta === '111'
+            ? [{ campaign_id: 'c1', campaign_name: 'Leads octubre', spend: '30.00', actions: [{ action_type: 'link_click', value: '90' }, { action_type: 'lead', value: '6' }] }]
+            : [{ campaign_id: 'c9', campaign_name: 'Otra cuenta', spend: '10.00', actions: [] }],
+      })
+    }
+    res.writeHead(404).end('{}')
+  })
+  await new Promise<void>((ok) => ext.listen(EXT_PORT, ok))
+
   target = createServer((req, res) => {
     if (req.url?.startsWith('/siempre')) return void res.writeHead(200).end('ok')
     if (req.url?.startsWith('/redir')) return void res.writeHead(302, { location: `http://localhost:${TARGET_PORT}/health` }).end()
@@ -138,6 +189,16 @@ before(async () => {
     META_GRAPH_BASE: `http://localhost:${GRAPH_PORT}`,
     META_LEADS_OWNER: 'Elis,Jorbi',
     META_RETRY_MS: '400',
+    // Central de marketing: todo apunta a servidores falsos locales (nunca a internet ni a saldo real).
+    GOOGLE_SUGGEST_BASE: `http://localhost:${EXT_PORT}`,
+    BRIGHTDATA_BASE: `http://localhost:${EXT_PORT}`,
+    BRIGHTDATA_API_KEY: 'bd-llave-de-prueba',
+    BRIGHTDATA_SERP_ZONE: 'serp_zona_prueba',
+    BRIGHTDATA_SERP_COST_USD: '0.002',
+    META_ADS_BASE: `http://localhost:${EXT_PORT}`,
+    META_ADS_TOKEN: 'token-ads-de-prueba',
+    META_AD_ACCOUNT_IDS: 'act_111',
+    META_ADS_CACHE_MS: '0',
     // Hub y cobros: el mapeo de documentos se siembra desde el entorno (aquí, cédulas inventadas); el vigilante de sistemas
     // corre rápido y puede apuntar a localhost; la confirmación de una caída espera 100 ms en vez de 20 s.
     RECEIVER_DOCUMENTS: 'V-12345678=Jorbi,V-11111111=Nadie,roto,E-22222222=Leandro',
@@ -176,6 +237,7 @@ after(async () => {
   graph?.close()
   target?.close()
   bcvServer?.close()
+  ext?.close()
   await embedded?.stop().catch(() => {})
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 })
 })
@@ -724,10 +786,10 @@ describe('MCP', () => {
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 77) // lectura + escritura
+    assert.equal(names.length, 97) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 88)
+    assert.equal(full.length, 108)
     assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -3363,7 +3425,7 @@ describe('Marketing: embudo y decisión 3 (versión de la propuesta en la bitác
     assert.ok(r.body.etapas.every((e: any) => typeof e.posibles === 'number' && typeof e.valor_ponderado === 'number'))
     assert.ok(Array.isArray(r.body.por_origen))
     assert.ok('tasa_cierre' in r.body.cierres)
-    assert.deepEqual(Object.keys(r.body.meta_ads).sort(), ['con_error', 'duplicados', 'leads_30d', 'procesados'])
+    assert.deepEqual(Object.keys(r.body.meta_ads).sort(), ['con_error', 'conectado', 'duplicados', 'leads_30d', 'procesados', 'total'])
     assert.equal((await api('/marketing/embudo?dias=3')).status, 400)
     assert.equal(data(await mcp('hayai_marketing_embudo', { dias: 30 })).dias, 30)
   })
@@ -3465,7 +3527,7 @@ describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la ta
     bcvPayload.principal = oficial(873.87, caracas())
     const r = await api('/version')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.equal(r.body.version, '1.7.0')
+    assert.equal(r.body.version, '1.7.5')
     assert.equal(r.body.hoy, caracas())
     assert.deepEqual({ ...r.body.bcv, actualizada_el: '<t>' }, { moneda: 'USD', tasa: 873.87, fecha: caracas(), es_de_hoy: true, fuente: `localhost:${BCV_PORT}`, actualizada_el: '<t>' })
     const hits = bcvHits.principal
@@ -3521,7 +3583,7 @@ describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la ta
 
   it('MCP y web: la misma respuesta; sin llave o sin sesión 401', async () => {
     const m = data(await mcp('hayai_version_ver', {}))
-    assert.equal(m.version, '1.7.0')
+    assert.equal(m.version, '1.7.5')
     assert.equal(m.bcv.tasa, 890)
     assert.equal((await http(`${ROOT}/api/v1/version`)).status, 401)
     const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
@@ -3537,11 +3599,12 @@ describe('Historial de versiones (changelog)', () => {
   const hoy = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
   const publicar = (b: Record<string, unknown>, key = KEY) => api('/versiones', { key, body: b })
 
-  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6, 1.6.7 y 1.7.0 vienen publicadas; la más nueva primero y marcada como actual', async () => {
+  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6, 1.6.7, 1.7.0 y 1.7.5 vienen publicadas; la más nueva primero y marcada como actual', async () => {
     const r = await api('/versiones')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.7.0', true], ['1.6.7', false], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
-    const [v17, v167, v166, , v16, v15, v10] = r.body.data
+    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.7.5', true], ['1.7.0', false], ['1.6.7', false], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
+    const [v175, v17, v167, v166, , v16, v15, v10] = r.body.data
+    assert.deepEqual([v175.titulo, v175.autor, v175.fecha, v175.cambios.length], ['Central de marketing', 'Equipo HAYAI', '2026-10-08', 12])
     assert.deepEqual([v167.titulo, v167.autor, v167.fecha, v167.cambios.length], ['Órbita fina III', 'Equipo HAYAI', '2026-10-08', 4])
     assert.deepEqual([v166.titulo, v166.autor, v166.fecha, v166.cambios.length], ['Órbita fina II', 'Equipo HAYAI', '2026-10-08', 7])
     assert.deepEqual([v17.titulo, v17.autor, v17.fecha, v17.cambios.length], ['Chat interno', 'Equipo HAYAI', '2026-10-08', 5])
@@ -3555,15 +3618,15 @@ describe('Historial de versiones (changelog)', () => {
 
   it('POST /versiones: el autor es el dueño de la llave, la fecha por defecto es hoy, pasa a ser la actual y avisa al equipo', async () => {
     const base = (await api('/actividad?per_page=1', { key: KEY_J })).body.meta.ultimo_id as number
-    const r = await publicar({ version: '1.7.1', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
+    const r = await publicar({ version: '1.7.6', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
     assert.equal(r.status, 201, JSON.stringify(r.body))
-    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.7.1', 'Leandro', hoy(), true, 2])
-    assert.equal((await api('/version')).body.version, '1.7.1')
-    assert.equal((await api('/versiones')).body.data[0].version, '1.7.1')
+    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.7.6', 'Leandro', hoy(), true, 2])
+    assert.equal((await api('/version')).body.version, '1.7.6')
+    assert.equal((await api('/versiones')).body.data[0].version, '1.7.6')
     assert.equal((await api('/versiones')).body.data.filter((v: any) => v.actual).length, 1)
     const ev = ((await api(`/actividad?desde_id=${base}&orden=asc`, { key: KEY_J })).body.data as any[]).filter((e) => e.tipo === 'version_nueva')
     assert.equal(ev.length, 1)
-    assert.equal(ev[0].texto, 'Nueva actualización v1.7.1 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
+    assert.equal(ev[0].texto, 'Nueva actualización v1.7.6 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
     assert.equal(ev[0].propia, false)
     // y le llega a TODOS, también a quien la publicó (su pestaña abierta también debe enterarse)
     const mio = ((await api(`/actividad?desde_id=${base}&orden=asc`)).body.data as any[]).find((e) => e.tipo === 'version_nueva')
@@ -3575,7 +3638,7 @@ describe('Historial de versiones (changelog)', () => {
 
   it('el orden es numérico (1.10.0 va después de 1.9.0) y la versión nueva siempre debe ser mayor que la actual', async () => {
     assert.equal((await publicar({ version: '1.10.0', cambios: ['x'] })).status, 201)
-    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.7.1', '1.7.0', '1.6.7', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
+    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.7.6', '1.7.5', '1.7.0', '1.6.7', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
     assert.equal((await api('/version')).body.version, '1.10.0')
     for (const v of ['1.10.0', '1.9.5', '1.4.0', '0.9.0']) {
       const r = await publicar({ version: v, cambios: ['x'] })
@@ -4910,5 +4973,483 @@ describe('Chat interno', () => {
     await assert.rejects(ins('body, source', `'hola', 'Mala Fuente'`), /check/i)
     await assert.rejects(ins('body, edited_at', `'hola', now() - interval '1 day'`), /chat_messages_edited_ck/)
     await assert.rejects(admin.query(`INSERT INTO chat_mentions (message_id, user_id) VALUES ($1, $2)`, [NOPE, uid.Elis]), /foreign key/i)
+  })
+})
+
+describe('1.7.5 Central de marketing', () => {
+  let n = 0
+  const rpc = (method: string, params: unknown = {}, key: string | null = KEY) =>
+    http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: ++n, method, params } })
+  const tool = async (name: string, args: unknown = {}, key: string | null = KEY) => (await rpc('tools/call', { name, arguments: args }, key)).body
+  const dato = (b: any) => JSON.parse(b.result.content[0].text)
+  const mk = (path: string, o: Opts = {}) => api(`/marketing${path}`, o)
+  let cookie = ''
+  let KEY_R = ''
+  let kwPrecio = ''
+  let comp = ''
+  let pieza = ''
+
+  before(async () => {
+    KEY_R = newKey('Jorbi', 'solo-lectura-mk', 'read')
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+  })
+
+  // ---------- Parte 1: origen y embudo ----------
+  it('origen: un posible cliente nuevo nunca queda sin origen (por defecto «otro»), no admite null y guarda utm_source', async () => {
+    const a = await api('/clientes', { body: { nombre: 'Lead sin decir origen', estado: 'posible' } })
+    assert.equal(a.status, 201, JSON.stringify(a.body))
+    assert.equal(a.body.origen, 'otro')
+    const b = await api('/clientes', { body: { nombre: 'Lead de Instagram', estado: 'posible', origen: 'instagram', utm_source: 'bio_link' } })
+    assert.deepEqual([b.body.origen, b.body.utm_source], ['instagram', 'bio_link'])
+    const nulo = await api('/clientes', { body: { nombre: 'Lead nulo', estado: 'posible', origen: null } })
+    assert.equal(nulo.status, 400)
+    assert.match(nulo.body.error.message, /origen/)
+    const malo = await api('/clientes', { body: { nombre: 'Lead raro', estado: 'posible', origen: 'tiktok' } })
+    assert.equal(malo.status, 400)
+    // un cliente activo (alta directa) no se obliga: el origen es del embudo
+    assert.equal((await api('/clientes', { body: { nombre: 'Cliente directo' } })).body.origen, null)
+    const p = await api(`/clientes/${b.body.id}`, { method: 'PATCH', body: { utm_source: 'anuncio_2' } })
+    assert.equal(p.body.utm_source, 'anuncio_2')
+    assert.equal((await api(`/clientes/${b.body.id}`, { method: 'PATCH', body: { utm_source: null } })).body.utm_source, null)
+  })
+
+  it('web: crear un posible cliente manda el origen (obligatorio, por defecto «otro») y utmSource', async () => {
+    const post = (b: unknown) =>
+      fetch(`${ROOT}/api/prospects`, { method: 'POST', headers: { 'content-type': 'application/json', cookie, 'x-csrf-token': 'x' }, body: JSON.stringify(b) })
+    const base = { name: 'Web Lead', avatar: 'nova', project: { name: 'Sistema web', icon: 'globe', owner: 'Jorbi' } }
+    const r1 = await post(base)
+    assert.equal(r1.status, 201, await r1.clone().text())
+    assert.equal(((await r1.json()) as any).client.source, 'otro')
+    const r2 = await post({ ...base, name: 'Web Lead 2', source: 'whatsapp', utmSource: 'qr_local' })
+    const j2 = (await r2.json()) as any
+    assert.deepEqual([j2.client.source, j2.client.utmSource], ['whatsapp', 'qr_local'])
+    assert.equal((await post({ ...base, name: 'Web Lead 3', source: 'tiktok' })).status, 400)
+  })
+
+  it('embudo: el desglose por origen suma exacto (abiertos + ganados + perdidos + descartados + alta directa) y trae el estado de Meta', async () => {
+    await admin.query(`UPDATE clients SET lead_source = NULL WHERE lead_source IS NOT NULL AND name LIKE 'Lead%'`)
+    const r = await mk('/embudo')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    for (const o of r.body.por_origen) {
+      assert.equal(o.abiertos + o.ganados + o.perdidos + o.descartados + o.directos, o.entraron, JSON.stringify(o))
+      assert.ok(o.directos >= 0)
+    }
+    assert.equal(r.body.meta_ads.conectado, true)
+    assert.ok(r.body.meta_ads.total >= r.body.meta_ads.con_error)
+    const sin = r.body.por_origen.find((o: any) => o.origen === 'sin_origen')
+    assert.ok(sin && sin.directos >= 1, 'el cliente directo explica los que no son abiertos ni cerrados')
+  })
+
+  it('embudo: el selector de período recalcula (una alta vieja sale de 30 días y entra en 90)', async () => {
+    const c = await api('/clientes', { body: { nombre: 'Lead de hace 60 días', estado: 'posible', origen: 'referido' } })
+    const entraron = (r: any, origen = 'referido') => r.body.por_origen.find((o: any) => o.origen === origen)?.entraron ?? 0
+    const corto0 = entraron(await mk('/embudo?dias=30'))
+    const largo0 = entraron(await mk('/embudo?dias=90'))
+    await admin.query(`UPDATE clients SET created_at = now() - interval '60 days' WHERE id = $1`, [c.body.id])
+    const corto = await mk('/embudo?dias=30')
+    const largo = await mk('/embudo?dias=90')
+    assert.equal(corto.body.dias, 30)
+    assert.equal(largo.body.dias, 90)
+    assert.equal(entraron(corto), corto0 - 1, 'a 30 días ya no cuenta')
+    assert.equal(entraron(largo), largo0, 'a 90 días sigue contando')
+  })
+
+  // ---------- Parte 2: keywords ----------
+  it('investigar: sugerencias y preguntas del autocompletado, sin repetir la semilla ni entre sí, con intención sugerida', async () => {
+    const r = await mk('/keywords/investigar?semilla=sistema%20de%20citas')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.fallidas, 0)
+    const textos = r.body.sugerencias.map((s: any) => s.texto)
+    assert.equal(new Set(textos.map((t: string) => t.toLowerCase())).size, textos.length, 'sin repetidas')
+    assert.ok(!textos.includes('sistema de citas'), 'la semilla no se sugiere a sí misma')
+    const precio = r.body.sugerencias.find((s: any) => s.texto === 'sistema de citas precio')
+    assert.deepEqual([precio.intencion_sugerida, precio.guardada], ['comercial', false])
+    assert.equal(r.body.sugerencias.find((s: any) => s.texto === 'sistema de citas en barquisimeto').intencion_sugerida, 'local')
+    assert.ok(r.body.sugerencias.some((s: any) => s.tipo === 'pregunta'), 'trae preguntas tipo «la gente también pregunta»')
+    assert.ok(extHits.google.length >= 11)
+    assert.equal((await mk('/keywords/investigar')).status, 400, 'la semilla es obligatoria')
+  })
+
+  it('investigar: si el autocompletado cae responde 502 con un mensaje claro (y se puede cargar a mano)', async () => {
+    extDown.google = true
+    try {
+      const r = await mk('/keywords/investigar?semilla=cualquier%20cosa')
+      assert.equal(r.status, 502)
+      assert.match(r.body.error.message, /no respondió.*a mano/i)
+    } finally {
+      extDown.google = false
+    }
+    const manual = await mk('/keywords', { body: { texto: 'Carga a mano', fuente: 'manual' } })
+    assert.equal(manual.status, 201)
+    assert.equal(manual.body.fuente, 'manual')
+  })
+
+  it('guardar en lote: sin duplicados (mayúsculas y acentos no cuentan), la guardada sale como «guardada» al investigar', async () => {
+    const r = await mk('/keywords', { body: { items: [{ texto: 'Sistema de citas precio', fuente: 'autocompletado' }, { texto: 'sistema de citas en barquisimeto', intencion: 'local', fuente: 'autocompletado' }, { texto: 'SISTEMA DE CITAS PRECIO' }, { texto: 'cómo automatizar mi negocio' }] } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.deepEqual([r.body.recibidas, r.body.creadas, r.body.duplicadas], [4, 3, 1])
+    assert.equal(r.body.data[0].intencion, 'comercial')
+    assert.equal(r.body.data[0].estado, 'por_atacar')
+    assert.equal(r.body.data[0].guardada_por, 'Leandro')
+    assert.equal(r.body.data[2].creada, false)
+    assert.equal(r.body.data[2].id, r.body.data[0].id)
+    kwPrecio = r.body.data[0].id
+    const otra = await mk('/keywords', { body: { texto: 'cOmO AUTOMATIZAR mi negocio' } })
+    assert.equal(otra.status, 200, 'ya estaba: 200 y creada=false')
+    assert.equal(otra.body.creada, false)
+    const inv = await mk('/keywords/investigar?semilla=sistema%20de%20citas')
+    const s = inv.body.sugerencias.find((x: any) => x.texto === 'sistema de citas precio')
+    assert.deepEqual([s.guardada, s.keyword_id], [true, kwPrecio])
+    // forma: o una o lista
+    assert.equal((await mk('/keywords', { body: { texto: 'x', items: [{ texto: 'y' }] } })).status, 400)
+    assert.equal((await mk('/keywords', { body: {} })).status, 400)
+    assert.equal((await mk('/keywords', { body: { items: [] } })).status, 400)
+  })
+
+  it('listar: buscador y filtros por intención y estado; actualizar estado/intención; no se renombra a una que ya existe', async () => {
+    const todas = await mk('/keywords?per_page=100')
+    assert.ok(todas.body.meta.total >= 4)
+    assert.equal(todas.body.meta.por_estado.por_atacar, todas.body.meta.total)
+    assert.deepEqual((await mk('/keywords?q=CITAS')).body.data.map((k: any) => k.texto).sort(), ['Sistema de citas precio', 'sistema de citas en barquisimeto'])
+    assert.deepEqual((await mk('/keywords?intencion=local')).body.data.map((k: any) => k.texto), ['sistema de citas en barquisimeto'])
+    assert.equal((await mk('/keywords?intencion=otra')).status, 400)
+    const d = await mk(`/keywords/${kwPrecio}`, { method: 'PATCH', body: { estado: 'descartada' } })
+    assert.equal(d.body.estado, 'descartada')
+    assert.equal((await mk('/keywords?estado=descartada')).body.data.length, 1)
+    assert.equal((await mk(`/keywords/${kwPrecio}`, { method: 'PATCH', body: { estado: 'por_atacar', intencion: 'comercial' } })).body.estado, 'por_atacar')
+    assert.equal((await mk(`/keywords/${kwPrecio}`, { method: 'PATCH', body: { texto: 'SISTEMA de citas en Barquisimeto' } })).status, 409)
+    assert.equal((await mk(`/keywords/${kwPrecio}`, { method: 'PATCH', body: {} })).status, 400)
+    assert.equal((await mk(`/keywords/${NOPE}`)).status, 404)
+  })
+
+  it('SERP: el aviso de costo va primero; sin confirmar_costo NO se llama a Brightdata; confirmado, guarda el top 10 (y reconsultar no es gratis)', async () => {
+    const aviso = await mk(`/keywords/${kwPrecio}/serp-aviso`)
+    assert.equal(aviso.status, 200, JSON.stringify(aviso.body))
+    assert.equal(aviso.body.conectado, true)
+    assert.equal(aviso.body.costo_estimado_usd, 0.002)
+    assert.match(aviso.body.mensaje, /Esta consulta consume saldo de tu cuenta de Brightdata/)
+    assert.equal(aviso.body.ultimo_serp, null)
+    const antes = extHits.brightdata.length
+    for (const body of [{}, { confirmar_costo: false }, { confirmar_costo: 'false' }]) {
+      const r = await mk(`/keywords/${kwPrecio}/serp`, { body })
+      assert.equal(r.status, 409, JSON.stringify(body))
+      assert.equal(r.body.error.requiere_confirmacion, true)
+      assert.equal(r.body.error.costo_estimado_usd, 0.002)
+      assert.match(r.body.error.message, /consume saldo/)
+    }
+    assert.equal(extHits.brightdata.length, antes, 'sin confirmación no se gasta nada')
+    const ok = await mk(`/keywords/${kwPrecio}/serp`, { body: { confirmar_costo: true } })
+    assert.equal(ok.status, 200, JSON.stringify(ok.body))
+    assert.equal(extHits.brightdata.length, antes + 1)
+    const llamada = extHits.brightdata.at(-1) as any
+    assert.equal(llamada.auth, 'Bearer bd-llave-de-prueba')
+    assert.equal(llamada.body.zone, 'serp_zona_prueba')
+    assert.match(llamada.body.url, /google\.com\/search\?q=Sistema%20de%20citas%20precio/)
+    assert.deepEqual(ok.body.resultados.map((x: any) => [x.posicion, x.dominio]), [[1, 'ejemplo-blog.com'], [2, 'rivalia.com.ve'], [3, 'instagram.com'], [4, 'otro.net']])
+    assert.equal(ok.body.costo_estimado_usd, 0.002)
+    assert.ok(ok.body.resultados.every((x: any) => x.competidor === null), 'aún no hay competidores')
+    // queda guardado en la ficha y en el aviso
+    assert.equal((await mk(`/keywords/${kwPrecio}`)).body.serp.resultados.length, 4)
+    assert.ok((await mk(`/keywords/${kwPrecio}/serp-aviso`)).body.ultimo_serp)
+    // si Brightdata falla: 502 y no se guarda un SERP nuevo
+    const filas = (await admin.query('SELECT count(*)::int AS n FROM mk_serp')).rows[0].n
+    extDown.brightdata = true
+    try {
+      const caido = await mk(`/keywords/${kwPrecio}/serp`, { body: { confirmar_costo: true } })
+      assert.equal(caido.status, 502)
+      assert.match(caido.body.error.message, /No se guardó nada/)
+    } finally {
+      extDown.brightdata = false
+    }
+    assert.equal((await admin.query('SELECT count(*)::int AS n FROM mk_serp')).rows[0].n, filas)
+    assert.equal((await mk(`/keywords/${NOPE}/serp`, { body: { confirmar_costo: true } })).status, 404)
+  })
+
+  it('SERP: una llave de solo lectura puede ver el aviso pero no gastar saldo', async () => {
+    assert.equal((await mk(`/keywords/${kwPrecio}/serp-aviso`, { key: KEY_R })).status, 200)
+    assert.equal((await mk(`/keywords/${kwPrecio}/serp`, { key: KEY_R, body: { confirmar_costo: true } })).status, 403)
+  })
+
+  it('Brightdata sin configurar: se dice sin gastar nada (503) y el aviso lo marca', async () => {
+    const { brightdataListo, serpGoogle } = await import('../src/marketingExterno.ts')
+    const guardado = { k: process.env.BRIGHTDATA_API_KEY, z: process.env.BRIGHTDATA_SERP_ZONE }
+    delete process.env.BRIGHTDATA_API_KEY
+    delete process.env.BRIGHTDATA_SERP_ZONE
+    try {
+      assert.equal(brightdataListo(), false)
+      await assert.rejects(serpGoogle('x'), (e: any) => e.status === 503 && /no está configurado/.test(e.message))
+    } finally {
+      if (guardado.k) process.env.BRIGHTDATA_API_KEY = guardado.k
+      if (guardado.z) process.env.BRIGHTDATA_SERP_ZONE = guardado.z
+    }
+  })
+
+  it('crear idea de contenido: va al feed firmada por quien la crea, vinculada a la keyword; una sola por keyword', async () => {
+    const r = await mk(`/keywords/${kwPrecio}/idea`, { body: {}, key: KEY_J })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.equal(r.body.creada, true)
+    const item = await api(`/feed/${r.body.item_id}`)
+    assert.deepEqual([item.body.tipo, item.body.fuente, item.body.publicado_por.nombre, item.body.clave_externa], ['idea', 'marketing', 'Jorbi', `kw:${kwPrecio}`])
+    assert.equal(item.body.datos.keyword_id, kwPrecio)
+    assert.equal((await mk(`/keywords/${kwPrecio}`)).body.idea_item_id, r.body.item_id)
+    const otra = await mk(`/keywords/${kwPrecio}/idea`, { body: {}, key: KEY })
+    assert.equal(otra.status, 200)
+    assert.deepEqual([otra.body.creada, otra.body.item_id], [false, r.body.item_id])
+  })
+
+  // ---------- Parte 4: contenido ----------
+  it('mover keyword a contenido: crea la pieza en Idea (responsable por defecto: quien la mueve), marca la keyword «En contenido» y no duplica', async () => {
+    const r = await mk(`/keywords/${kwPrecio}/contenido`, { body: { fecha_objetivo: '2099-01-10', notas: 'Enfocar a negocios locales' }, key: KEY_J })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    const c = r.body.contenido
+    assert.deepEqual([c.estado, c.titulo, c.keyword.texto, c.responsable.nombre, c.fecha_objetivo, c.notas], ['idea', 'Sistema de citas precio', 'Sistema de citas precio', 'Jorbi', '2099-01-10', 'Enfocar a negocios locales'])
+    assert.equal(c.feed_item_id, (await mk(`/keywords/${kwPrecio}`)).body.idea_item_id, 'conserva el vínculo con la idea del feed')
+    assert.equal(r.body.keyword.estado, 'en_contenido')
+    pieza = c.id
+    const otra = await mk(`/keywords/${kwPrecio}/contenido`, { body: {} })
+    assert.equal(otra.status, 200)
+    assert.deepEqual([otra.body.creado, otra.body.contenido_id], [false, pieza])
+  })
+
+  it('tablero: crear a mano, responsable por defecto, semáforo (vencida / próxima / en plazo) y validaciones', async () => {
+    const ayer = new Date(Date.now() - 86_400_000 * 2).toISOString().slice(0, 10)
+    const enDos = new Date(Date.now() + 86_400_000 * 2).toISOString().slice(0, 10)
+    const vencida = await mk('/contenidos', { body: { titulo: 'Reel de bienvenida', fecha_objetivo: ayer } })
+    assert.equal(vencida.status, 201, JSON.stringify(vencida.body))
+    assert.deepEqual([vencida.body.estado, vencida.body.responsable.nombre, vencida.body.keyword], ['idea', 'Leandro', null])
+    assert.equal(vencida.body.semaforo, 'vencida')
+    const proxima = await mk('/contenidos', { body: { titulo: 'Post de precios', fecha_objetivo: enDos, responsable: 'jorbi', keyword_id: kwPrecio } })
+    assert.deepEqual([proxima.body.semaforo, proxima.body.responsable.nombre, proxima.body.keyword.id], ['proxima', 'Jorbi', kwPrecio])
+    assert.equal((await mk('/contenidos', { body: { titulo: 'Sin fecha' } })).body.semaforo, null)
+    assert.equal((await mk(`/contenidos/${pieza}`)).body.semaforo, 'en_plazo')
+    for (const body of [{}, { titulo: '' }, { titulo: 'x', responsable: 'Nadie' }, { titulo: 'x', fecha_objetivo: '10/10/2026' }, { titulo: 'x', keyword_id: NOPE }]) {
+      assert.ok([400, 404].includes((await mk('/contenidos', { body })).status), JSON.stringify(body))
+    }
+    const lista = await mk('/contenidos')
+    assert.equal(lista.body.columnas.idea, lista.body.data.length)
+    assert.equal(lista.body.data[0].semaforo, 'vencida', 'lo más urgente primero')
+    assert.deepEqual((await mk('/contenidos?responsable=Jorbi')).body.data.map((c: any) => c.responsable.nombre), ['Jorbi', 'Jorbi'])
+  })
+
+  it('tablero: mover a producción; publicar EXIGE dónde y enlace (http/https); volver a atrás limpia lo publicado', async () => {
+    const prod = await mk(`/contenidos/${pieza}/mover`, { body: { estado: 'produccion' } })
+    assert.equal(prod.body.estado, 'produccion')
+    for (const body of [{ estado: 'publicado' }, { estado: 'publicado', publicado_en: 'Instagram' }, { estado: 'publicado', enlace: 'https://instagram.com/p/abc' }]) {
+      const r = await mk(`/contenidos/${pieza}/mover`, { body })
+      assert.equal(r.status, 400, JSON.stringify(body))
+      assert.ok(Array.isArray(r.body.error.faltan) && r.body.error.faltan.length >= 1)
+    }
+    assert.equal((await mk(`/contenidos/${pieza}/mover`, { body: { estado: 'publicado', publicado_en: 'Instagram', enlace: 'no es un enlace' } })).status, 400)
+    assert.equal((await mk(`/contenidos/${pieza}`)).body.estado, 'produccion', 'los intentos fallidos no movieron nada')
+    const pub = await mk(`/contenidos/${pieza}/mover`, { body: { estado: 'publicado', publicado_en: 'Instagram', enlace: 'https://instagram.com/p/abc' } })
+    assert.equal(pub.status, 200, JSON.stringify(pub.body))
+    assert.deepEqual([pub.body.estado, pub.body.publicado_en, pub.body.enlace, pub.body.semaforo], ['publicado', 'Instagram', 'https://instagram.com/p/abc', null])
+    assert.ok(pub.body.publicado_el)
+    assert.equal((await mk(`/keywords/${kwPrecio}`)).body.estado, 'en_contenido')
+    // publicada: dónde y enlace se corrigen pero no se vacían
+    assert.equal((await mk(`/contenidos/${pieza}`, { method: 'PATCH', body: { enlace: 'https://instagram.com/p/xyz' } })).body.enlace, 'https://instagram.com/p/xyz')
+    assert.equal((await mk(`/contenidos/${pieza}`, { method: 'PATCH', body: { enlace: null } })).status, 400)
+    const atras = await mk(`/contenidos/${pieza}/mover`, { body: { estado: 'idea' } })
+    assert.deepEqual([atras.body.estado, atras.body.enlace, atras.body.publicado_en, atras.body.publicado_el], ['idea', null, null, null])
+    // y antes de publicar no se pueden fijar a mano
+    assert.equal((await mk(`/contenidos/${pieza}`, { method: 'PATCH', body: { enlace: 'https://x.com/y' } })).status, 400)
+    // la base lo impone también (por si algo escribe directo)
+    await assert.rejects(admin.query(`UPDATE mk_contenidos SET estado = 'publicado' WHERE id = $1`, [pieza]))
+  })
+
+  it('tablero: editar, archivar y restaurar una pieza', async () => {
+    const e = await mk(`/contenidos/${pieza}`, { method: 'PATCH', body: { titulo: 'Guía de precios', responsable: 'Elis', fecha_objetivo: null, notas: null } })
+    assert.deepEqual([e.body.titulo, e.body.responsable.nombre, e.body.fecha_objetivo], ['Guía de precios', 'Elis', null])
+    const a = await mk(`/contenidos/${pieza}`, { method: 'PATCH', body: { archivado: true } })
+    assert.equal(a.body.archivado, true)
+    assert.ok(!(await mk('/contenidos')).body.data.some((c: any) => c.id === pieza))
+    assert.ok((await mk('/contenidos?archivados=solo')).body.data.some((c: any) => c.id === pieza))
+    assert.equal((await mk(`/contenidos/${pieza}/mover`, { body: { estado: 'produccion' } })).status, 409)
+    assert.equal((await mk(`/contenidos/${pieza}`, { method: 'PATCH', body: { archivado: false } })).body.archivado, false)
+    assert.equal((await mk(`/contenidos/${NOPE}`)).status, 404)
+  })
+
+  it('feed → contenido: «Mover a contenido» crea la pieza, conserva el vínculo (creados) y se puede deshacer', async () => {
+    const it0 = await api('/feed', { body: { titulo: 'Idea: reels de antes y después', resumen: 'Mostrar el cambio de un negocio.', tipo: 'idea', fuente: 'muse-jorbi', clave_externa: 'ct-1' } })
+    const cv = await api(`/feed/${it0.body.id}/convertir`, { body: { a: 'contenido', responsable: 'Elis', vence: '2099-02-01' }, key: KEY_J })
+    assert.equal(cv.status, 200, JSON.stringify(cv.body))
+    assert.equal(cv.body.item.estado, 'convertido')
+    assert.equal(cv.body.item.convertido.a, 'contenido')
+    const cid = cv.body.creado.id
+    assert.equal(cv.body.item.creados.contenido.id, cid)
+    assert.equal(cv.body.item.creados.contenido.por, 'Jorbi')
+    const c = (await mk(`/contenidos/${cid}`)).body
+    assert.deepEqual([c.titulo, c.estado, c.responsable.nombre, c.fecha_objetivo, c.notas, c.feed_item_id], ['Idea: reels de antes y después', 'idea', 'Elis', '2099-02-01', 'Mostrar el cambio de un negocio.', it0.body.id])
+    // no se convierte dos veces en lo mismo
+    assert.equal((await api(`/feed/${it0.body.id}/convertir`, { body: { a: 'contenido' } })).status, 409)
+    const und = await api(`/feed/${it0.body.id}/deshacer`, { body: { a: 'contenido' }, key: KEY_J })
+    assert.equal(und.status, 200, JSON.stringify(und.body))
+    assert.equal((await mk(`/contenidos/${cid}`)).body.archivado, true)
+    assert.equal((await api(`/feed/${it0.body.id}`)).body.estado, 'nuevo')
+  })
+
+  it('feed → contenido desde la idea de una keyword: hereda la keyword y la pasa a «En contenido»', async () => {
+    const k = (await mk('/keywords', { body: { texto: 'automatizar whatsapp negocio', fuente: 'manual' } })).body
+    const idea = (await mk(`/keywords/${k.id}/idea`, { body: {} })).body
+    const cv = await api(`/feed/${idea.item_id}/convertir`, { body: { a: 'contenido' } })
+    assert.equal(cv.status, 200, JSON.stringify(cv.body))
+    const c = (await mk(`/contenidos/${cv.body.creado.id}`)).body
+    assert.equal(c.keyword.id, k.id)
+    assert.equal((await mk(`/keywords/${k.id}`)).body.estado, 'en_contenido')
+  })
+
+  // ---------- Parte 3: competidores ----------
+  it('competidores: solo el nombre es obligatorio; fecha de alta; sin repetidos; editar y archivar', async () => {
+    assert.equal((await mk('/competidores', { body: {} })).status, 400)
+    const c = await mk('/competidores', { body: { nombre: 'Rivalia' } })
+    assert.equal(c.status, 201, JSON.stringify(c.body))
+    assert.deepEqual([c.body.web, c.body.instagram, c.body.notas, c.body.archivado], [null, null, null, false])
+    assert.match(c.body.fecha_alta, /^\d{4}-\d{2}-\d{2}T/)
+    comp = c.body.id
+    assert.equal((await mk('/competidores', { body: { nombre: ' RIVALIA ' } })).status, 409)
+    const e = await mk(`/competidores/${comp}`, { method: 'PATCH', body: { web: 'https://www.rivalia.com.ve', instagram: '@rivaliave', notas: 'Agencia local' } })
+    assert.deepEqual([e.body.web, e.body.instagram, e.body.notas], ['https://www.rivalia.com.ve', '@rivaliave', 'Agencia local'])
+    assert.equal((await mk(`/competidores/${comp}`, { method: 'PATCH', body: {} })).status, 400)
+    const otro = (await mk('/competidores', { body: { nombre: 'Temporal' } })).body.id
+    assert.equal((await mk(`/competidores/${otro}`, { method: 'PATCH', body: { archivado: true } })).body.archivado, true)
+    assert.ok(!(await mk('/competidores')).body.data.some((c: any) => c.id === otro))
+    assert.ok((await mk('/competidores?archivados=solo')).body.data.some((c: any) => c.id === otro))
+    assert.equal((await mk('/competidores', { body: { nombre: 'Temporal' } })).status, 201, 'un archivado libera el nombre')
+    assert.deepEqual((await mk('/competidores?q=rival')).body.data.map((c: any) => c.nombre), ['Rivalia'])
+  })
+
+  it('competidores — «lo que sabemos»: hallazgos del espía de anuncios que lo mencionan; sin coincidencias, lista vacía (nada inventado)', async () => {
+    assert.deepEqual((await mk(`/competidores/${comp}`)).body.hallazgos, [])
+    await api('/feed', { body: { items: [
+      { titulo: 'Anuncio nuevo de Rivalia: «Automatiza tu negocio»', resumen: 'Oferta de 30 días gratis.', tipo: 'alerta', fuente: 'espia-pos', clave_externa: 'sp-1' },
+      { titulo: 'Anuncio de Otra Marca', tipo: 'alerta', fuente: 'espia-pos', clave_externa: 'sp-2' },
+      { titulo: 'Noticia: Rivalia abre sede', tipo: 'noticia', fuente: 'radar-hayai', clave_externa: 'sp-3' },
+    ] } })
+    const v = (await mk(`/competidores/${comp}`)).body
+    assert.deepEqual(v.hallazgos.map((h: any) => [h.titulo, h.fuente]), [['Anuncio nuevo de Rivalia: «Automatiza tu negocio»', 'espia-pos']])
+  })
+
+  it('competidores — cruce con keywords y marca en el SERP: por su web y por su Instagram; sin consultar nada nuevo', async () => {
+    const antes = extHits.brightdata.length
+    const x = await mk(`/competidores/${comp}/keywords`)
+    assert.equal(x.status, 200, JSON.stringify(x.body))
+    assert.equal(extHits.brightdata.length, antes, 'cruzar no gasta saldo')
+    assert.equal(x.body.serp_revisados, 1)
+    assert.deepEqual(x.body.apariciones.map((a: any) => [a.keyword, a.posicion]), [['Sistema de citas precio', 2], ['Sistema de citas precio', 3]])
+    const k = (await mk(`/keywords/${kwPrecio}`)).body
+    assert.deepEqual(k.serp.resultados.map((r: any) => r.competidor?.nombre ?? null), [null, 'Rivalia', 'Rivalia', null])
+    // sin web ni Instagram no hay con qué buscarlo
+    const solo = (await mk('/competidores', { body: { nombre: 'Sin datos' } })).body.id
+    const v = (await mk(`/competidores/${solo}/keywords`)).body
+    assert.deepEqual(v.apariciones, [])
+    assert.match(v.sin_datos_para_cruzar, /web o el Instagram/)
+    assert.equal((await mk(`/competidores/${NOPE}/keywords`)).status, 404)
+  })
+
+  // ---------- Parte 5: campañas ----------
+  it('campañas: solo lectura — gasto, leads y CPL por campaña y en total, con el filtro de cuenta', async () => {
+    const r = await mk('/campanas')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual([r.body.conectado, r.body.solo_lectura, r.body.dias, r.body.error], [true, true, 30, null])
+    assert.deepEqual(r.body.cuentas, [{ id: '111', nombre: 'Cuenta HAYAI', moneda: 'USD' }])
+    assert.deepEqual(r.body.campanas.map((c: any) => [c.nombre, c.estado, c.gasto, c.leads, c.cpl]), [['Leads octubre', 'ACTIVE', 30, 6, 5], ['Marca', 'PAUSED', 0, 0, null]])
+    assert.deepEqual(r.body.totales, { moneda: 'USD', gasto: 30, leads: 6, cpl: 5 })
+    assert.ok(extHits.meta.every((u) => !/method=|status=PAUSED/.test(u)), 'solo consultas de lectura')
+    assert.equal((await mk('/campanas?dias=7')).body.dias, 7)
+    assert.equal((await mk('/campanas?dias=3')).status, 400)
+    assert.equal((await mk('/campanas?dias=400')).status, 400)
+    assert.equal((await mk('/campanas?cuenta=999')).body.campanas.length, 0, 'una cuenta que no está configurada no se consulta')
+  })
+
+  it('campañas: sin POST/PATCH (nada crea, edita ni pausa campañas) y si Meta falla lo dice sin tumbar la pantalla', async () => {
+    for (const [method, body] of [['POST', { nombre: 'x' }], ['PATCH', { estado: 'PAUSED' }], ['DELETE', undefined]] as const) {
+      const r = await fetch(`${ROOT}/api/v1/marketing/campanas`, { method, headers: { 'x-api-key': KEY, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })
+      assert.ok([404, 405].includes(r.status), `${method} ${r.status}`)
+    }
+    extDown.meta = true
+    try {
+      const r = await mk('/campanas')
+      assert.equal(r.status, 200)
+      assert.deepEqual([r.body.conectado, r.body.campanas.length, r.body.totales], [true, 0, null])
+      assert.match(r.body.error, /Meta/)
+    } finally {
+      extDown.meta = false
+    }
+  })
+
+  it('campañas sin credenciales: «Pendiente de conexión» con el motivo en una línea', async () => {
+    const { metaCampanasListo, metaCampanasMotivo } = await import('../src/marketingExterno.ts')
+    const t = process.env.META_ADS_TOKEN
+    const c = process.env.META_AD_ACCOUNT_IDS
+    process.env.META_ADS_TOKEN = 'x'
+    process.env.META_AD_ACCOUNT_IDS = ''
+    try {
+      assert.equal(metaCampanasListo(), false)
+      assert.match(metaCampanasMotivo()!, /META_AD_ACCOUNT_IDS/)
+      delete process.env.META_ADS_TOKEN
+      assert.match(metaCampanasMotivo()!, /META_ADS_TOKEN/)
+    } finally {
+      if (t) process.env.META_ADS_TOKEN = t
+      else delete process.env.META_ADS_TOKEN
+      if (c !== undefined) process.env.META_AD_ACCOUNT_IDS = c
+    }
+  })
+
+  // ---------- permisos, web y MCP ----------
+  it('permisos: sin llave 401; lectura sí, escribir con llave de solo lectura 403', async () => {
+    assert.equal((await mk('/keywords', { key: null })).status, 401)
+    assert.equal((await mk('/keywords', { key: KEY_R })).status, 200)
+    for (const [path, body] of [['/keywords', { texto: 'nope' }], ['/competidores', { nombre: 'Nope' }], ['/contenidos', { titulo: 'Nope' }]] as const) assert.equal((await mk(path, { key: KEY_R, body })).status, 403, path)
+  })
+
+  it('web (sesión): las mismas rutas bajo /api/marketing/…', async () => {
+    const w = (path: string, init: RequestInit = {}) => fetch(`${ROOT}/api/marketing${path}`, { ...init, headers: { cookie, 'x-csrf-token': 'x', 'content-type': 'application/json', ...(init.headers as object) } })
+    assert.equal((await fetch(`${ROOT}/api/marketing/keywords`)).status, 401)
+    const l = await w('/keywords?intencion=local')
+    assert.equal(l.status, 200)
+    assert.equal(((await l.json()) as any).data.length, 1)
+    const c = await w('/contenidos', { method: 'POST', body: JSON.stringify({ titulo: 'Desde la web' }) })
+    assert.equal(c.status, 201)
+    const cj = (await c.json()) as any
+    assert.equal(cj.responsable.nombre, 'Jorbi')
+    const m = await w(`/contenidos/${cj.id}/mover`, { method: 'POST', body: JSON.stringify({ estado: 'publicado' }) })
+    assert.equal(m.status, 400)
+    assert.equal((await w('/campanas')).status, 200)
+    assert.equal((await w('/keywords/investigar?semilla=hola')).status, 200)
+    const sp = await w(`/keywords/${kwPrecio}/serp`, { method: 'POST', body: '{}' })
+    assert.equal(sp.status, 409)
+  })
+
+  it('MCP: las herramientas de marketing llaman a los mismos servicios (y la llave de solo lectura solo ve las de lectura)', async () => {
+    const names = ((await rpc('tools/list')).body.result.tools as any[]).map((t) => t.name)
+    for (const t of ['hayai_kw_investigar', 'hayai_kw_guardar', 'hayai_kw_listar', 'hayai_kw_ver', 'hayai_kw_actualizar', 'hayai_kw_serp_aviso', 'hayai_kw_serp', 'hayai_kw_idea', 'hayai_kw_contenido', 'hayai_competidores_listar', 'hayai_competidor_ver', 'hayai_competidor_crear', 'hayai_competidor_actualizar', 'hayai_competidor_keywords', 'hayai_contenidos_listar', 'hayai_contenido_ver', 'hayai_contenido_crear', 'hayai_contenido_actualizar', 'hayai_contenido_mover', 'hayai_campanas_ver']) assert.ok(names.includes(t), t)
+    const lectura = ((await rpc('tools/list', {}, KEY_R)).body.result.tools as any[]).map((t) => t.name)
+    assert.ok(lectura.includes('hayai_kw_serp_aviso') && lectura.includes('hayai_campanas_ver') && lectura.includes('hayai_kw_investigar'))
+    assert.ok(!lectura.includes('hayai_kw_serp') && !lectura.includes('hayai_kw_guardar') && !lectura.includes('hayai_contenido_mover'))
+
+    const inv = dato(await tool('hayai_kw_investigar', { semilla: 'agenda digital' }))
+    assert.ok(inv.sugerencias.length > 3)
+    const g = dato(await tool('hayai_kw_guardar', { items: [{ texto: 'agenda digital precio' }, { texto: 'agenda digital precio' }] }))
+    assert.deepEqual([g.creadas, g.duplicadas], [1, 1])
+    const id = g.data[0].id
+    const sinConfirmar = await tool('hayai_kw_serp', { id })
+    assert.equal(sinConfirmar.result.isError, true)
+    assert.match(sinConfirmar.result.content[0].text, /consume saldo/)
+    assert.equal(dato(await tool('hayai_kw_serp_aviso', { id })).conectado, true)
+    const serp = dato(await tool('hayai_kw_serp', { id, confirmar_costo: true }))
+    assert.equal(serp.resultados.length, 4)
+    const c = dato(await tool('hayai_competidor_crear', { nombre: 'Agenda Rival', web: 'otro.net' }))
+    assert.equal(dato(await tool('hayai_competidor_keywords', { id: c.id })).apariciones.length, 2, 'otro.net aparece en los dos SERP consultados')
+    const ct = dato(await tool('hayai_kw_contenido', { id }))
+    assert.equal(ct.contenido.estado, 'idea')
+    const pub = await tool('hayai_contenido_mover', { id: ct.contenido_id, estado: 'publicado' })
+    assert.equal(pub.result.isError, true)
+    const ok = dato(await tool('hayai_contenido_mover', { id: ct.contenido_id, estado: 'publicado', publicado_en: 'Blog', enlace: 'https://hayai.com.ve/blog/agenda' }))
+    assert.equal(ok.estado, 'publicado')
+    assert.equal(dato(await tool('hayai_contenidos_listar', { estado: 'publicado' })).data.length, 1)
+    assert.equal(dato(await tool('hayai_campanas_ver', { dias: 30 })).totales.leads, 6)
+    assert.equal(dato(await tool('hayai_kw_listar', { q: 'agenda' })).meta.total, 1)
+    assert.equal(dato(await tool('hayai_competidores_listar', {})).data.length >= 2, true)
   })
 })

@@ -128,6 +128,9 @@ export interface ProspectDraft {
   avatar: string
   project: { name: string; icon: string; owner: string; due?: string | null }
   visit: { date?: string | null; title?: string }
+  /** de dónde llegó (obligatorio; «otro» por defecto) y el utm_source libre */
+  source: string
+  utmSource?: string | null
 }
 /** Registra un posible cliente con su posible proyecto ("Por visitar") y una tarea de visita ligada a ese proyecto. */
 export async function addProspect(d: ProspectDraft): Promise<Client> {

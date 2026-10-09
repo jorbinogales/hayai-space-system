@@ -8,6 +8,19 @@ import { useSession } from './session'
 import { DraftBar } from './UpdateUI'
 import { useFormGuard } from './updates'
 
+/** Orígenes de un lead (los siete de siempre primero). «Otro» es el valor por defecto: un lead nuevo no queda sin origen. */
+export const ORIGEN_OPCIONES: [string, string][] = [
+  ['whatsapp', 'WhatsApp'],
+  ['instagram', 'Instagram'],
+  ['facebook', 'Facebook'],
+  ['meta_ads', 'Meta Ads'],
+  ['referido', 'Referido'],
+  ['web', 'Web'],
+  ['visita_frio', 'Visita en frío'],
+  ['evento', 'Evento'],
+  ['otro', 'Otro'],
+]
+
 const ICON_LABEL: Record<string, string> = { globe: 'Web', phone: 'App móvil', chart: 'Panel / datos', cart: 'Tienda', palette: 'Diseño', box: 'Sistema', code: 'Desarrollo' }
 
 /** Alta de un posible cliente: su posible proyecto y la visita agendada (una tarea del proyecto). Sin pagos ni mensualidades. */
@@ -21,20 +34,24 @@ export default function NewProspect({ onClose, onCreate }: { onClose: () => void
   const [owner, setOwner] = useState(() => owners.find((o) => o.toLowerCase() === session?.name.toLowerCase()) ?? owners[0] ?? '')
   const [visitDate, setVisitDate] = useState('')
   const [visitTitle, setVisitTitle] = useState('')
+  const [source, setSource] = useState('otro')
+  const [utm, setUtm] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const first = useRef<HTMLInputElement>(null)
   const guard = useFormGuard({
     id: 'posible:nuevo',
     label: 'Posible cliente',
-    values: { name, project, visitDate, visitTitle },
-    initial: { name: '', project: '', visitDate: '', visitTitle: '' },
-    labels: { name: 'nombre', project: 'proyecto', visitDate: 'fecha de la visita', visitTitle: 'título de la visita' },
+    values: { name, project, visitDate, visitTitle, source, utm },
+    initial: { name: '', project: '', visitDate: '', visitTitle: '', source: 'otro', utm: '' },
+    labels: { name: 'nombre', project: 'proyecto', visitDate: 'fecha de la visita', visitTitle: 'título de la visita', source: 'origen', utm: 'utm_source' },
     apply: (v) => {
       setName(v.name)
       setProject(v.project)
       setVisitDate(v.visitDate)
       setVisitTitle(v.visitTitle)
+      setSource(v.source || 'otro')
+      setUtm(v.utm ?? '')
     },
   })
 
@@ -54,7 +71,7 @@ export default function NewProspect({ onClose, onCreate }: { onClose: () => void
     if (!owner) return setError('Elige quién será el responsable.')
     setBusy(true)
     try {
-      const c = await addProspect({ name: name.trim(), avatar, project: { name: project.trim(), icon, owner, due: null }, visit: { date: visitDate || null, title: visitTitle.trim() || undefined } })
+      const c = await addProspect({ name: name.trim(), avatar, project: { name: project.trim(), icon, owner, due: null }, visit: { date: visitDate || null, title: visitTitle.trim() || undefined }, source, utmSource: utm.trim() || null })
       guard.saved()
       onCreate(c)
     } catch (err) {
@@ -79,6 +96,23 @@ export default function NewProspect({ onClose, onCreate }: { onClose: () => void
             <span>Nombre</span>
             <input ref={first} value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Panadería La Estrella" autoComplete="off" />
           </label>
+
+          <div className="two">
+            <label className="field">
+              <span>¿De dónde llegó?</span>
+              <select value={source} onChange={(e) => setSource(e.target.value)} required>
+                {ORIGEN_OPCIONES.map(([k, l]) => (
+                  <option key={k} value={k}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>utm_source (opcional)</span>
+              <input value={utm} maxLength={80} onChange={(e) => setUtm(e.target.value)} placeholder="Ej. bio_link" autoComplete="off" />
+            </label>
+          </div>
 
           <div className="field">
             <span>Icono del posible cliente</span>

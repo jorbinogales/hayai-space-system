@@ -216,20 +216,23 @@ export const marketingEmbudo = op(
          WHERE pipeline_stage IN ('ganado', 'perdido') AND stage_changed_at > now() - make_interval(days => $1) GROUP BY pipeline_stage`,
         [i.dias],
       ),
-      // Cohorte: lo que entró en los últimos N días, por origen, y en qué terminó hasta hoy.
+      // Cohorte: lo que entró en los últimos N días, por origen, y en qué terminó hasta hoy. Los estados no se solapan:
+      // ganados + perdidos + abiertos + descartados (archivados sin cerrar) + alta directa (cliente creado sin pasar por el pipeline) = entraron.
       pool.query(
         `SELECT COALESCE(lead_source, 'sin_origen') AS origen, count(*)::int AS entraron,
                 count(*) FILTER (WHERE pipeline_stage = 'ganado')::int AS ganados,
                 count(*) FILTER (WHERE pipeline_stage = 'perdido')::int AS perdidos,
-                count(*) FILTER (WHERE is_prospect AND pipeline_stage NOT IN ('ganado', 'perdido'))::int AS abiertos
-         FROM clients WHERE created_at > now() - make_interval(days => $1) AND archived_at IS NULL GROUP BY 1 ORDER BY 2 DESC, 1`,
+                count(*) FILTER (WHERE is_prospect AND archived_at IS NULL AND COALESCE(pipeline_stage, '') NOT IN ('ganado', 'perdido'))::int AS abiertos,
+                count(*) FILTER (WHERE archived_at IS NOT NULL AND COALESCE(pipeline_stage, '') NOT IN ('ganado', 'perdido'))::int AS descartados
+         FROM clients WHERE created_at > now() - make_interval(days => $1) GROUP BY 1 ORDER BY 2 DESC, 1`,
         [i.dias],
       ),
       pool.query(
         `SELECT count(*) FILTER (WHERE received_at > now() - interval '30 days')::int AS leads_30d,
                 count(*) FILTER (WHERE received_at > now() - interval '30 days' AND status = 'procesado')::int AS procesados,
                 count(*) FILTER (WHERE received_at > now() - interval '30 days' AND status = 'duplicado')::int AS duplicados,
-                count(*) FILTER (WHERE status = 'error')::int AS con_error
+                count(*) FILTER (WHERE status = 'error')::int AS con_error,
+                count(*)::int AS total
          FROM meta_leads`,
       ),
     ])
@@ -250,8 +253,9 @@ export const marketingEmbudo = op(
           valor_ponderado: r2(byStage.get(s.key)?.ponderado ?? 0),
         })),
       cierres: { ganados, perdidos, tasa_cierre: ganados + perdidos ? Math.round((1000 * ganados) / (ganados + perdidos)) / 10 : null },
-      por_origen: origins.rows,
-      meta_ads: { leads_30d: meta.rows[0].leads_30d as number, procesados: meta.rows[0].procesados as number, duplicados: meta.rows[0].duplicados as number, con_error: meta.rows[0].con_error as number },
+      por_origen: origins.rows.map((r) => ({ ...r, directos: r.entraron - r.ganados - r.perdidos - r.abiertos - r.descartados })),
+      // conectado = la recepción de leads de Meta está activa en el servidor; total = todo lo que ha llegado (los errores se miden contra eso)
+      meta_ads: { conectado: process.env.META_LEADS_ENABLED === 'true', total: meta.rows[0].total as number, leads_30d: meta.rows[0].leads_30d as number, procesados: meta.rows[0].procesados as number, duplicados: meta.rows[0].duplicados as number, con_error: meta.rows[0].con_error as number },
     }
   },
 )

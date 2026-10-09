@@ -7,6 +7,7 @@ import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equi
 import { feedConvertir, feedDeshacer, feedGuardar, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 
+import { MK_RUTAS } from '../services/marketingRutas.ts'
 import { versionesListar, versionPublicar, versionVer } from '../services/versiones.ts'
 
 export const hubRouter = Router()
@@ -34,6 +35,13 @@ hubRouter.post('/systems', async (req, res) => void res.status(201).json(await e
 hubRouter.patch('/systems/:id', async (req, res) => void res.json(await exec(sistemaActualizar, req.user!, { ...body(req), id: req.params.id })))
 hubRouter.post('/systems/:id/check', async (req, res) => void res.json(await exec(sistemaVerificar, req.user!, { id: req.params.id })))
 hubRouter.get('/marketing/funnel', async (req, res) => void res.json(await exec(marketingEmbudo, req.user!, query(req))))
+// Central de marketing (mismas rutas y servicios que /api/v1/marketing/*)
+for (const r of MK_RUTAS)
+  hubRouter[r.method](r.path, async (req, res) => {
+    const entrada = r.method === 'get' ? query(req) : body(req)
+    const out = await exec(r.op, req.user!, { ...entrada, ...req.params })
+    res.status(typeof r.status === 'function' ? r.status(out) : (r.status ?? 200)).json(out)
+  })
 
 // Cobros: detalle, comprobante y mapeo de documentos.
 hubRouter.get('/cobros/:id', async (req, res) => void res.json(await exec(pagoVer, req.user!, { id: req.params.id })))

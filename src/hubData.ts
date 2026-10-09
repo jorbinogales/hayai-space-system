@@ -72,8 +72,10 @@ export interface Funnel {
   dias: number
   etapas: { etapa: string; nombre: string; probabilidad: number; posibles: number; valor_mensual: number; valor_ponderado: number }[]
   cierres: { ganados: number; perdidos: number; tasa_cierre: number | null }
-  por_origen: { origen: string; entraron: number; ganados: number; perdidos: number; abiertos: number }[]
-  meta_ads: { leads_30d: number; procesados: number; duplicados: number; con_error: number }
+  /** Los estados no se solapan: abiertos + ganados + perdidos + descartados (archivados sin cerrar) + directos (alta directa, sin pasar por el pipeline) = entraron. */
+  por_origen: { origen: string; entraron: number; ganados: number; perdidos: number; abiertos: number; descartados: number; directos: number }[]
+  /** conectado: la recepción de leads de Meta está activa en el servidor; total: todo lo que ha llegado (los errores se miden contra eso) */
+  meta_ads: { conectado: boolean; total: number; leads_30d: number; procesados: number; duplicados: number; con_error: number }
 }
 export interface PipelineStage {
   etapa: string

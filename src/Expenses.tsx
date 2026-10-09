@@ -90,7 +90,7 @@ export function ExpensesPanel({ form, setForm, period }: { form: boolean; setFor
         </div>
       ) : (
         <div className="g-body g-hist" key="hist" ref={hist}>
-          {groups.length === 0 && <p className="empty-note dark">{internal ? 'Sin gastos internos en este periodo. Quita el filtro para ver los de los clientes.' : period === 'todo' ? 'Aún no hay gastos registrados.' : 'Sin gastos en este periodo.'}</p>}
+          {groups.length === 0 && <p className="empty-note dark">{internal ? 'Sin gastos internos en este período. Quita el filtro para ver los de los clientes.' : period === 'todo' ? 'Aún no hay gastos registrados.' : 'Sin gastos en este período.'}</p>}
           {groups.map(([ym, list]) => (
             <section key={ym}>
               <h3>

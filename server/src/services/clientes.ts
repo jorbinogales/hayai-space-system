@@ -64,6 +64,7 @@ function resumen(c: Loaded) {
     email: c.email,
     etiquetas: c.tags,
     origen: c.source,
+    utm_source: c.utmSource,
     redes: c.socials,
     fecha_implementacion: c.implementationDate,
     // pipeline (etapa es null en los clientes de antes del pipeline)
@@ -182,6 +183,7 @@ export const clienteCrear = op(
     const posible = b.estado === 'posible'
     if (!posible && [b.etapa, b.valor_estimado, b.probabilidad, b.cierre_previsto, b.motivo_perdida].some((v) => v !== undefined))
       throw new HttpError(400, 'Los datos de pipeline (etapa, valor, probabilidad, cierre, motivo) solo aplican a un posible cliente: usa estado "posible"')
+    if (posible && b.origen === null) throw new HttpError(400, 'origen: el origen de un posible cliente es obligatorio (usa "otro" si no lo sabes)')
     const stages = await loadStages(pool)
     const entry = posible ? (b.etapa ? resolveStage(stages, b.etapa) : entryStage(stages)) : null
     if (entry && entry.kind !== 'abierta')
@@ -191,6 +193,7 @@ export const clienteCrear = op(
     const ficha: ClientPatch = Object.fromEntries(
       Object.keys(fichaShape).flatMap((k) => (k !== 'etapa' && k in b && b[k as keyof typeof b] !== undefined ? [[k, b[k as keyof typeof b]]] : [])),
     )
+    if (posible && ficha.origen === undefined) ficha.origen = 'otro' // un lead nuevo nunca queda «sin origen»
     const items = b.items.map((x) => ({ concept: x.concepto, amount: x.monto }))
     const totalCents = items.reduce((s, x) => s + Math.round(x.amount * 100), 0)
     const avatar = b.avatar ?? AVATAR_SEEDS[Math.floor(Math.random() * AVATAR_SEEDS.length)]

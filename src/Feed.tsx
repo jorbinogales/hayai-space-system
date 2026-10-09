@@ -165,7 +165,7 @@ function GrowiSeal() {
   )
 }
 
-const CONVERSION_LABEL: Record<CreadoKind, string> = { posible_cliente: 'posible cliente', cliente: 'cliente', tarea: 'tarea', seguimiento: 'seguimiento', proyecto: 'proyecto', propuesta: 'propuesta' }
+const CONVERSION_LABEL: Record<CreadoKind, string> = { posible_cliente: 'posible cliente', cliente: 'cliente', tarea: 'tarea', seguimiento: 'seguimiento', proyecto: 'proyecto', propuesta: 'propuesta', contenido: 'pieza de contenido' }
 /** Destinos del panel «Con ajustes» (el seguimiento y la propuesta tienen su propio botón). */
 type Dest = 'posible_cliente' | 'cliente' | 'tarea' | 'proyecto'
 const DEST_LABEL: Record<Dest, string> = { posible_cliente: 'Posible cliente', cliente: 'Cliente', tarea: 'Tarea', proyecto: 'Proyecto' }
@@ -174,8 +174,8 @@ const destinosDe = (it: FeedItem): Dest[] => {
   const c = conversionDe(it)
   return c ? [c, 'tarea', 'proyecto'] : ['tarea', 'proyecto']
 }
-const HECHO_LABEL: Record<Exclude<CreadoKind, 'cliente' | 'posible_cliente'>, string> = { tarea: 'Tarea', seguimiento: 'Seguimiento', proyecto: 'Proyecto', propuesta: 'Propuesta' }
-const LISTO: Record<FeedConversion, string> = { posible_cliente: 'Posible cliente creado', cliente: 'Cliente activado', tarea: 'Tarea creada', seguimiento: 'Seguimiento creado', proyecto: 'Proyecto creado' }
+const HECHO_LABEL: Record<Exclude<CreadoKind, 'cliente' | 'posible_cliente'>, string> = { tarea: 'Tarea', seguimiento: 'Seguimiento', proyecto: 'Proyecto', propuesta: 'Propuesta', contenido: 'Contenido' }
+const LISTO: Record<FeedConversion, string> = { posible_cliente: 'Posible cliente creado', cliente: 'Cliente activado', tarea: 'Tarea creada', seguimiento: 'Seguimiento creado', proyecto: 'Proyecto creado', contenido: 'Pasó a Contenido' }
 
 /** Abre lo que ya se creó desde el ítem: el detalle de la tarea (su proyecto), el proyecto, o la ficha del cliente (propuesta, cliente). */
 function openCreated(kind: CreadoKind, id: string | null, it: FeedItem) {
@@ -185,6 +185,7 @@ function openCreated(kind: CreadoKind, id: string | null, it: FeedItem) {
     return go({ screen: 'clientes' })
   }
   if (kind === 'proyecto' && id) return void (location.hash = `proyectos/${id}`)
+  if (kind === 'contenido') return void (location.hash = 'marketing/contenido')
   const t = id ? taskNow(id) : undefined
   if (t) return void (location.hash = `proyectos/${t.projectId}`)
   go({ screen: 'tareas' })
@@ -768,7 +769,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
       setFlash(kind)
       window.setTimeout(() => setFlash(null), 1400)
       // lo recién creado ya existe en el servidor: las pantallas de trabajo lo vuelven a leer
-      const refresh = () => Promise.allSettled(kind === 'posible_cliente' || kind === 'cliente' ? [loadClients(), loadProjects(), loadTasks()] : kind === 'proyecto' ? [loadProjects()] : [loadTasks(), loadProjects()])
+      const refresh = () => Promise.allSettled(kind === 'posible_cliente' || kind === 'cliente' ? [loadClients(), loadProjects(), loadTasks()] : kind === 'proyecto' ? [loadProjects()] : kind === 'contenido' ? [] : [loadTasks(), loadProjects()])
       void refresh()
       // «Listo ✓» flotante con «Deshacer»: revierte esa conversión (lo creado va a la papelera) y el feed se vuelve a leer
       pushToast({
@@ -861,7 +862,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
         </button>
       )
     }
-    if (a === 'propuesta' || a === 'tarea' || a === 'seguimiento' || a === 'proyecto') {
+    if (a === 'propuesta' || a === 'tarea' || a === 'seguimiento' || a === 'proyecto' || a === 'contenido') {
       if (yaCreada(it, a)) {
         const c = it.creados[a]!
         return (
@@ -878,8 +879,8 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
         )
       }
       if (a === 'propuesta') return <button type="button" className={cls} disabled={isBusy} onClick={proponer}>Crear propuesta</button>
-      const labels = { tarea: 'Crear tarea', seguimiento: 'Seguimiento en 3 días', proyecto: 'Crear proyecto' } as const
-      const doing = { tarea: 'Creando…', seguimiento: 'Creando…', proyecto: 'Creando…' } as const
+      const labels = { tarea: 'Crear tarea', seguimiento: 'Seguimiento en 3 días', proyecto: 'Crear proyecto', contenido: 'Mover a contenido' } as const
+      const doing = { tarea: 'Creando…', seguimiento: 'Creando…', proyecto: 'Creando…', contenido: 'Moviendo…' } as const
       return (
         <button type="button" className={`${cls}${just(a)}`} disabled={isBusy} onClick={() => quick(a)}>
           {busy === 'convertir' ? doing[a] : labels[a]}
@@ -987,6 +988,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
                   {(done.a === 'tarea' || done.a === 'seguimiento') && done.proyecto && <>Quedó en «{done.proyecto}»</>}
                   {done.a === 'proyecto' && done.nombre && <>Quedó como «{done.nombre}»</>}
                   {done.a === 'cliente' && <>Ya es cliente activo</>}
+                  {done.a === 'contenido' && <>Quedó en la columna «Idea» de Contenido</>}
                 </small>
               )}
             </p>

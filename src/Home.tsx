@@ -19,7 +19,7 @@ function marketingLines(f: ReturnType<typeof loadFunnel> extends Promise<infer T
   if (!f) return ['Embudo comercial', 'Últimos 90 días']
   const abiertos = f.etapas.reduce((a, e) => a + e.posibles, 0)
   const ponderado = f.etapas.reduce((a, e) => a + e.valor_ponderado, 0)
-  return [`${abiertos} ${abiertos === 1 ? 'posible abierto' : 'posibles abiertos'}`, `${money(ponderado)} ponderado`, f.cierres.tasa_cierre == null ? 'Sin cierres aún' : `${f.cierres.tasa_cierre.toLocaleString('es-VE', { maximumFractionDigits: 1 })} % de cierre`]
+  return [`${abiertos} ${abiertos === 1 ? 'posible abierto' : 'posibles abiertos'}`, `${money(ponderado)} ponderado`, f.cierres.tasa_cierre == null ? 'Sin cierres aún' : `Tasa de cierre ${f.cierres.tasa_cierre.toLocaleString('es-VE', { maximumFractionDigits: 1 })} %`]
 }
 
 /** Capa HTML del Home: tarjetas de cada planeta + marca del nucleo, que siguen a los objetos 3D. Solo se ve con `shown`. */
@@ -175,7 +175,7 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
                 : p.key === 'marketing'
                   ? { title: 'Marketing', lines: marketingLines(funnel) }
                   : p.key === 'finanzas'
-                    ? { title: `Finanzas ${new Date().getFullYear()}`, lines: [`${money(fin.ingresos)} ingresos`, `${money(fin.gastos)} gastos`, `${money(fin.ingresos - fin.gastos)} balance`] }
+                    ? { title: 'Finanzas', lines: [`${money(fin.ingresos)} ingresos`, `${money(fin.gastos)} gastos`, `${money(fin.ingresos - fin.gastos)} balance`] }
                     : { title: 'Tareas', lines: [`${tk.pendientes} por hacer`, `${tk.completadas} completadas`] }
           return (
             <div

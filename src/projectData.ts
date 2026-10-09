@@ -5,8 +5,8 @@ import { createList } from './cache'
 import { loadExpenses } from './expenseData'
 import { loadTasks } from './taskData'
 
-export type ProjectStatus = 'activo' | 'entrega' | 'planeacion' | 'pausado' | 'completado'
-export const STATUS_LABEL: Record<ProjectStatus, string> = { activo: 'Activo', entrega: 'En entrega', planeacion: 'Por visitar', pausado: 'Pausado', completado: 'Completado' }
+export type ProjectStatus = 'activo' | 'entrega' | 'planeacion' | 'pausado' | 'completado' | 'entregado'
+export const STATUS_LABEL: Record<ProjectStatus, string> = { activo: 'Activo', entrega: 'En entrega', planeacion: 'Por visitar', pausado: 'Pausado', completado: 'Completado', entregado: 'Entregado' }
 
 export interface Project {
   id: string
@@ -81,6 +81,11 @@ export async function removeProject(id: string): Promise<void> {
   projects.update((cur) => cur.filter((x) => x.id !== id))
   await Promise.all([loadTasks(), loadExpenses()])
 }
+
+/** Estados en los que una fecha de entrega pasada NO es un atraso: ya se entregó, o es la fase de acompañamiento (activo) que sigue después de entregar. «Completado» ya estaba exento. */
+const NO_VENCE: readonly ProjectStatus[] = ['entregado', 'activo', 'completado']
+/** «Entrega vencida» (la marca roja): la fecha ya pasó Y el proyecto no está entregado ni en acompañamiento activo. */
+export const entregaVencida = (p: Pick<Project, 'due' | 'status'>, today: string) => !!p.due && p.due < today && !NO_VENCE.includes(p.status)
 
 export const projectCounts = (list: Project[]) => ({
   activo: list.filter((p) => p.status === 'activo').length,

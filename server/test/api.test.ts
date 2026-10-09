@@ -791,6 +791,10 @@ describe('datos', () => {
     const nul = await patch({ due: null })
     assert.equal(nul.body.due, null)
     assert.equal(nul.body.name, 'Renombrado')
+    const entregado = await patch({ status: 'entregado' }) // terminal pero visible: sigue en GET /projects, sin archivar
+    assert.equal(entregado.status, 200, JSON.stringify(entregado.body))
+    assert.deepEqual([entregado.body.status, entregado.body.archived], ['entregado', false])
+    assert.equal((await call('/projects', { cookie })).body.find((x: any) => x.id === p.body.id).status, 'entregado')
     assert.equal((await patch({ status: 'planeacion' })).body.status, 'planeacion')
     assert.equal((await patch({ due: null })).body.due, null) // idempotente
 

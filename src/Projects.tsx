@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Icon, ZoomControls } from './ui'
 import { Blobvatar } from './blob'
-import { avatarFor, projectCounts, STATUS_LABEL, useProjects } from './projectData'
+import { avatarFor, entregaVencida, projectCounts, STATUS_LABEL, useProjects } from './projectData'
 import { reduced, useDive } from './warp'
 import { fmtDate, todayISO, useClients } from './store'
 import { useCosmos } from './Cosmos'
@@ -108,7 +108,7 @@ export default function Projects({ onBack }: { onBack: () => void }) {
                     </h2>
                     <p className="p-client">{p.client ?? 'Interno de HAYAI'}</p>
                     {p.due && (
-                      <p className={`p-due${p.due < today ? ' late' : ''}`}>
+                      <p className={`p-due${entregaVencida(p, today) ? ' late' : ''}`}>
                         <Icon name="calendar" size={14} />
                         Entrega {fmtDate(p.due, true)}
                       </p>

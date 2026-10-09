@@ -455,7 +455,7 @@ function AjustarForm({ it, busy, onClose, onSubmit, id }: PanelProps & { it: Fee
 }
 
 function TareaForm({ it, owners, me, busy, onClose, onSubmit, id }: PanelProps & { it: FeedItem; owners: string[]; me: string; id: string; onSubmit: (b: ConvertBody, proyecto: string) => void }) {
-  const projects = useProjects().filter((p) => p.status !== 'completado')
+  const projects = useProjects().filter((p) => p.status !== 'completado' && p.status !== 'entregado')
   const internos = projects.filter((p) => !p.clientId)
   const deClientes = projects.filter((p) => p.clientId)
   const [titulo, setTitulo] = useState(it.titulo.slice(0, 160))

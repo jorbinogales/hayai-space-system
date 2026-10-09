@@ -33,6 +33,7 @@ export const CONVERSIONES = ['posible_cliente', 'cliente', 'tarea', 'proyecto', 
 const DESHACER_SEG = 120
 /** Cuántos días sigue en la campana el aviso de un ítem nuevo que nadie ha revisado. */
 export const AVISO_DIAS = 14
+export const VISIBILIDADES = ['equipo', 'privado'] as const
 /** Si una fuente ya avisó de un tipo hace menos de esto, la siguiente publicación no repite el aviso en vivo (una siembra de 20 es UN aviso). */
 const AVISO_AGRUPA_MIN = 10
 
@@ -72,13 +73,14 @@ const itemShape = {
   categoria: categoria.nullish(),
   datos: jsonLibre.optional(), // negocio, fugas, guion, URLs, métricas… forma libre
   fecha: fechaHallazgo.optional(),
+  visibilidad: z.enum(VISIBILIDADES, 'visibilidad debe ser equipo o privado').optional(), // equipo (por defecto) o privado: solo lo ve quien lo publicó
 }
 const itemSchema = z.strictObject(itemShape)
 type Item = z.infer<typeof itemSchema>
 
 // ---------- salida ----------
 /** `u` es el marcador ($n) del id del socio que mira: su estado personal y sus guardados salen de feed_item_usuarios. */
-const SELECT = (u: string) => `SELECT f.id, f.title, f.summary, f.kind, f.source, f.external_key, f.category, f.status, f.data, f.found_at, f.status_at, f.converted_to, f.converted_id,
+const SELECT = (u: string) => `SELECT f.id, f.title, f.summary, f.kind, f.source, f.external_key, f.category, f.visibility, f.status, f.data, f.found_at, f.status_at, f.converted_to, f.converted_id,
     f.created_at, f.updated_at, pu.id AS pub_id, pu.name AS pub_name, su.name AS status_by,
     mu.status AS my_status, mu.discard_reason AS my_reason, COALESCE(mu.saved, false) AS saved
   FROM feed_items f JOIN users pu ON pu.id = f.published_by LEFT JOIN users su ON su.id = f.status_by
@@ -93,6 +95,8 @@ export const itemOut = (r: any) => ({
   fuente: r.source as string,
   categoria: (r.category ?? null) as string | null,
   clave_externa: (r.external_key ?? null) as string | null,
+  /** equipo: lo ven todos los socios. privado: solo quien lo publicó (`publicado_por`). */
+  visibilidad: (r.visibility ?? 'equipo') as (typeof VISIBILIDADES)[number],
   publicado_por: { id: r.pub_id as string, nombre: r.pub_name as string },
   /** GLOBAL: nuevo o convertido. Lo que cada socio revisó o descartó es suyo: mira mi_estado. */
   estado: (r.status === 'convertido' ? 'convertido' : 'nuevo') as 'nuevo' | 'convertido',
@@ -117,6 +121,9 @@ export const itemOut = (r: any) => ({
 type Vinculado = { estado: 'sin_vinculo' | 'posible_cliente' | 'cliente'; cliente_id: string | null; cliente: string | null; origen: 'conversion' | 'datos' | 'nombre' | null }
 type Creados = Partial<Record<Vinculo, { id: string; por: string; el: string }>>
 type ItemOut = ReturnType<typeof itemOut>
+
+/** Lo que un socio puede ver: lo del equipo y lo privado que publicó él. `me` es el marcador ($n) de su id; `a` el alias de la tabla. */
+export const visible = (me: string, a = 'f.') => `(${a}visibility = 'equipo' OR ${a}published_by = ${me})`
 
 const plano = (v: string) => v.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -168,7 +175,7 @@ export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
 }
 
 async function item(db: Db, itemId: string, userId: string) {
-  const r = (await db.query(`${SELECT('$2')} WHERE f.id = $1`, [itemId, userId])).rows[0]
+  const r = (await db.query(`${SELECT('$2')} WHERE f.id = $1 AND ${visible('$2')}`, [itemId, userId])).rows[0]
   if (!r) throw new HttpError(404, 'Ítem del feed no encontrado')
   return (await enriquecer(db, [itemOut(r)]))[0]
 }
@@ -186,10 +193,12 @@ export const feedListar = op(
     categoria: z.union([categoria, z.literal('sin_categoria')]).optional(),
     guardado: boolFlag.optional(), // true: solo los que este socio guardó
     q: z.string().trim().min(1).max(100).optional(), // busca en título y resumen
+    visibilidad: z.enum(VISIBILIDADES, 'visibilidad debe ser equipo o privado').optional(), // privado: solo los míos
     ...pageShape,
   }),
   async (actor, i) => {
     const g = filters()
+    if (i.visibilidad) g.add('f.visibility = ?', i.visibilidad)
     if (i.tipo) g.add('f.kind = ?', i.tipo)
     if (i.estado) g.add(`${MI_ESTADO} = ?`, i.estado)
     if (i.fuente) g.add('f.source = ?', i.fuente)
@@ -198,15 +207,16 @@ export const feedListar = op(
     if (i.q) g.add(`fold(f.title || ' ' || COALESCE(f.summary, '')) LIKE '%' || fold(?) || '%'`, i.q)
     const n = g.params().length
     const me = `$${n + 1}` // el socio que mira: siempre el parámetro siguiente a los de los filtros
+    g.raw(visible(me)) // los privados de otros socios no existen para este
     const [total, rows, porEstado, porTipo, fuentes, categorias, extra] = await Promise.all([
       pool.query(`SELECT count(*)::int AS n FROM feed_items f ${joinMi(me)} ${g.where()}`, [...g.params(), actor.id]),
       pool.query(`${SELECT(me)} ${g.where()} ORDER BY f.found_at DESC, f.created_at DESC, f.id LIMIT $${n + 2} OFFSET $${n + 3}`, [...g.params(), actor.id, i.per_page, (i.page - 1) * i.per_page]),
       // Contadores (no dependen del filtro; son los de este socio): sirven para el "N nuevos" y para armar los filtros.
-      pool.query(`SELECT ${MI_ESTADO} AS e, count(*)::int AS n FROM feed_items f ${joinMi('$1')} GROUP BY 1`, [actor.id]),
-      pool.query(`SELECT f.kind, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} GROUP BY f.kind`, [actor.id]),
-      pool.query(`SELECT f.source, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} GROUP BY f.source ORDER BY 3 DESC, 2 DESC, 1`, [actor.id]),
-      pool.query(`SELECT f.category, count(*)::int AS n FROM feed_items f WHERE f.category IS NOT NULL GROUP BY f.category ORDER BY 2 DESC, 1`),
-      pool.query(`SELECT count(*) FILTER (WHERE COALESCE(mu.saved, false))::int AS guardados, count(*) FILTER (WHERE f.category IS NULL)::int AS sin_categoria FROM feed_items f ${joinMi('$1')}`, [actor.id]),
+      pool.query(`SELECT ${MI_ESTADO} AS e, count(*)::int AS n FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY 1`, [actor.id]),
+      pool.query(`SELECT f.kind, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY f.kind`, [actor.id]),
+      pool.query(`SELECT f.source, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY f.source ORDER BY 3 DESC, 2 DESC, 1`, [actor.id]),
+      pool.query(`SELECT f.category, count(*)::int AS n FROM feed_items f WHERE f.category IS NOT NULL AND ${visible('$1')} GROUP BY f.category ORDER BY 2 DESC, 1`, [actor.id]),
+      pool.query(`SELECT count(*) FILTER (WHERE COALESCE(mu.saved, false))::int AS guardados, count(*) FILTER (WHERE f.category IS NULL)::int AS sin_categoria FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')}`, [actor.id]),
     ])
     const por_estado = Object.fromEntries(ESTADOS.map((e) => [e, 0])) as Record<string, number>
     for (const r of porEstado.rows) por_estado[r.e] = r.n
@@ -241,13 +251,15 @@ type Resultado = { item: ReturnType<typeof itemOut>; creado: boolean }
 /** Inserta un ítem (o devuelve el que ya existía con esa fuente y clave). No avisa: avisar es cosa de quien publicó el lote completo. */
 async function insertar(c: Db, actor: Actor, b: Item): Promise<Resultado> {
   const ins = await c.query(
-    `INSERT INTO feed_items (title, summary, kind, source, external_key, published_by, data, found_at, category)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, COALESCE($8::timestamptz, now()), $9)
+    `INSERT INTO feed_items (title, summary, kind, source, external_key, published_by, data, found_at, category, visibility)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, COALESCE($8::timestamptz, now()), $9, $10)
      ON CONFLICT (source, external_key) WHERE external_key IS NOT NULL DO NOTHING RETURNING id`,
-    [b.titulo, b.resumen ?? null, b.tipo, b.fuente, b.clave_externa ?? null, actor.id, JSON.stringify(b.datos ?? {}), b.fecha ?? null, b.categoria ?? null],
+    [b.titulo, b.resumen ?? null, b.tipo, b.fuente, b.clave_externa ?? null, actor.id, JSON.stringify(b.datos ?? {}), b.fecha ?? null, b.categoria ?? null, b.visibilidad ?? 'equipo'],
   )
   if (ins.rowCount) return { item: await item(c, ins.rows[0].id, actor.id), creado: true }
-  const ya = (await c.query('SELECT id FROM feed_items WHERE source = $1 AND external_key = $2', [b.fuente, b.clave_externa])).rows[0]
+  const ya = (await c.query('SELECT id, visibility, published_by FROM feed_items WHERE source = $1 AND external_key = $2', [b.fuente, b.clave_externa])).rows[0]
+  // Esa clave ya es de un ítem privado de otro socio: no se le muestra ni se le confirma que existe su contenido.
+  if (ya.visibility === 'privado' && ya.published_by !== actor.id) throw new HttpError(409, 'Esa clave_externa ya está en uso en esa fuente: usa otra')
   // Volver a publicar lo mismo no duplica; solo le pone la categoría si todavía no tenía (así se completan los ya publicados).
   if (b.categoria) await c.query('UPDATE feed_items SET category = $2 WHERE id = $1 AND category IS NULL', [ya.id, b.categoria])
   return { item: await item(c, ya.id, actor.id), creado: false }
@@ -282,13 +294,13 @@ export const feedPublicar = op(
     } as { [K in keyof typeof itemShape]: z.ZodOptional<(typeof itemShape)[K]> } & { items: z.ZodOptional<z.ZodArray<typeof itemSchema>> })
     .refine(
       (v) => {
-        const suelto = [v.titulo, v.tipo, v.fuente, v.resumen, v.clave_externa, v.categoria, v.datos, v.fecha].some((x) => x !== undefined)
+        const suelto = [v.titulo, v.tipo, v.fuente, v.resumen, v.clave_externa, v.categoria, v.datos, v.fecha, v.visibilidad].some((x) => x !== undefined)
         return v.items !== undefined ? !suelto : v.titulo !== undefined && v.tipo !== undefined && v.fuente !== undefined
       },
       'Envía un ítem (titulo, tipo y fuente son obligatorios) o una lista en items, no las dos cosas',
     ),
   async (actor, b) => {
-    const lista: Item[] = b.items ?? [itemSchema.parse({ titulo: b.titulo, resumen: b.resumen, tipo: b.tipo, fuente: b.fuente, clave_externa: b.clave_externa, categoria: b.categoria, datos: b.datos, fecha: b.fecha })]
+    const lista: Item[] = b.items ?? [itemSchema.parse({ titulo: b.titulo, resumen: b.resumen, tipo: b.tipo, fuente: b.fuente, clave_externa: b.clave_externa, categoria: b.categoria, datos: b.datos, fecha: b.fecha, visibilidad: b.visibilidad })]
     const resultados = await tx(async (c) => {
       // Cuántos de cada (fuente, tipo) hubo ya hace poco: decide si este lote vuelve a avisar.
       const previos = new Map<string, number>()
@@ -305,7 +317,7 @@ export const feedPublicar = op(
       await avisar(
         c,
         actor,
-        out.flatMap((r, i) => (r.creado ? [{ tipo: lista[i].tipo, fuente: lista[i].fuente, titulo: lista[i].titulo, antes: previos.get(`${lista[i].fuente}|${lista[i].tipo}`) ?? 0 }] : [])),
+        out.flatMap((r, i) => (r.creado && lista[i].visibilidad !== 'privado' ? [{ tipo: lista[i].tipo, fuente: lista[i].fuente, titulo: lista[i].titulo, antes: previos.get(`${lista[i].fuente}|${lista[i].tipo}`) ?? 0 }] : [])),
       )
       return out
     })
@@ -331,7 +343,7 @@ export const feedMarcar = op(
   async (actor, b) => {
     if (b.motivo && b.estado !== 'descartado') throw new HttpError(400, 'motivo solo aplica al descartar')
     await tx(async (c) => {
-      const cur = (await c.query('SELECT status FROM feed_items WHERE id = $1 FOR SHARE', [b.id])).rows[0]
+      const cur = (await c.query(`SELECT status FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR SHARE`, [b.id, actor.id])).rows[0]
       if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
       if (cur.status === 'convertido') throw new HttpError(409, 'Este ítem ya se convirtió en algo real: no cambia de estado')
       await c.query(
@@ -347,7 +359,7 @@ export const feedMarcar = op(
 /** Guardar (o quitar de guardados) un ítem: es un marcador personal, sirve también en los ya convertidos. */
 export const feedGuardar = op(z.strictObject({ id, guardado: z.boolean('guardado debe ser true o false').default(true) }), async (actor, b) => {
   await tx(async (c) => {
-    if (!(await c.query('SELECT 1 FROM feed_items WHERE id = $1 FOR SHARE', [b.id])).rowCount) throw new HttpError(404, 'Ítem del feed no encontrado')
+    if (!(await c.query(`SELECT 1 FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR SHARE`, [b.id, actor.id])).rowCount) throw new HttpError(404, 'Ítem del feed no encontrado')
     await c.query(
       `INSERT INTO feed_item_usuarios (item_id, user_id, saved) VALUES ($1, $2, $3)
        ON CONFLICT (item_id, user_id) DO UPDATE SET saved = EXCLUDED.saved, updated_at = now()`,
@@ -487,7 +499,7 @@ const ETIQUETA: Record<Vinculo, string> = { posible_cliente: 'el posible cliente
 export const feedConvertir = op(convertirShape, async (actor, b) => {
   // Se reclama la clase ANTES de crear nada: dos socios tocando "Convertir" a la vez no duplican el cliente o la tarea.
   const antes = await tx(async (c) => {
-    const cur = (await c.query('SELECT status FROM feed_items WHERE id = $1 FOR UPDATE', [b.id])).rows[0]
+    const cur = (await c.query(`SELECT status FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id])).rows[0]
     if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
     const prev = (await c.query('SELECT ref_id, created_at FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])).rows[0]
     if (prev) {
@@ -593,6 +605,7 @@ export const feedDeshacer = op(
     devolver: z.boolean('devolver debe ser true o false').optional(),
   }),
   async (actor, b) => {
+  if (!(await pool.query(`SELECT 1 FROM feed_items f WHERE id = $1 AND ${visible('$2')}`, [b.id, actor.id])).rowCount) throw new HttpError(404, 'Ítem del feed no encontrado')
   const l = (await pool.query('SELECT ref_id, created_by, created_at FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])).rows[0]
   if (!l || !l.ref_id) throw new HttpError(404, 'No hay nada que deshacer en este ítem')
   if (b.devolver) {
@@ -636,7 +649,7 @@ export async function feedResumen(userId: string) {
   const r = (
     await pool.query(
       `SELECT count(*) FILTER (WHERE f.status <> 'convertido' AND mu.status IS NULL)::int AS nuevos, count(*)::int AS total
-       FROM feed_items f LEFT JOIN feed_item_usuarios mu ON mu.item_id = f.id AND mu.user_id = $1`,
+       FROM feed_items f LEFT JOIN feed_item_usuarios mu ON mu.item_id = f.id AND mu.user_id = $1 WHERE ${visible('$1')}`,
       [userId],
     )
   ).rows[0]
@@ -648,7 +661,7 @@ export async function feedAlertas(userId: string): Promise<{ clave: string; fech
   const { rows } = await pool.query(
     `SELECT f.id, f.title, f.kind, f.source, f.found_at, f.created_at, to_char(f.created_at AT TIME ZONE $1, 'YYYY-MM-DD') AS dia
      FROM feed_items f LEFT JOIN feed_item_usuarios mu ON mu.item_id = f.id AND mu.user_id = $4
-     WHERE f.status = 'nuevo' AND mu.status IS NULL AND f.kind = ANY($2::text[]) AND f.created_at > now() - make_interval(days => $3) ORDER BY f.created_at DESC, f.id`,
+     WHERE ${visible('$4')} AND f.status = 'nuevo' AND mu.status IS NULL AND f.kind = ANY($2::text[]) AND f.created_at > now() - make_interval(days => $3) ORDER BY f.created_at DESC, f.id`,
     [TZ, TIPOS_AVISO, AVISO_DIAS, userId],
   )
   const grupos = new Map<string, typeof rows>()
@@ -663,3 +676,14 @@ export async function feedAlertas(userId: string): Promise<{ clave: string; fech
       : { clave: `feed:${r.kind}:${r.source}:${r.dia}:${g.length}`, fecha: r.dia as string, titulo: `${g.length} ${varios} en el feed`, detalle: `Feed · ${r.source}`, cantidad: g.length, tipo: t, fuente: r.source as string, item_id: null }
   })
 }
+
+// ---------- borrar ----------
+/**
+ * Elimina el ítem del feed (definitivo: es un hallazgo que se puede volver a publicar; no pasa por la papelera). Lo que se creó a partir de él
+ * (cliente, tarea, proyecto, pieza de contenido) NO se toca: solo pierde el vínculo. Un privado de otro socio no existe para quien lo intenta: 404.
+ */
+export const feedBorrar = op(z.strictObject({ id }), async (actor, b) => {
+  const r = (await pool.query(`DELETE FROM feed_items f WHERE id = $1 AND ${visible('$2')} RETURNING id, title`, [b.id, actor.id])).rows[0]
+  if (!r) throw new HttpError(404, 'Ítem del feed no encontrado')
+  return { id: r.id as string, titulo: r.title as string, eliminado: true as const }
+})

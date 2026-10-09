@@ -10,7 +10,7 @@ export const VINCULO_TABLA: Record<Vinculo, string> = { posible_cliente: 'client
 
 /** Anota que `refId` salió del ítem; la primera cosa creada pasa el ítem a «convertido» (global). Si ya había una de esa clase, la reemplaza. */
 export async function vincular(c: Db, itemId: string, kind: Vinculo, refId: string, actorId: string) {
-  const it = (await c.query('SELECT status FROM feed_items WHERE id = $1 FOR UPDATE', [itemId])).rows[0]
+  const it = (await c.query(`SELECT status FROM feed_items WHERE id = $1 AND (visibility = 'equipo' OR published_by = $2) FOR UPDATE`, [itemId, actorId])).rows[0]
   if (!it) throw new HttpError(404, 'Ítem del feed no encontrado')
   await c.query(
     `INSERT INTO feed_item_vinculos (item_id, kind, ref_id, created_by) VALUES ($1, $2, $3, $4)

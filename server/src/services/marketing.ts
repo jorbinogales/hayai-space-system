@@ -319,12 +319,13 @@ export const competidoresListar = op(z.strictObject({ q: text(80).optional(), ar
 })
 
 /** Hallazgos del espía de anuncios (feed, fuentes «espia…») cuyo texto menciona al competidor. Solo lo que ya existe: no inventa nada. */
-async function hallazgosDe(nombre: string) {
+async function hallazgosDe(nombre: string, userId: string) {
   const n = norm(nombre)
   if (n.length < 3) return []
   const rows = (
     await pool.query(
-      `SELECT id, title, summary, kind, source, data, found_at FROM feed_items WHERE source ILIKE 'espia%' ORDER BY found_at DESC LIMIT 500`,
+      `SELECT id, title, summary, kind, source, data, found_at FROM feed_items WHERE source ILIKE 'espia%' AND (visibility = 'equipo' OR published_by = $1) ORDER BY found_at DESC LIMIT 500`,
+      [userId],
     )
   ).rows
   const out = []
@@ -337,9 +338,9 @@ async function hallazgosDe(nombre: string) {
   return out
 }
 
-export const competidorVer = op(z.strictObject({ id }), async (_a, b) => {
+export const competidorVer = op(z.strictObject({ id }), async (actor, b) => {
   const k = await compFila(pool, b.id)
-  return { ...compOut(k), hallazgos: await hallazgosDe(k.nombre as string) }
+  return { ...compOut(k), hallazgos: await hallazgosDe(k.nombre as string, actor.id) }
 })
 
 export const competidorCrear = op(
@@ -353,7 +354,7 @@ export const competidorCrear = op(
       [b.nombre, n, b.web ?? null, b.instagram ?? null, b.notas ?? null, actor.id],
     )
     const k = await compFila(pool, r.rows[0].id)
-    return { ...compOut(k), hallazgos: await hallazgosDe(k.nombre as string) }
+    return { ...compOut(k), hallazgos: await hallazgosDe(k.nombre as string, actor.id) }
   },
 )
 
@@ -361,7 +362,7 @@ export const competidorActualizar = op(
   z
     .strictObject({ id, nombre: nombreComp.optional(), web: urlLibre.nullish(), instagram: igLibre.nullish(), notas: notasComp.nullish(), archivado: boolFlag.optional() })
     .refine((v) => Object.keys(v).length > 1, 'Nada que cambiar'),
-  async (_a, b) => {
+  async (actor, b) => {
     await tx(async (c) => {
       const k = await compFila(c, b.id)
       const sets: string[] = []
@@ -391,7 +392,7 @@ export const competidorActualizar = op(
       await c.query(`UPDATE mk_competidores SET ${sets.join(', ')} WHERE id = $1`, params)
     })
     const k = await compFila(pool, b.id)
-    return { ...compOut(k), hallazgos: await hallazgosDe(k.nombre as string) }
+    return { ...compOut(k), hallazgos: await hallazgosDe(k.nombre as string, actor.id) }
   },
 )
 

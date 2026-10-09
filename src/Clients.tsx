@@ -6,9 +6,11 @@ import { useCosmos } from './Cosmos'
 import CalendarModal from './CalendarModal'
 import Invoice, { type InvoiceData } from './Invoice'
 import { useDragScroll } from './drag'
-import { addDays, avatarOf, convertClient, moveLabel, stats, summary, useClients, money, fmtDate, todayISO, type Client } from './store'
+import { addDays, avatarOf, convertClient, moveLabel, stats, summary, useAllClients, useClients, money, fmtDate, todayISO, type Client } from './store'
 import NewClient from './NewClient'
 import DayTrack, { dayItems } from './DayTrack'
+import { nextActionOf } from './nextAction'
+import { owedCount, owedTotal } from './finance'
 import NewProspect from './NewProspect'
 import EditClient from './EditClient'
 import { useProjects } from './projectData'
@@ -175,6 +177,7 @@ function makeHook(world: World, br: Bridge) {
 export default function Clients({ onBack }: { onBack: () => void }) {
   const { world, setDeep } = useCosmos()
   const clients = useClients()
+  const allClients = useAllClients()
   const [selected, setSelected] = useState<string | null>(null)
   const [hover, setHover] = useState<string | null>(null)
   const [auto, setAuto] = useState(clients[0]?.id ?? '')
@@ -324,6 +327,10 @@ export default function Clients({ onBack }: { onBack: () => void }) {
   const dayRows = dayItems(clients, tasks, projects, moveLabel)
   const live = dayRows.find((p) => p.clientId === shown)?.id
   const today = todayISO()
+  const nextOf = (id: string) => {
+    const l = clients.find((x) => x.id === id) as Lead | undefined
+    return nextActionOf(id, dayRows, { text: l?.nextAction, date: l?.nextActionDate }, today)
+  }
 
   return (
     <main className={`screen layer clients arriving${open ? ' has-drawer' : ''}${deep ? ' deep' : ''}${exiting ? ' exiting' : ''}${flat ? ' view-flat' : ''}`}>
@@ -371,7 +378,9 @@ export default function Clients({ onBack }: { onBack: () => void }) {
               <br />
               {money(sm.recaudado)} recaudado
               <br />
-              {sm.porCobrar} por cobrar
+              {money(owedTotal(allClients))} por cobrar
+              <br />
+              {owedCount(allClients)} {owedCount(allClients) === 1 ? 'cobro pendiente' : 'cobros pendientes'}
             </p>
             <div className="new-row-btns">
               <button className="new" onClick={() => setForm(true)}>
@@ -427,7 +436,9 @@ export default function Clients({ onBack }: { onBack: () => void }) {
                     <li>
                       {st.pagos} {st.pagos === 1 ? 'pago completado' : 'pagos completados'}
                     </li>
-                    <li>{st.porCobrar} por cobrar</li>
+                    <li>
+                      {st.porCobrar} {st.porCobrar === 1 ? 'cobro pendiente' : 'cobros pendientes'}
+                    </li>
                   </>
                 )}
               </ul>
@@ -498,9 +509,9 @@ export default function Clients({ onBack }: { onBack: () => void }) {
             title={view === 'orbital' ? 'Quién está cerca de cerrar' : 'El camino de cada posible cliente'}
           >
             {view === 'orbital' ? (
-              <OrbitalView clients={clients as Lead[]} stages={stages} openId={open} onPick={pickLink} onSwitch={setView} onProspect={() => setProsp(true)} />
+              <OrbitalView clients={clients as Lead[]} stages={stages} openId={open} onPick={pickLink} onSwitch={setView} onProspect={() => setProsp(true)} nextOf={nextOf} />
             ) : (
-              <PipelineView clients={clients as Lead[]} stages={stages} openId={open} onPick={pickLink} />
+              <PipelineView clients={clients as Lead[]} stages={stages} openId={open} onPick={pickLink} nextOf={nextOf} />
             )}
           </FlatFrame>
         )}
@@ -510,6 +521,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
           onEdit={setEdit}
           onConvert={(id) => void convertClient(id)}
           project={projects.find((p) => p.clientId === open) ?? null}
+          next={open ? nextOf(open) : null}
           visit={(() => {
             const pr = projects.find((p) => p.clientId === open)
             return tasks.find((t) => t.projectId === pr?.id && !t.done && t.due) ?? tasks.find((t) => t.projectId === pr?.id) ?? null

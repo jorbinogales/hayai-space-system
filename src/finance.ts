@@ -21,6 +21,8 @@ export function yearFinance(clients: Client[], expenses: Expense[]) {
 export const owed = (c: Client) => c.movements.filter((m) => m.status === 'pendiente').reduce((s, m) => s + m.amount, 0)
 /** Lo que se debe en total: el «por cobrar» de Finanzas y del planeta Clientes salen de aquí. */
 export const owedTotal = (clients: Client[]) => clients.reduce((s, c) => s + owed(c), 0)
+/** Cuantos cobros pendientes hay (la cantidad, no el monto): mismo universo de clientes que `owedTotal`. */
+export const owedCount = (clients: Client[]) => clients.reduce((s, c) => s + c.movements.filter((m) => m.status === 'pendiente').length, 0)
 
 export interface ClientRow {
   id: string

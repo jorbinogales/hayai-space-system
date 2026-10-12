@@ -63,7 +63,7 @@ if (flag('medir')) {
   process.exit(0)
 }
 
-const g = estadoGeocoder()
+const g = estadoGeocoder({ estricto: true }) // el script no cae a Nominatim a escondidas: si pediste Mapbox y falta el token, para
 if (g.error) {
   console.error(`El geocodificador está mal configurado: ${g.error}`)
   process.exit(2)

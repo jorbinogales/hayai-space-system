@@ -38,6 +38,13 @@ services:
       RECEIVER_DOCUMENTS: ${RECEIVER_DOCUMENTS:-}
       # Semaforo de los sistemas de los clientes: cada cuantos ms se verifican (0 lo apaga; por defecto 600000 = 10 min).
       SYSTEMS_CHECK_MS: ${SYSTEMS_CHECK_MS:-600000}
+      # Mapa del Feed (v1.8). El token de Mapbox va SOLO en el .env del VPS (o en el entorno del deploy): nunca al repo. Ver README, "Mapa del Feed".
+      # Defaults = el comportamiento de siempre (Nominatim + OpenStreetMap): sin MAPBOX_PUBLIC_TOKEN el mapa funciona igual y el servidor lo avisa en el log.
+      GEOCODER: ${GEOCODER:-nominatim}
+      MAP_TILES: ${MAP_TILES:-osm}
+      MAPBOX_PUBLIC_TOKEN: ${MAPBOX_PUBLIC_TOKEN:-}
+      MAPBOX_PERMANENT: ${MAPBOX_PERMANENT:-false}
+      MAPBOX_STYLE: ${MAPBOX_STYLE:-mapbox/streets-v12}
     depends_on:
       db:
         condition: service_healthy

@@ -12,7 +12,7 @@ import { after, before, describe, it } from 'node:test'
 import EmbeddedPostgres from 'embedded-postgres'
 import pg from 'pg'
 import { keyRateLimit } from '../src/v1/apiKey.ts'
-import { crearGeocoder, GeocoderError, mapbox, precisionMapbox, teselas } from '../src/geocode.ts'
+import { avisosMapa, crearGeocoder, geocoder, GeocoderError, mapbox, precisionMapbox, reiniciarGeocoder, teselas } from '../src/geocode.ts'
 
 const root = resolve(import.meta.dirname, '../..')
 const PG_PORT = 54331
@@ -5044,9 +5044,60 @@ describe('Feed: Mapbox como segundo proveedor (geocodificación y teselas)', () 
         const p = join(dir, f)
         return statSync(p).isDirectory() ? (f === 'node_modules' ? [] : archivos(p)) : /\.(ts|tsx|css|md|mjs|json|html)$/.test(f) ? [p] : []
       })
-    const todos = [...archivos(join(root, 'src')), ...archivos(join(root, 'server/src')), join(root, 'README.md'), join(root, '.env.example'), join(root, 'index.html')]
+    const todos = [...archivos(join(root, 'src')), ...archivos(join(root, 'server/src')), join(root, 'README.md'), join(root, '.env.example'), join(root, '.env.production.example'), join(root, 'docker-compose.prod.yml'), join(root, '.github/workflows/deploy.yml'), join(root, 'index.html')]
     for (const f of todos) assert.doesNotMatch(readFileSync(f, 'utf8'), /\b[ps]k\.eyJ[\w-]{10,}/, `${f}: parece un token de Mapbox escrito en el código`)
     for (const f of archivos(join(root, 'src'))) assert.doesNotMatch(readFileSync(f, 'utf8'), /MAPBOX_PUBLIC_TOKEN|access_token/, `${f}: el front no lee el token ni arma URLs con él: lo recibe del servidor`)
+  })
+
+  it('arranque: sin MAPBOX_PUBLIC_TOKEN avisa pero no es un error (el mapa sigue con Nominatim/OSM); con token solo dice que está, nunca el valor', () => {
+    const sin = avisosMapa({})
+    assert.deepEqual(sin.map((a) => a.nivel), ['info'])
+    assert.match(sin[0].texto, /no está definido.*Nominatim.*OpenStreetMap/)
+    const pidePeroSin = avisosMapa({ GEOCODER: 'mapbox', MAP_TILES: 'mapbox' })
+    assert.equal(pidePeroSin[0].nivel, 'warn', 'pide Mapbox sin token: aviso fuerte')
+    assert.match(pidePeroSin[0].texto, /se usa Nominatim\/OpenStreetMap/)
+    assert.equal(avisosMapa({ MAPBOX_PUBLIC_TOKEN: '   ' })[0].nivel, 'info', 'un token en blanco cuenta como no definido')
+    const malo = avisosMapa({ MAPBOX_PUBLIC_TOKEN: 'sk.secreto-de-prueba' })
+    assert.equal(malo[0].nivel, 'warn')
+    assert.doesNotMatch(malo[0].texto, /secreto-de-prueba/, 'ni el token rechazado aparece en el log')
+    const con = avisosMapa({ MAPBOX_PUBLIC_TOKEN: MBX_TOKEN })
+    assert.equal(con[0].nivel, 'info')
+    assert.ok(!con[0].texto.includes(MBX_TOKEN) && !con[0].texto.includes(MBX_TOKEN.slice(0, 6)), 'el log no lleva el token ni un pedazo')
+    assert.match(con[0].texto, /geocodificación: nominatim · teselas: osm/)
+  })
+
+  it('en el servidor, GEOCODER=mapbox sin token cae a Nominatim (no apaga ni tumba nada); el modo estricto (scripts/mediciones) sigue avisando', () => {
+    const antes = { g: process.env.GEOCODER, t: process.env.MAPBOX_PUBLIC_TOKEN }
+    const warn = console.warn
+    const dichos: string[] = []
+    console.warn = (...a: unknown[]) => void dichos.push(a.join(' '))
+    try {
+      process.env.GEOCODER = 'mapbox'
+      delete process.env.MAPBOX_PUBLIC_TOKEN
+      reiniciarGeocoder()
+      assert.equal(geocoder()?.nombre, 'nominatim')
+      assert.equal(dichos.length, 1)
+      assert.doesNotMatch(dichos[0], /pk\./)
+      geocoder()
+      assert.equal(dichos.length, 1, 'se dice una sola vez')
+      assert.throws(() => crearGeocoder(), /MAPBOX_PUBLIC_TOKEN/, 'crearGeocoder sigue siendo estricto')
+      process.env.MAPBOX_PUBLIC_TOKEN = 'sk.no-sirve'
+      reiniciarGeocoder()
+      assert.throws(() => geocoder(), /secreto/, 'un token secreto sí es un error de configuración, no se esconde')
+    } finally {
+      console.warn = warn
+      if (antes.g === undefined) delete process.env.GEOCODER
+      else process.env.GEOCODER = antes.g
+      if (antes.t === undefined) delete process.env.MAPBOX_PUBLIC_TOKEN
+      else process.env.MAPBOX_PUBLIC_TOKEN = antes.t
+      reiniciarGeocoder()
+    }
+  })
+
+  it('despliegue: docker-compose.prod.yml pasa el token y la elección de proveedor desde el entorno, con los defaults de siempre y sin ningún valor', () => {
+    const y = readFileSync(resolve(root, 'docker-compose.prod.yml'), 'utf8')
+    for (const [k, def] of [['GEOCODER', 'nominatim'], ['MAP_TILES', 'osm'], ['MAPBOX_PUBLIC_TOKEN', ''], ['MAPBOX_PERMANENT', 'false']]) assert.ok(y.includes(`${k}: \${${k}:-${def}}`), `${k} debe ir como \${${k}:-${def}}`)
+    assert.doesNotMatch(y, /MAPBOX_PUBLIC_TOKEN:\s*["']?pk\./, 'el valor del token no se escribe en el compose')
   })
 
   it('mapbox(): pide con país, idioma, sesgo a Barquisimeto, sin autocompletar y con el token; lo guardable exige permanent solo si se pide', async () => {

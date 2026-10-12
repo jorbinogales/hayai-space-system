@@ -175,6 +175,8 @@ export function mapbox(o: MapboxOpts): Geocoder {
 // ---------- elección del proveedor (por entorno) ----------
 export const GEO_UA = process.env.GEOCODER_USER_AGENT?.trim() || 'HAYAI-Space/1.0 (+https://space.hayai.com.ve)'
 const PROVEEDORES = 'nominatim | mapbox | off'
+/** GEOCODER=mapbox sin MAPBOX_PUBLIC_TOKEN: no es un error del proveedor sino un token que aún no se configuró. */
+export class SinTokenMapbox extends Error {}
 const entero = (v: string | undefined, def: number) => (v && Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : def)
 
 /** El token público de Mapbox: SOLO del entorno del servidor (MAPBOX_PUBLIC_TOKEN). Debe ser público (pk.…): uno secreto (sk.…) se rechaza. */
@@ -196,7 +198,7 @@ export function crearGeocoder(env: NodeJS.ProcessEnv = process.env): Geocoder | 
   const url = (env[`${prov.toUpperCase()}_URL`] ?? env.GEOCODER_URL)?.trim() // NOMINATIM_URL / MAPBOX_URL mandan sobre GEOCODER_URL (útil para medir los dos a la vez)
   if (prov === 'mapbox') {
     const token = tokenMapbox(env)
-    if (!token) throw new Error('GEOCODER=mapbox necesita MAPBOX_PUBLIC_TOKEN en el entorno del servidor (token público, pk.…)')
+    if (!token) throw new SinTokenMapbox('GEOCODER=mapbox necesita MAPBOX_PUBLIC_TOKEN en el entorno del servidor (token público, pk.…)')
     return mapbox({ url: url || 'https://api.mapbox.com', token, minMs: entero(env.GEOCODER_MIN_MS, 100), timeoutMs, permanent: /^(1|true|si|sí)$/i.test(env.MAPBOX_PERMANENT?.trim() ?? '') })
   }
   if (prov !== 'nominatim') throw new Error(`GEOCODER desconocido: ${prov} (${PROVEEDORES})`)
@@ -212,7 +214,15 @@ let activo: Geocoder | null | undefined
 /** El geocodificador configurado, o null si está apagado (GEOCODER=off). Lanza si la configuración es inválida. */
 export function geocoder(): Geocoder | null {
   if (activo !== undefined) return activo
-  return (activo = crearGeocoder())
+  try {
+    return (activo = crearGeocoder())
+  } catch (e) {
+    // Mapbox pedido pero sin token (todavía no está en el entorno del servidor): el mapa sigue con Nominatim y se dice una vez en el log.
+    // El script y las mediciones (crearGeocoder directo) siguen siendo estrictos. Un token secreto o un proveedor desconocido sí son errores.
+    if (!(e instanceof SinTokenMapbox)) throw e
+    console.warn('[geocodificar] GEOCODER=mapbox pero MAPBOX_PUBLIC_TOKEN no está definido: se usa Nominatim hasta que se configure el token')
+    return (activo = crearGeocoder({ ...process.env, GEOCODER: 'nominatim' }))
+  }
 }
 
 let avisado = ''
@@ -228,9 +238,10 @@ export function geocoderOSinConfigurar(): Geocoder | null {
 }
 
 /** Estado para mostrar/diagnosticar: qué proveedor está activo y, si la configuración no sirve, por qué. */
-export function estadoGeocoder(): { proveedor: ProveedorGeo | null; error: string | null } {
+export function estadoGeocoder(o: { estricto?: boolean } = {}): { proveedor: ProveedorGeo | null; error: string | null } {
   try {
-    return { proveedor: geocoder()?.nombre ?? null, error: null }
+    // estricto (scripts): GEOCODER=mapbox sin token es un error, no un Nominatim de repuesto
+    return { proveedor: (o.estricto ? crearGeocoder() : geocoder())?.nombre ?? null, error: null }
   } catch (e) {
     return { proveedor: null, error: (e as Error).message }
   }
@@ -287,6 +298,29 @@ export function teselas(env: NodeJS.ProcessEnv = process.env): Teselas {
     zoom_offset: -1,
     max_zoom: 19,
   }
+}
+
+/**
+ * Lo que el servidor dice del mapa al arrancar. Nunca incluye el token (ni un pedazo): solo si está o no. Sin token NO es un error:
+ * el mapa sigue con Nominatim (geocodificación) y OpenStreetMap (teselas).
+ */
+export function avisosMapa(env: NodeJS.ProcessEnv = process.env): { nivel: 'info' | 'warn'; texto: string }[] {
+  const prov = (env.GEOCODER ?? 'nominatim').trim().toLowerCase() || 'off'
+  const tiles = (env.MAP_TILES ?? 'osm').trim().toLowerCase() || 'osm'
+  const pideMapbox = prov === 'mapbox' || tiles === 'mapbox'
+  let token: string | null = null
+  try {
+    token = tokenMapbox(env)
+  } catch (e) {
+    return [{ nivel: 'warn', texto: `[mapa] ${(e as Error).message}: el mapa usa Nominatim/OpenStreetMap hasta que se corrija` }]
+  }
+  if (!token)
+    return [
+      pideMapbox
+        ? { nivel: 'warn', texto: `[mapa] MAPBOX_PUBLIC_TOKEN no está definido y GEOCODER=${prov} / MAP_TILES=${tiles} piden Mapbox: se usa Nominatim/OpenStreetMap hasta que se configure` }
+        : { nivel: 'info', texto: '[mapa] MAPBOX_PUBLIC_TOKEN no está definido: el mapa usa Nominatim (geocodificación) y OpenStreetMap (teselas)' },
+    ]
+  return [{ nivel: 'info', texto: `[mapa] MAPBOX_PUBLIC_TOKEN definido · geocodificación: ${prov} · teselas: ${tiles}${pideMapbox ? '' : ' (Mapbox listo pero aún sin usar)'}` }]
 }
 
 // ---------- de una dirección venezolana a consultas que Nominatim entienda ----------

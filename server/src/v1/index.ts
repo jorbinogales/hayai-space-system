@@ -12,7 +12,7 @@ import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResum
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
 import { chatBorrar, chatContadores, chatEditar, chatListar, chatMarcarLeido, chatPublicar, chatUsuarios, chatVer } from '../services/chat.ts'
-import { feedBorrar, feedConvertir, feedDeshacer, feedGuardar, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
+import { feedBorrar, feedConvertir, feedDeshacer, feedGeocodificar, feedGuardar, feedListar, feedMapa, feedMarcar, feedPublicar, feedUbicacion, feedVer } from '../services/feed.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
 import { gastoActualizar, gastoRegistrar, gastosListar, gastoVer } from '../services/gastos.ts'
@@ -191,9 +191,12 @@ for (const r of MK_RUTAS) route(r.method, r.path, r.op, r.status)
 // Feed de oportunidades: lo que las máquinas y los agentes ENCONTRARON (la bitácora es lo que el equipo HIZO).
 // POST /feed: 201 si se creó; 200 si esa (fuente, clave_externa) ya existía (idempotente: reintentar es seguro). En lote (items): 201 si se creó alguno.
 route('get', '/feed', feedListar)
+route('get', '/feed/mapa', feedMapa) // pines (con coordenadas) y «sin ubicación»; mismos filtros que GET /feed. Antes de /feed/:id
+route('post', '/feed/geocodificar', feedGeocodificar) // busca en segundo plano las coordenadas de lo que tiene dirección y aún no pin
 route('get', '/feed/:id', feedVer)
 route('post', '/feed', feedPublicar, (o) => ((o.creado ?? o.creados) ? 201 : 200))
 route('patch', '/feed/:id/estado', feedMarcar)
+route('patch', '/feed/:id/ubicacion', feedUbicacion) // direccion corregida (se vuelve a buscar) y/o lat+lng (pin a mano)
 route('post', '/feed/:id/guardar', feedGuardar)
 route('post', '/feed/:id/convertir', feedConvertir)
 route('post', '/feed/:id/deshacer', feedDeshacer)

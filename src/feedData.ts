@@ -36,6 +36,19 @@ export const FEED_TIPO_LABEL: Record<FeedTipo, string> = {
 }
 export const FEED_ESTADO_LABEL: Record<FeedEstado, string> = { nuevo: 'Nuevo', revisado: 'Revisado', descartado: 'Descartado', convertido: 'Convertido' }
 
+/** Dónde queda un ítem (mapa): ok = tiene pin; pendiente = se está buscando; sin_resultado / error / sin_direccion = va a «Sin ubicación». */
+export type UbicacionEstado = 'ok' | 'pendiente' | 'sin_resultado' | 'error' | 'sin_direccion'
+export interface Ubicacion {
+  estado: UbicacionEstado
+  direccion: string | null
+  lat: number | null
+  lng: number | null
+  /** exacta | calle | zona (aproximada: centro de la urbanización o del barrio) */
+  precision: 'exacta' | 'calle' | 'zona' | null
+  /** nominatim: se buscó la dirección · manual: alguien puso el pin · datos: ya venía con coordenadas */
+  origen: 'nominatim' | 'manual' | 'datos' | null
+}
+
 export interface FeedItem {
   id: string
   titulo: string
@@ -54,6 +67,7 @@ export interface FeedItem {
   guardado: boolean
   /** forma libre: negocio, fugas, guion, urls, metricas, contacto, origen_url, telefono, email, origen... */
   datos: Record<string, unknown>
+  ubicacion: Ubicacion
   fecha: string
   publicado_el: string
   /** GLOBAL: en qué se convirtió, quién y cuándo */
@@ -475,3 +489,43 @@ export const takeFeedFocus = (): FeedFocus | null => {
 }
 /** Se dispara cuando se pide enfocar el feed estando ya en su vista. */
 export const onFeedFocus = (fn: () => void) => (focusSubs.add(fn), () => void focusSubs.delete(fn))
+
+// ---------- mapa (v1.8): GET /feed/mapa trae los pines y la bandeja «Sin ubicación» con los mismos filtros que la lista ----------
+export interface MapaItem {
+  id: string
+  titulo: string
+  tipo: FeedTipo
+  categoria: string | null
+  /** lo que ve este socio: define el color del pin */
+  estado: FeedEstado
+  telefono: string | null
+  fecha: string
+  ubicacion: Ubicacion
+}
+export interface FeedMapa {
+  pines: MapaItem[]
+  sin_ubicacion: MapaItem[]
+  total: number
+  /** hay más ítems que los que cabe en el mapa: se afina con los filtros */
+  truncado: boolean
+  /** false: el servidor no tiene con qué buscar direcciones (GEOCODER=off) */
+  geocodificador: boolean
+}
+export const loadFeedMapa = (f: FeedFilters = {}) => api.get<FeedMapa>(`/feed/mapa${qs({ ...f, page: undefined, per_page: undefined })}`)
+/** Corrige la dirección (se vuelve a buscar) y/o fija el pin a mano (lat + lng). Devuelve el ítem ya actualizado. */
+export const fijarUbicacion = (id: string, b: { direccion?: string; lat?: number; lng?: number }) => api.patch<FeedItem>(`/feed/${encodeURIComponent(id)}/ubicacion`, b)
+
+/** Estado -> etiqueta y color del pin (la leyenda del mapa y los pines salen de aquí). */
+export const PIN_ESTADOS: { estado: FeedEstado; label: string }[] = [
+  { estado: 'nuevo', label: 'Nuevo' },
+  { estado: 'revisado', label: 'Revisado' },
+  { estado: 'convertido', label: 'Convertido' },
+  { estado: 'descartado', label: 'Descartado' },
+]
+export const PRECISION_LABEL = { exacta: 'Ubicación exacta', calle: 'Ubicada en la calle', zona: 'Ubicación aproximada: centro de la urbanización o el sector' } as const
+export const MOTIVO_SIN_PIN: Record<Exclude<UbicacionEstado, 'ok'>, string> = {
+  pendiente: 'Buscando en el mapa…',
+  sin_resultado: 'No se encontró esa dirección',
+  error: 'No se pudo consultar el mapa; se reintenta',
+  sin_direccion: 'No trae dirección',
+}

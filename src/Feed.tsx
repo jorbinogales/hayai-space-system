@@ -3,7 +3,7 @@
 //
 // Dos piezas: `FeedEntry` (la tarjeta compacta que vive en la página del Hub) y `FeedScreen` (la vista propia del feed, #hub/feed).
 // Revisar, descartar y guardar son PERSONALES; convertir es GLOBAL (lo ve todo el equipo).
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { ApiError } from './api'
 import { refreshAlerts } from './live'
 import { SOURCE_LABEL } from './clientLog'
@@ -70,6 +70,18 @@ import { useCosmos } from './Cosmos'
 import './feed.css'
 
 const PER_PAGE = 20
+/** El mapa (y Leaflet) se descarga solo cuando alguien lo abre. */
+const FeedMap = lazy(() => import('./FeedMap'))
+type Vista = 'lista' | 'mapa'
+const VISTA_KEY = 'hayai:feed:vista'
+/** La última vista que eligió este navegador (lista o mapa). Sin almacenamiento disponible, siempre lista. */
+const vistaGuardada = (): Vista => {
+  try {
+    return localStorage.getItem(VISTA_KEY) === 'mapa' ? 'mapa' : 'lista'
+  } catch {
+    return 'lista'
+  }
+}
 /** cuántas páginas ya cargadas se vuelven a pedir en una recarga (el resto se conserva tal cual) */
 const REFRESH_PAGES = 5
 const SOURCES = ['referido', 'instagram', 'whatsapp', 'facebook', 'meta_ads', 'web', 'visita_frio', 'evento', 'otro']
@@ -1261,6 +1273,8 @@ export function FeedScreen({ owners }: { owners: string[] }) {
     window.setTimeout(closeFeed, reduced() ? 50 : 300)
   }
   const [f, setF] = useState<Filters>(DEFAULTS)
+  const [vista, setVista] = useState<Vista>(vistaGuardada)
+  const [rev, setRev] = useState(0) // sube en cada recarga de la lista: el mapa vuelve a pedir sus pines
   const [qInput, setQInput] = useState('')
   const [items, setItems] = useState<FeedItem[]>([])
   const [meta, setMeta] = useState<FeedMeta | null>(null)
@@ -1329,7 +1343,18 @@ export function FeedScreen({ owners }: { owners: string[] }) {
         setFirstLoad(false)
       })
   }, [])
-  const refresh = useCallback(() => fetchFirst('refresh'), [fetchFirst])
+  const refresh = useCallback(() => {
+    setRev((r) => r + 1)
+    fetchFirst('refresh')
+  }, [fetchFirst])
+  const cambiarVista = (v: Vista) => {
+    setVista(v)
+    try {
+      localStorage.setItem(VISTA_KEY, v)
+    } catch {
+      /* sin almacenamiento: la elección vale solo para esta sesión */
+    }
+  }
   /** Varios cambios seguidos (guardar, revisar...) se juntan en una sola recarga. */
   const refreshSoon = useCallback(() => {
     window.clearTimeout(refreshTimer.current)
@@ -1374,6 +1399,7 @@ export function FeedScreen({ owners }: { owners: string[] }) {
     (it: FeedItem) => {
       focusId.current = it.id
       setLost(false)
+      setVista('lista') // se llega a una tarjeta concreta (campana, enlace, algo recién propuesto): se ve en la lista; la elección guardada no cambia
       setPinned(it)
       setQInput('')
       const next: Filters = { ...DEFAULTS, estado: vistaDe(it) }
@@ -1501,6 +1527,7 @@ export function FeedScreen({ owners }: { owners: string[] }) {
   const showFilters = !(totalAll === 0 && !extra && !f.guardado && !firstLoad && !error)
   const end = !hasMore && !firstLoad && !error && shown.length > 0
 
+  const mapQuery = useMemo(() => toQuery(f), [f])
   const toggleSaved = () =>
     setF((c) => {
       const on = !c.guardado
@@ -1570,6 +1597,14 @@ export function FeedScreen({ owners }: { owners: string[] }) {
 
             {showFilters && (
               <div className="fd-filters" role="group" aria-label="Filtros del feed" ref={filtersEl}>
+                <div className="fd-seg fd-vista" role="group" aria-label="Vista del feed">
+                  <button type="button" className={vista === 'lista' ? 'is-on' : ''} aria-pressed={vista === 'lista'} onClick={() => cambiarVista('lista')}>
+                    <Icon name="list" size={15} /> Lista
+                  </button>
+                  <button type="button" className={vista === 'mapa' ? 'is-on' : ''} aria-pressed={vista === 'mapa'} onClick={() => cambiarVista('mapa')}>
+                    <Icon name="map" size={15} /> Mapa
+                  </button>
+                </div>
                 <div className="fd-row">
                   <div className="fd-seg" role="group" aria-label="Estado">
                     {ESTADO_TABS.map((t) => {
@@ -1637,9 +1672,11 @@ export function FeedScreen({ owners }: { owners: string[] }) {
               </div>
             )}
 
-            <p className={`fd-results${empty ? ' fd-sr' : ''}`} role="status" aria-live="polite">
-              {results}
-            </p>
+            {vista === 'lista' && (
+              <p className={`fd-results${empty ? ' fd-sr' : ''}`} role="status" aria-live="polite">
+                {results}
+              </p>
+            )}
 
             {error && (
               <div className="hb-alert fd-alert" role="alert">
@@ -1652,11 +1689,23 @@ export function FeedScreen({ owners }: { owners: string[] }) {
               </div>
             )}
 
-            {firstLoad && !error && <Skeleton />}
+            {vista === 'mapa' && (
+              <Suspense fallback={<p className="fd-loading"><span className="fd-spin" aria-hidden="true" /> Cargando el mapa…</p>}>
+                <FeedMap
+                  query={mapQuery}
+                  rev={rev}
+                  onItem={replaceItem}
+                  onGone={gone}
+                  card={(it, h) => <FeedCard key={it.id} it={it} hit={false} owners={owners} me={me} onItem={h.onItem} onGone={h.onGone} />}
+                />
+              </Suspense>
+            )}
 
-            {empty && <Empty f={f} extra={extra} initial={totalAll === 0} onPropose={() => setProposing(true)} onFilters={setF} onClear={() => applyFilters({ ...f, tipo: '', fuente: '', categoria: '', guardado: false, q: '' })} />}
+            {vista === 'lista' && firstLoad && !error && <Skeleton />}
 
-            {shown.length > 0 && (
+            {vista === 'lista' && empty && <Empty f={f} extra={extra} initial={totalAll === 0} onPropose={() => setProposing(true)} onFilters={setF} onClear={() => applyFilters({ ...f, tipo: '', fuente: '', categoria: '', guardado: false, q: '' })} />}
+
+            {vista === 'lista' && shown.length > 0 && (
               <ul className="fd-list">
                 {shown.map((it) => (
                   <FeedCard key={it.id} it={it} hit={hit === it.id} owners={owners} me={me} onItem={replaceItem} onGone={gone} />
@@ -1664,7 +1713,7 @@ export function FeedScreen({ owners }: { owners: string[] }) {
               </ul>
             )}
 
-            {shown.length > 0 && (
+            {vista === 'lista' && shown.length > 0 && (
               <div className="fd-end">
                 {hasMore && <div ref={sentinel} className="fd-sentinel" aria-hidden="true" data-next={nextPage} />}
                 {moreBusy && (

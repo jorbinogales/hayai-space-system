@@ -54,6 +54,23 @@ const SERP_FALSO = [
   { rank: 4, title: 'Otro sitio', link: 'https://otro.net/x' },
 ]
 
+// Nominatim falso: nunca sale a internet. Responde según la consulta y anota cada petición (para probar User-Agent y ritmo).
+const GEO_PORT = 3194
+let geo: Server
+const geoHits: { q: string; ua: string | undefined; t: number }[] = []
+const geoState = { down: false }
+const geoRespuesta = (q: string): unknown[] => {
+  const n = q.toLowerCase()
+  const r = (lat: number, lon: number, place_rank: number, display_name: string) => [{ lat: String(lat), lon: String(lon), place_rank, display_name }]
+  if (n.includes('calle 30')) return r(10.0701, -69.3201, 30, 'Calle 30, Barquisimeto, Lara, Venezuela')
+  if (n.includes('nueva segovia')) return r(10.0522, -69.3105, 22, 'Urbanización Nueva Segovia, Barquisimeto')
+  if (n.includes('cabudare')) return r(10.0333, -69.2667, 26, 'Avenida Intercomunal, Cabudare')
+  if (n.includes('en caracas')) return r(10.5, -66.9, 30, 'Caracas') // dentro de Venezuela, pero lejos: el servidor no lo juzga
+  if (n.includes('ciudadmundo')) return r(48.85, 2.35, 30, 'París') // fuera de Venezuela: se descarta
+  if (/^barquisimeto/.test(n) || n.includes('solo la ciudad')) return r(10.0647, -69.357, 16, 'Barquisimeto, Lara') // demasiado grueso: se descarta
+  return []
+}
+
 type Res = { status: number; body: any; headers: Headers; full?: any }
 type Opts = { method?: string; body?: unknown; raw?: string; key?: string | null; headers?: Record<string, string> }
 
@@ -160,6 +177,15 @@ before(async () => {
   })
   await new Promise<void>((ok) => ext.listen(EXT_PORT, ok))
 
+  geo = createServer((req, res) => {
+    const u = new URL(req.url ?? '/', 'http://x')
+    const q = u.searchParams.get('q') ?? ''
+    geoHits.push({ q, ua: req.headers['user-agent'], t: Date.now() })
+    if (geoState.down) return void res.writeHead(503).end('{}')
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(geoRespuesta(q)))
+  })
+  await new Promise<void>((ok) => geo.listen(GEO_PORT, ok))
+
   target = createServer((req, res) => {
     if (req.url?.startsWith('/siempre')) return void res.writeHead(200).end('ok')
     if (req.url?.startsWith('/redir')) return void res.writeHead(302, { location: `http://localhost:${TARGET_PORT}/health` }).end()
@@ -209,6 +235,11 @@ before(async () => {
     BCV_SOURCES: `http://localhost:${BCV_PORT}/principal,http://localhost:${BCV_PORT}/respaldo`,
     BCV_TTL_MS: '300',
     BCV_REFRESH_MS: '0',
+    // Mapa del feed: la geocodificación apunta a un Nominatim falso (nunca a internet) y espera 120 ms entre peticiones.
+    GEOCODER: 'nominatim',
+    GEOCODER_URL: `http://localhost:${GEO_PORT}`,
+    GEOCODER_USER_AGENT: 'HAYAI-Pruebas/1.0 (+https://hayai.test)',
+    GEOCODER_MIN_MS: '120',
     // El aviso de versión al arrancar se apaga: cada prueba que lo necesita publica su propia versión.
     ANNOUNCE_VERSION: 'false',
   }
@@ -238,6 +269,7 @@ after(async () => {
   target?.close()
   bcvServer?.close()
   ext?.close()
+  geo?.close()
   await embedded?.stop().catch(() => {})
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 })
 })
@@ -786,10 +818,10 @@ describe('MCP', () => {
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 97) // lectura + escritura
+    assert.equal(names.length, 100) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 109)
+    assert.equal(full.length, 112)
     assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -4521,10 +4553,10 @@ describe('Feed de oportunidades', () => {
     assert.equal((await http(`${ROOT}/api/feed`)).status, 401)
   })
 
-  it('MCP: las seis herramientas (la de lectura se ve con solo lectura), publicar idempotente, marcar y guardar personales y convertir', async () => {
+  it('MCP: las herramientas del feed (las de lectura se ven con solo lectura), publicar idempotente, marcar y guardar personales y convertir', async () => {
     const nombres = async (key: string) => ((await rpc('tools/list', {}, key)).body.result.tools as any[]).map((t) => t.name).filter((x: string) => x.startsWith('hayai_feed'))
-    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_convertir', 'hayai_feed_deshacer', 'hayai_feed_guardar', 'hayai_feed_listar', 'hayai_feed_marcar', 'hayai_feed_publicar'])
-    assert.deepEqual(await nombres(KEY_R), ['hayai_feed_listar'])
+    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_convertir', 'hayai_feed_deshacer', 'hayai_feed_geocodificar', 'hayai_feed_guardar', 'hayai_feed_listar', 'hayai_feed_mapa', 'hayai_feed_marcar', 'hayai_feed_publicar', 'hayai_feed_ubicacion'])
+    assert.deepEqual((await nombres(KEY_R)).sort(), ['hayai_feed_listar', 'hayai_feed_mapa'])
     const tools = (await rpc('tools/list')).full.result.tools as any[] // full: body quita `actualizado_el`
     assert.equal(tools.find((t) => t.name === 'hayai_feed_listar').annotations.readOnlyHint, true)
     assert.ok(!tools.find((t) => t.name === 'hayai_feed_marcar').inputSchema.properties.actualizado_el, 'marcar es personal: no hay conflicto que cuidar')
@@ -4742,6 +4774,209 @@ describe('Feed: visibilidad (equipo | privado) y borrado', () => {
     assert.equal(it.visibility, 'equipo')
     await assert.rejects(admin.query(`UPDATE feed_items SET visibility = 'publico' WHERE source = 'vis-test'`), /check/i)
     assert.equal((await admin.query(`SELECT count(*)::int AS n FROM feed_items WHERE visibility NOT IN ('equipo','privado')`)).rows[0].n, 0)
+  })
+})
+
+describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
+  let n = 0
+  const rpc = (method: string, params: unknown = {}, key: string | null = KEY) =>
+    http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: ++n, method, params } })
+  const pub = (body: unknown, key = KEY) => api('/feed', { body, key })
+  const ver = async (id: string, key = KEY) => (await api(`/feed/${id}`, { key })).body
+  const esperar = async (id: string, estado: string, key = KEY) => {
+    for (let i = 0; i < 60; i++) {
+      const it = await ver(id, key)
+      if (it.ubicacion.estado === estado) return it
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    return ver(id, key)
+  }
+  let cookie = ''
+  let KEY_R = ''
+  let A = '' // Calle 30 -> pin exacto
+  let Z = '' // Nueva Segovia -> pin de zona (aproximado)
+  let G = '' // solo la ciudad -> demasiado grueso: sin pin
+  let S = '' // sin dirección
+  let C = '' // Cabudare, privado de Leandro
+
+  before(async () => {
+    KEY_R = newKey('Jorbi', 'solo-lectura-mapa', 'read')
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+  })
+
+  it('al publicar un prospecto con "donde" nace pendiente y el servidor lo ubica solo, con User-Agent propio y sin inventar', async () => {
+    const r = await pub({ titulo: 'Charcutería El Mesón', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-a', categoria: 'charcutería', resumen: 'Atienden por WhatsApp pero sin catálogo.', datos: { donde: 'Av. Los Leones, Calle 30 con Carrera 19, Local 4', contacto: { telefono: '0414-1234567' } } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.equal(r.body.ubicacion.estado, 'pendiente', 'la respuesta no espera al proveedor')
+    assert.equal(r.body.ubicacion.direccion, 'Av. Los Leones, Calle 30 con Carrera 19, Local 4')
+    A = r.body.id
+    const it = await esperar(A, 'ok')
+    assert.deepEqual([it.ubicacion.estado, it.ubicacion.lat, it.ubicacion.lng, it.ubicacion.precision, it.ubicacion.origen], ['ok', 10.0701, -69.3201, 'exacta', 'nominatim'])
+    assert.equal(it.datos.geo.consulta, 'Av. Los Leones, Calle 30 con Carrera 19, Local 4', 'las coordenadas quedan en datos.geo junto a la dirección que las originó')
+    const h = geoHits.filter((x) => /calle 30/i.test(x.q))
+    assert.ok(h.length >= 1)
+    assert.equal(h[0].ua, 'HAYAI-Pruebas/1.0 (+https://hayai.test)', 'identifica a la aplicación, no a la librería HTTP')
+    assert.match(h[0].q, /Barquisimeto, Lara$/, 'sin ciudad en la dirección, se acota a Barquisimeto')
+  })
+
+  it('volver a publicar lo mismo no repite la consulta (idempotente)', async () => {
+    const antes = geoHits.length
+    const r = await pub({ titulo: 'Charcutería El Mesón', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-a', datos: { donde: 'Av. Los Leones, Calle 30 con Carrera 19, Local 4' } })
+    assert.equal(r.status, 200)
+    assert.equal(r.body.ubicacion.estado, 'ok')
+    await new Promise((r) => setTimeout(r, 400))
+    assert.equal(geoHits.length, antes)
+  })
+
+  it('una zona (urbanización) queda como aproximada; solo "Barquisimeto" o un resultado fuera de Venezuela NO dan pin', async () => {
+    const lote = await pub({
+      items: [
+        { titulo: 'Repostería Dulce Luna', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-z', categoria: 'repostería', datos: { donde: 'Urbanización Nueva Segovia, Barquisimeto' } },
+        { titulo: 'Negocio sin calle', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-g', categoria: 'servicios', datos: { donde: 'Barquisimeto' } },
+        { titulo: 'Negocio sin dirección', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-s', categoria: 'servicios', datos: { contacto: { telefono: '0412-0000000' } } },
+        { titulo: 'Resultado en París', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-p', datos: { donde: 'Av. Ciudadmundo 1' } },
+      ],
+    })
+    assert.equal(lote.status, 201, JSON.stringify(lote.body))
+    ;[Z, G, S] = lote.body.data.map((x: any) => x.id)
+    const P = lote.body.data[3].id
+    const z = await esperar(Z, 'ok')
+    assert.deepEqual([z.ubicacion.precision, z.ubicacion.lat], ['zona', 10.0522])
+    const g = await esperar(G, 'sin_resultado')
+    assert.deepEqual([g.ubicacion.estado, g.ubicacion.lat, g.ubicacion.lng], ['sin_resultado', null, null], 'la ciudad entera no es la ubicación de un negocio')
+    assert.equal(g.datos.geo.estado, 'sin_resultado')
+    assert.equal((await ver(S)).ubicacion.estado, 'sin_direccion')
+    assert.equal((await esperar(P, 'sin_resultado')).ubicacion.lat, null, 'un punto fuera de Venezuela se descarta')
+  })
+
+  it('las consultas respetan la política: 120 ms de espera mínima en la prueba (1 s con el servidor público) y nunca dos a la vez', async () => {
+    const t = geoHits.map((x) => x.t)
+    for (let i = 1; i < t.length; i++) assert.ok(t[i] - t[i - 1] >= 100, `consulta ${i}: ${t[i] - t[i - 1]} ms`)
+  })
+
+  it('GET /feed/mapa: pines con coordenadas y bandeja «sin ubicación» con el motivo, mismos filtros que la lista', async () => {
+    const m = await api('/feed/mapa?tipo=prospecto&fuente=growi')
+    assert.equal(m.status, 200, JSON.stringify(m.body))
+    const pin = (id: string) => m.body.pines.find((x: any) => x.id === id)
+    assert.deepEqual([pin(A).titulo, pin(A).estado, pin(A).telefono, pin(A).categoria, pin(A).ubicacion.lat], ['Charcutería El Mesón', 'nuevo', '0414-1234567', 'charcutería', 10.0701])
+    assert.ok(pin(Z))
+    assert.deepEqual(m.body.sin_ubicacion.map((x: any) => [x.id, x.ubicacion.estado]).sort(), [[G, 'sin_resultado'], [S, 'sin_direccion']].concat(m.body.sin_ubicacion.filter((x: any) => ![G, S].includes(x.id)).map((x: any) => [x.id, x.ubicacion.estado])).sort())
+    assert.equal(m.body.geocodificador, true)
+    assert.ok(m.body.por_estado && Array.isArray(m.body.categorias), 'trae los contadores que arman los filtros')
+    assert.equal(m.body.pines.length + m.body.sin_ubicacion.length, m.body.total)
+    // filtros: categoría, buscador, estado
+    const cat = await api('/feed/mapa?categoria=repostería')
+    assert.deepEqual(cat.body.pines.map((x: any) => x.id), [Z])
+    const q = await api('/feed/mapa?q=meson')
+    assert.deepEqual([q.body.pines.map((x: any) => x.id), q.body.sin_ubicacion.length], [[A], 0], 'el buscador ignora acentos y mayúsculas')
+    const sinCat = await api('/feed/mapa?categoria=sin_categoria&tipo=prospecto')
+    assert.ok(sinCat.body.sin_ubicacion.every((x: any) => x.categoria === null))
+    // lo mismo que la lista: el mapa y GET /feed filtran igual
+    const lista = await api('/feed?categoria=repostería&per_page=50')
+    assert.deepEqual(lista.body.data.map((x: any) => x.id), [Z])
+    assert.deepEqual([lista.body.data[0].ubicacion.estado], ['ok'], 'la lista también trae la ubicación')
+    // el estado del pin es el del socio que mira
+    await api(`/feed/${A}/estado`, { method: 'PATCH', body: { estado: 'revisado' } })
+    assert.equal((await api('/feed/mapa?tipo=prospecto')).body.pines.find((x: any) => x.id === A).estado, 'revisado')
+    assert.equal((await api('/feed/mapa?tipo=prospecto', { key: KEY_J })).body.pines.find((x: any) => x.id === A).estado, 'nuevo', 'revisar es personal')
+    assert.deepEqual((await api('/feed/mapa?estado=revisado')).body.pines.map((x: any) => x.id), [A])
+    assert.equal((await api('/feed/mapa?estado=raro')).status, 400)
+  })
+
+  it('la web (sesión) usa el mismo servicio: /api/feed/mapa va antes que /api/feed/:id', async () => {
+    const r = await http(`${ROOT}/api/feed/mapa?tipo=prospecto`, { headers: { cookie } })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.ok(r.body.pines.some((x: any) => x.id === A))
+  })
+
+  it('un ítem privado no sale en el mapa de otro socio ni se puede mover', async () => {
+    const r = await pub({ titulo: 'Privado en Cabudare', tipo: 'prospecto', fuente: 'manual', visibilidad: 'privado', datos: { donde: 'Av. Intercomunal, Cabudare' } })
+    C = r.body.id
+    assert.equal((await esperar(C, 'ok')).ubicacion.precision, 'calle')
+    assert.ok((await api('/feed/mapa')).body.pines.some((x: any) => x.id === C))
+    const otro = await api('/feed/mapa', { key: KEY_J })
+    assert.ok(![...otro.body.pines, ...otro.body.sin_ubicacion].some((x: any) => x.id === C))
+    assert.equal((await api(`/feed/${C}/ubicacion`, { method: 'PATCH', body: { lat: 10.1, lng: -69.3 }, key: KEY_J })).status, 404)
+  })
+
+  it('fijar el pin a mano: queda con origen manual, valida lat/lng y la búsqueda automática nunca lo pisa', async () => {
+    const mal = (body: unknown) => api(`/feed/${G}/ubicacion`, { method: 'PATCH', body })
+    assert.equal((await mal({})).status, 400)
+    assert.equal((await mal({ lat: 10.07 })).status, 400, 'lat y lng van juntas')
+    assert.equal((await mal({ lat: 95, lng: -69.3 })).status, 400)
+    const fuera = await mal({ lat: 48.85, lng: 2.35 })
+    assert.equal(fuera.status, 400)
+    assert.match(fuera.body.error?.message ?? fuera.body.message ?? JSON.stringify(fuera.body), /Venezuela/)
+    const ok = await mal({ lat: 10.0555, lng: -69.3333 })
+    assert.equal(ok.status, 200, JSON.stringify(ok.body))
+    assert.deepEqual([ok.body.ubicacion.estado, ok.body.ubicacion.origen, ok.body.ubicacion.lat, ok.body.ubicacion.lng, ok.body.ubicacion.precision], ['ok', 'manual', 10.0555, -69.3333, 'exacta'])
+    assert.ok((await api('/feed/mapa?tipo=prospecto')).body.pines.some((x: any) => x.id === G))
+    // el relleno (reintentar incluido) no toca un pin manual
+    const antes = geoHits.length
+    const rel = await api('/feed/geocodificar', { body: { reintentar: true } })
+    assert.equal(rel.status, 200)
+    await new Promise((r) => setTimeout(r, 600))
+    assert.ok(!geoHits.slice(antes).some((x) => /^Barquisimeto/i.test(x.q)))
+    assert.deepEqual((await ver(G)).ubicacion.origen, 'manual')
+    assert.equal((await api(`/feed/${G}/ubicacion`, { method: 'PATCH', body: { lat: 10.07, lng: -69.3 }, key: KEY_R })).status, 403)
+  })
+
+  it('corregir la dirección: se guarda en datos.donde y se vuelve a buscar; si no aparece, queda sin pin con el motivo', async () => {
+    const bien = await api(`/feed/${S}/ubicacion`, { method: 'PATCH', body: { direccion: 'Calle 30 entre carreras 18 y 19' } })
+    assert.equal(bien.status, 200, JSON.stringify(bien.body))
+    assert.deepEqual([bien.body.datos.donde, bien.body.ubicacion.estado, bien.body.ubicacion.lat], ['Calle 30 entre carreras 18 y 19', 'ok', 10.0701])
+    assert.equal(bien.body.datos.contacto.telefono, '0412-0000000', 'lo demás de datos se conserva')
+    const mal = await api(`/feed/${S}/ubicacion`, { method: 'PATCH', body: { direccion: 'Un lugar que no existe' } })
+    assert.deepEqual([mal.body.ubicacion.estado, mal.body.ubicacion.lat, mal.body.datos.geo?.estado], ['sin_resultado', null, 'sin_resultado'], 'la dirección nueva invalida el pin de la anterior')
+    // dirección + pin: el pin del socio manda y queda atado a la dirección nueva
+    const ambos = await api(`/feed/${S}/ubicacion`, { method: 'PATCH', body: { direccion: 'Carrera 21 con calle 36', lat: 10.06, lng: -69.31 } })
+    assert.deepEqual([ambos.body.ubicacion.origen, ambos.body.ubicacion.direccion, ambos.body.datos.geo.consulta], ['manual', 'Carrera 21 con calle 36', 'Carrera 21 con calle 36'])
+  })
+
+  it('si el proveedor falla queda "error" (no "sin resultado") y el relleno lo reintenta; el relleno es idempotente', async () => {
+    geoState.down = true
+    const r = await pub({ titulo: 'Casa de cambio Centro', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-e', categoria: 'finanzas', datos: { donde: 'Av. 20 con calle 30, Centro' } })
+    const E = r.body.id
+    assert.equal((await esperar(E, 'error')).ubicacion.estado, 'error')
+    assert.equal((await ver(E)).datos.geo.intentos, 1)
+    assert.ok((await api('/feed/mapa')).body.sin_ubicacion.some((x: any) => x.id === E && x.ubicacion.estado === 'error'))
+    geoState.down = false
+    const plan = await api('/feed/geocodificar', { body: { tipo: 'prospecto' } })
+    assert.equal(plan.status, 200, JSON.stringify(plan.body))
+    assert.ok(plan.body.por_buscar >= 1)
+    assert.equal((await esperar(E, 'ok')).ubicacion.lat, 10.0701)
+    // segunda vuelta: nada que buscar (los «sin resultado» no se repiten sin reintentar), ni una consulta nueva
+    await new Promise((r) => setTimeout(r, 300))
+    const antes = geoHits.length
+    const otra = await api('/feed/geocodificar', { body: {} })
+    assert.deepEqual([otra.body.por_buscar, otra.body.iniciado], [0, false])
+    await new Promise((r) => setTimeout(r, 300))
+    assert.equal(geoHits.length, antes)
+    // con reintentar sí repite los «sin resultado» (p. ej. después de corregir el proveedor o las direcciones)
+    const re = await api('/feed/geocodificar', { body: { reintentar: true } })
+    assert.ok(re.body.por_buscar >= 1)
+    assert.equal((await api('/feed/geocodificar', { body: { limite: 0 } })).status, 400)
+  })
+
+  it('el relleno que corre desde la línea de comandos usa la misma lógica (ensayo: cuenta sin consultar)', async () => {
+    const antes = geoHits.length
+    const r = spawnSync(process.execPath, ['--import', 'tsx', 'server/src/feed-geocodificar.ts', '--ensayo', '--tipo', 'prospecto'], { cwd: root, env, encoding: 'utf8' })
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /con dirección: \d+/)
+    assert.match(r.stdout, /Cobertura: [\d.]+%/)
+    assert.equal(geoHits.length, antes, 'el ensayo no pregunta nada')
+  })
+
+  it('MCP: hayai_feed_mapa, hayai_feed_ubicacion y hayai_feed_geocodificar; la llave de solo lectura solo ve el mapa', async () => {
+    const tools = (await rpc('tools/list', {}, KEY_R)).body.result.tools.map((t: any) => t.name)
+    assert.ok(tools.includes('hayai_feed_mapa'))
+    assert.ok(!tools.includes('hayai_feed_ubicacion') && !tools.includes('hayai_feed_geocodificar'))
+    const call = async (name: string, args: unknown, key = KEY) => JSON.parse((await rpc('tools/call', { name, arguments: args }, key)).body.result.content[0].text)
+    const m = await call('hayai_feed_mapa', { tipo: 'prospecto' })
+    assert.ok(m.pines.some((x: any) => x.id === A))
+    const u = await call('hayai_feed_ubicacion', { id: Z, lat: 10.0611, lng: -69.3012 })
+    assert.deepEqual([u.ubicacion.origen, u.ubicacion.lat], ['manual', 10.0611])
   })
 })
 

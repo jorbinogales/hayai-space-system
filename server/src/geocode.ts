@@ -1,12 +1,15 @@
-// Geocodificación (dirección en texto -> coordenadas) para el mapa del feed. El proveedor va detrás de una interfaz: hoy es Nominatim
-// (OpenStreetMap, gratis y sin llave); cambiar a otro (Photon, un Nominatim propio, un servicio de pago) es escribir otro `Geocoder`
-// y elegirlo con GEOCODER. Nada de esto inventa coordenadas: sin resultado, o con uno demasiado grueso (la ciudad entera), devuelve null.
+// Geocodificación (dirección en texto -> coordenadas) para el mapa del feed. El proveedor va detrás de una interfaz y se elige con
+// GEOCODER: `nominatim` (OpenStreetMap, gratis y sin llave; el predeterminado), `mapbox` (token público en MAPBOX_PUBLIC_TOKEN, solo en el
+// servidor) u `off`. Agregar otro es escribir otro `Geocoder` y registrarlo en `crearGeocoder`. Nada de esto inventa coordenadas: sin
+// resultado, o con uno demasiado grueso (la ciudad entera), devuelve null.
 //
 // Política de uso de Nominatim (https://operations.osmfoundation.org/policies/nominatim/): máximo 1 petición por segundo en total,
 // User-Agent que identifique la aplicación (nunca el de la librería HTTP), nada de barridos masivos. Por eso todas las consultas de este
 // proceso pasan por UNA cola con espera mínima entre peticiones, y los resultados se guardan en el ítem para no volver a pedirlos.
 
 export type Precision = 'exacta' | 'calle' | 'zona'
+/** Quién encontró las coordenadas (se guarda en datos.geo.origen; `manual` y `datos` no pasan por un geocodificador). */
+export type ProveedorGeo = 'nominatim' | 'mapbox'
 export type GeoResultado = {
   lat: number
   lng: number
@@ -17,7 +20,7 @@ export type GeoResultado = {
 }
 
 export interface Geocoder {
-  readonly nombre: string
+  readonly nombre: ProveedorGeo
   /** null = el proveedor respondió pero no encontró nada utilizable. Lanza si falló la consulta (red, 5xx, 429): se puede reintentar. */
   buscar(consulta: string): Promise<GeoResultado | null>
 }
@@ -101,26 +104,189 @@ export function nominatim(o: NominatimOpts): Geocoder {
   }
 }
 
+// ---------- Mapbox (Geocoding API v6) ----------
+export type MapboxOpts = { url: string; token: string; minMs: number; timeoutMs: number; permanent?: boolean }
+
+/** Qué tan fino es un resultado de Mapbox. null = demasiado grueso (ciudad, municipio, estado, código postal) o poco fiable: sin pin. */
+export function precisionMapbox(tipo: unknown, exactitud: unknown, confianza: unknown): Precision | null {
+  if (confianza === 'low') return null // «encontré algo parecido»: mejor que la siguiente consulta, más general, diga el sector
+  switch (tipo) {
+    case 'poi':
+      return 'exacta'
+    case 'address':
+      // rooftop / parcel / point = el edificio; interpolated / street / approximate = sobre la calle, no en el portal
+      return exactitud === 'rooftop' || exactitud === 'parcel' || exactitud === 'point' ? 'exacta' : 'calle'
+    case 'street':
+      return 'calle'
+    case 'neighborhood':
+    case 'locality':
+      return 'zona'
+    default:
+      return null // place, district, region, country, postcode…
+  }
+}
+
+export function mapbox(o: MapboxOpts): Geocoder {
+  // El token viaja en la URL de la consulta (así lo exige Mapbox): nunca debe acabar en un mensaje de error ni en un log.
+  const limpio = (t: string) => t.split(o.token).join('***')
+  return {
+    nombre: 'mapbox',
+    buscar: (consulta) =>
+      enCola(o.minMs, async () => {
+        const u = new URL('/search/geocode/v6/forward', o.url)
+        u.searchParams.set('q', consulta.slice(0, 256))
+        u.searchParams.set('country', 've')
+        u.searchParams.set('language', 'es')
+        u.searchParams.set('limit', '4')
+        u.searchParams.set('autocomplete', 'false') // es una dirección completa, no lo que alguien va tecleando
+        u.searchParams.set('proximity', `${CENTRO.lng},${CENTRO.lat}`) // inclina hacia Barquisimeto, no excluye el resto del país
+        if (o.permanent) u.searchParams.set('permanent', 'true') // Mapbox solo permite guardar resultados con su geocodificación «permanente»
+        u.searchParams.set('access_token', o.token)
+        let res: Response
+        try {
+          res = await fetch(u, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(o.timeoutMs) })
+        } catch (e) {
+          throw new GeocoderError(`Mapbox no respondió (${(e as Error).name === 'TimeoutError' ? 'tiempo agotado' : limpio((e as Error).message)})`)
+        }
+        if (res.status === 401 || res.status === 403)
+          throw new GeocoderError(`Mapbox rechazó el token (${res.status}): revisa MAPBOX_PUBLIC_TOKEN${res.status === 403 && o.permanent ? ' y que la cuenta tenga habilitada la geocodificación permanente' : ''}`)
+        if (res.status === 429) throw new GeocoderError('Mapbox respondió 429 (demasiadas consultas): se reintenta luego')
+        if (!res.ok) throw new GeocoderError(`Mapbox respondió ${res.status}`)
+        const cuerpo = (await res.json().catch(() => null)) as { features?: unknown } | null
+        if (!cuerpo || !Array.isArray(cuerpo.features)) throw new GeocoderError('Mapbox devolvió una respuesta que no se entiende')
+        for (const f of cuerpo.features as Record<string, unknown>[]) {
+          const p = (f.properties ?? {}) as Record<string, unknown>
+          const c = (p.coordinates ?? {}) as Record<string, unknown>
+          const g = ((f.geometry ?? {}) as { coordinates?: unknown }).coordinates
+          const lat = num(c.latitude) ?? (Array.isArray(g) ? num(g[1]) : null)
+          const lng = num(c.longitude) ?? (Array.isArray(g) ? num(g[0]) : null)
+          if (lat === null || lng === null || !enVenezuela(lat, lng)) continue
+          const confianza = ((p.match_code ?? {}) as Record<string, unknown>).confidence
+          const precision = precisionMapbox(p.feature_type, c.accuracy, confianza)
+          if (!precision) continue
+          const nombre = typeof p.full_address === 'string' ? p.full_address : [p.name, p.place_formatted].filter((x) => typeof x === 'string' && x).join(', ')
+          return { lat, lng, precision, nombre: (nombre || consulta).slice(0, 300) }
+        }
+        return null
+      }),
+  }
+}
+
 // ---------- elección del proveedor (por entorno) ----------
 export const GEO_UA = process.env.GEOCODER_USER_AGENT?.trim() || 'HAYAI-Space/1.0 (+https://space.hayai.com.ve)'
+const PROVEEDORES = 'nominatim | mapbox | off'
+const entero = (v: string | undefined, def: number) => (v && Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : def)
+
+/** El token público de Mapbox: SOLO del entorno del servidor (MAPBOX_PUBLIC_TOKEN). Debe ser público (pk.…): uno secreto (sk.…) se rechaza. */
+export function tokenMapbox(env: NodeJS.ProcessEnv = process.env): string | null {
+  const t = env.MAPBOX_PUBLIC_TOKEN?.trim()
+  if (!t) return null
+  if (t.startsWith('sk.') || t.startsWith('tk.')) throw new Error('MAPBOX_PUBLIC_TOKEN tiene un token secreto (sk.…): usa un token público (pk.…) con solo scopes públicos')
+  return t
+}
+
+/**
+ * Crea el geocodificador que dice el entorno: GEOCODER=nominatim (por defecto) | mapbox | off. null = apagado.
+ * Lanza si la configuración no sirve (proveedor desconocido, mapbox sin MAPBOX_PUBLIC_TOKEN): mejor decirlo que fingir que busca.
+ */
+export function crearGeocoder(env: NodeJS.ProcessEnv = process.env): Geocoder | null {
+  const prov = (env.GEOCODER ?? 'nominatim').trim().toLowerCase()
+  if (prov === 'off' || prov === 'none' || prov === '') return null
+  const timeoutMs = entero(env.GEOCODER_TIMEOUT_MS, 10_000) || 10_000
+  const url = (env[`${prov.toUpperCase()}_URL`] ?? env.GEOCODER_URL)?.trim() // NOMINATIM_URL / MAPBOX_URL mandan sobre GEOCODER_URL (útil para medir los dos a la vez)
+  if (prov === 'mapbox') {
+    const token = tokenMapbox(env)
+    if (!token) throw new Error('GEOCODER=mapbox necesita MAPBOX_PUBLIC_TOKEN en el entorno del servidor (token público, pk.…)')
+    return mapbox({ url: url || 'https://api.mapbox.com', token, minMs: entero(env.GEOCODER_MIN_MS, 100), timeoutMs, permanent: /^(1|true|si|sí)$/i.test(env.MAPBOX_PERMANENT?.trim() ?? '') })
+  }
+  if (prov !== 'nominatim') throw new Error(`GEOCODER desconocido: ${prov} (${PROVEEDORES})`)
+  const base = url || 'https://nominatim.openstreetmap.org'
+  // Con el servidor público el mínimo es 1 s (la política lo exige); un Nominatim propio o uno de pruebas puede ir más rápido.
+  const publico = /(^|\/\/)nominatim\.openstreetmap\.org/.test(base)
+  const pedido = Number(env.GEOCODER_MIN_MS)
+  const minMs = Math.max(publico ? 1000 : 0, Number.isFinite(pedido) && env.GEOCODER_MIN_MS ? pedido : 1100)
+  return nominatim({ url: base, userAgent: env.GEOCODER_USER_AGENT?.trim() || GEO_UA, minMs, timeoutMs, email: env.GEOCODER_EMAIL?.trim() || undefined })
+}
 
 let activo: Geocoder | null | undefined
-/** El geocodificador configurado, o null si está apagado (GEOCODER=off): los ítems quedan «pendientes» y el mapa los muestra en la bandeja. */
+/** El geocodificador configurado, o null si está apagado (GEOCODER=off). Lanza si la configuración es inválida. */
 export function geocoder(): Geocoder | null {
   if (activo !== undefined) return activo
-  const prov = (process.env.GEOCODER ?? 'nominatim').trim().toLowerCase()
-  if (prov === 'off' || prov === 'none' || prov === '') return (activo = null)
-  if (prov !== 'nominatim') throw new Error(`GEOCODER desconocido: ${prov} (nominatim | off)`)
-  const url = process.env.GEOCODER_URL?.trim() || 'https://nominatim.openstreetmap.org'
-  // Con el servidor público el mínimo es 1 s (la política lo exige); un Nominatim propio o uno de pruebas puede ir más rápido.
-  const publico = /(^|\/\/)nominatim\.openstreetmap\.org/.test(url)
-  const pedido = Number(process.env.GEOCODER_MIN_MS)
-  const minMs = Math.max(publico ? 1000 : 0, Number.isFinite(pedido) && process.env.GEOCODER_MIN_MS ? pedido : 1100)
-  return (activo = nominatim({ url, userAgent: GEO_UA, minMs, timeoutMs: Number(process.env.GEOCODER_TIMEOUT_MS) || 10_000, email: process.env.GEOCODER_EMAIL?.trim() || undefined }))
+  return (activo = crearGeocoder())
+}
+
+let avisado = ''
+/** Como `geocoder()`, pero con una configuración inválida devuelve null (y lo dice una vez en el log): publicar o abrir el mapa nunca falla por esto. */
+export function geocoderOSinConfigurar(): Geocoder | null {
+  try {
+    return geocoder()
+  } catch (e) {
+    const m = (e as Error).message
+    if (avisado !== m) console.error('[geocodificar]', m), (avisado = m)
+    return null
+  }
+}
+
+/** Estado para mostrar/diagnosticar: qué proveedor está activo y, si la configuración no sirve, por qué. */
+export function estadoGeocoder(): { proveedor: ProveedorGeo | null; error: string | null } {
+  try {
+    return { proveedor: geocoder()?.nombre ?? null, error: null }
+  } catch (e) {
+    return { proveedor: null, error: (e as Error).message }
+  }
 }
 /** Solo para pruebas: vuelve a leer el entorno. */
 export const reiniciarGeocoder = () => {
   activo = undefined
+  avisado = ''
+}
+
+// ---------- teselas del mapa ----------
+export type Teselas = {
+  proveedor: 'osm' | 'mapbox'
+  /** plantilla {z}/{x}/{y} para Leaflet */
+  url: string
+  /** HTML (de este servidor) con la atribución que exige el proveedor */
+  atribucion: string
+  tamano: number
+  zoom_offset: number
+  max_zoom: number
+}
+const ATRIB_OSM = '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'
+
+/**
+ * Las teselas que usa el mapa: MAP_TILES=osm (por defecto) | mapbox. Con mapbox se usa el mismo MAPBOX_PUBLIC_TOKEN del servidor, que
+ * llega al navegador solo por aquí (no está en el código del front ni en el repo): por eso tiene que ser PÚBLICO y conviene restringirlo
+ * a https://space.hayai.com.ve en la cuenta de Mapbox. Estilo con MAPBOX_STYLE (usuario/estilo, por defecto mapbox/streets-v12).
+ * Sin token, mapbox cae a OpenStreetMap (y lo dice en el log): un mapa gris no le sirve a nadie.
+ */
+export function teselas(env: NodeJS.ProcessEnv = process.env): Teselas {
+  const osm: Teselas = { proveedor: 'osm', url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', atribucion: ATRIB_OSM, tamano: 256, zoom_offset: 0, max_zoom: 19 }
+  if ((env.MAP_TILES ?? 'osm').trim().toLowerCase() !== 'mapbox') return osm
+  let token: string | null = null
+  try {
+    token = tokenMapbox(env)
+  } catch (e) {
+    console.error('[mapa]', (e as Error).message)
+  }
+  if (!token) {
+    console.error('[mapa] MAP_TILES=mapbox sin un MAPBOX_PUBLIC_TOKEN público: se usan las teselas de OpenStreetMap')
+    return osm
+  }
+  const estilo = env.MAPBOX_STYLE?.trim() || 'mapbox/streets-v12'
+  if (!/^[\w.-]+\/[\w.-]+$/.test(estilo)) {
+    console.error(`[mapa] MAPBOX_STYLE inválido (${estilo}): se usa mapbox/streets-v12`)
+    return teselas({ ...env, MAPBOX_STYLE: 'mapbox/streets-v12' })
+  }
+  const base = (env.MAPBOX_TILES_URL?.trim() || 'https://api.mapbox.com').replace(/\/$/, '')
+  return {
+    proveedor: 'mapbox',
+    url: `${base}/styles/v1/${estilo}/tiles/{z}/{x}/{y}?access_token=${encodeURIComponent(token)}`,
+    atribucion: `© <a href="https://www.mapbox.com/about/maps/" target="_blank" rel="noopener noreferrer">Mapbox</a> ${ATRIB_OSM}`,
+    tamano: 512, // teselas de 512 px: cuatro veces menos peticiones que las de 256
+    zoom_offset: -1,
+    max_zoom: 19,
+  }
 }
 
 // ---------- de una dirección venezolana a consultas que Nominatim entienda ----------

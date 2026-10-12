@@ -4,6 +4,7 @@ import { exec } from '../services/common.ts'
 import { comprobanteArchivo, comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
 import { pagoActualizar } from '../services/clientes.ts'
 import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
+import { teselas } from '../geocode.ts'
 import { feedBorrar, feedConvertir, feedDeshacer, feedGeocodificar, feedGuardar, feedListar, feedMapa, feedMarcar, feedPublicar, feedUbicacion, feedVer } from '../services/feed.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 
@@ -65,6 +66,7 @@ hubRouter.delete('/receptores/:id', async (req, res) => void res.json(await exec
 
 // Feed de oportunidades (lo que encontraron las máquinas y los agentes). La web publica con fuente "manual" o la que mande la pantalla.
 hubRouter.get('/feed', async (req, res) => void res.json(await exec(feedListar, req.user!, query(req))))
+hubRouter.get('/feed/mapa/teselas', (_req, res) => void res.json(teselas())) // qué teselas pinta el mapa (OSM o Mapbox); solo para la web con sesión
 hubRouter.get('/feed/mapa', async (req, res) => void res.json(await exec(feedMapa, req.user!, query(req)))) // antes de /feed/:id
 hubRouter.post('/feed/geocodificar', async (req, res) => void res.json(await exec(feedGeocodificar, req.user!, body(req))))
 hubRouter.get('/feed/:id', async (req, res) => void res.json(await exec(feedVer, req.user!, { id: req.params.id })))

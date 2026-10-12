@@ -1,10 +1,10 @@
 // Ubicación de los ítems del feed (para la vista de mapa). La dirección en texto llega en `datos` (`donde`, que es lo que trae Growi, u otras
 // llaves parecidas); las coordenadas se calculan UNA vez y se guardan en `datos.geo`, con su estado, para que nada se repita ni se invente:
-//   { estado: 'ok', lat, lng, precision, origen: 'nominatim' | 'manual', consulta, encontrado_como, el }
+//   { estado: 'ok', lat, lng, precision, origen: 'nominatim' | 'mapbox' | 'manual', consulta, encontrado_como, el }
 //   { estado: 'sin_resultado' | 'error', consulta, intentos, el, error? }
 // Un ítem con dirección y sin `geo` (o con un `geo` de otra dirección) está «pendiente». Un pin puesto a mano nunca se pisa.
 import { pool, type Db } from './db.ts'
-import { consultasDe, enVenezuela, geocoder, GeocoderError, type Precision } from './geocode.ts'
+import { consultasDe, enVenezuela, geocoderOSinConfigurar, GeocoderError, type Precision } from './geocode.ts'
 
 export type EstadoUbicacion = 'ok' | 'pendiente' | 'sin_resultado' | 'error' | 'sin_direccion'
 export type Ubicacion = {
@@ -15,8 +15,8 @@ export type Ubicacion = {
   lng: number | null
   /** exacta | calle | zona (aproximada: centro de la urbanización o el barrio). Solo con estado ok. */
   precision: Precision | null
-  /** nominatim: se buscó la dirección · manual: alguien puso el pin · datos: ya venía con coordenadas. */
-  origen: 'nominatim' | 'manual' | 'datos' | null
+  /** nominatim | mapbox: se buscó la dirección con ese proveedor · manual: alguien puso el pin · datos: ya venía con coordenadas. */
+  origen: 'nominatim' | 'mapbox' | 'manual' | 'datos' | null
 }
 
 const obj = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null)
@@ -56,7 +56,7 @@ export function ubicacionDe(d: Record<string, unknown>): Ubicacion {
     // Un pin buscado por texto es de ESA dirección: si la dirección cambió por otra vía, vuelve a estar pendiente.
     if (manual || !direccion || (typeof g.consulta === 'string' && norma(g.consulta) === norma(direccion))) {
       const p = g.precision
-      return { ...base, estado: 'ok', lat: glat, lng: glng, precision: p === 'exacta' || p === 'calle' || p === 'zona' ? p : manual ? 'exacta' : 'zona', origen: manual ? 'manual' : 'nominatim' }
+      return { ...base, estado: 'ok', lat: glat, lng: glng, precision: p === 'exacta' || p === 'calle' || p === 'zona' ? p : manual ? 'exacta' : 'zona', origen: manual ? 'manual' : g.origen === 'mapbox' ? 'mapbox' : 'nominatim' }
     }
   }
   // Coordenadas que ya traía el ítem (si el que publica las manda, se respetan).
@@ -88,7 +88,7 @@ const escribir = async (db: Db, id: string, geo: Record<string, unknown>, consul
  * un pin manual no se toca nunca. Un fallo de red queda como `error` (se reintenta en el siguiente relleno); «no hay resultado», como `sin_resultado`.
  */
 export async function geocodificarItem(db: Db, id: string, o: { forzar?: boolean } = {}): Promise<Resultado> {
-  const prov = geocoder()
+  const prov = geocoderOSinConfigurar()
   if (!prov) return 'sin_proveedor'
   const r = (await db.query(`SELECT title, data FROM feed_items WHERE id = $1`, [id])).rows[0]
   if (!r) return 'omitido'
@@ -105,7 +105,7 @@ export async function geocodificarItem(db: Db, id: string, o: { forzar?: boolean
     for (const q of consultasDe(direccion, negocio)) {
       const hit = await prov.buscar(q)
       if (hit) {
-        await escribir(db, id, { estado: 'ok', lat: hit.lat, lng: hit.lng, precision: hit.precision, origen: 'nominatim', consulta: direccion, encontrado_como: hit.nombre, busqueda: q, el }, direccion)
+        await escribir(db, id, { estado: 'ok', lat: hit.lat, lng: hit.lng, precision: hit.precision, origen: prov.nombre, consulta: direccion, encontrado_como: hit.nombre, busqueda: q, el }, direccion)
         return 'ok'
       }
     }
@@ -123,7 +123,7 @@ const pendientes = new Set<string>()
 let trabajo: Promise<void> = Promise.resolve()
 /** Mete ítems a la cola de geocodificación del proceso (una por una, a la velocidad que permite el proveedor). No bloquea ni lanza. */
 export function programarGeocodificacion(ids: string[]) {
-  if (!geocoder()) return
+  if (!geocoderOSinConfigurar()) return
   for (const id of ids)
     if (!pendientes.has(id) && pendientes.size < 500) {
       pendientes.add(id)

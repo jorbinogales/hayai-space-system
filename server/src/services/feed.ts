@@ -17,7 +17,7 @@ import { HttpError, id, text } from '../util.ts'
 import { boolFlag, exec, filters, op, pageShape, paged, TZ, type Actor } from './common.ts'
 import { VINCULO_TABLA, type Vinculo } from '../feedLinks.ts'
 import { CLAVES_UBICACION, direccionDe, geocodificarItem, iniciarRelleno, programarGeocodificacion, relleno_en_curso, rellenarUbicaciones, telefonoDe, ubicacionDe } from '../feedGeo.ts'
-import { enVenezuela, geocoder } from '../geocode.ts'
+import { enVenezuela, estadoGeocoder, geocoderOSinConfigurar } from '../geocode.ts'
 import { sendToTrash } from '../trash.ts'
 import { insertContenido } from '../mkContenido.ts'
 import { userByName } from '../socios.ts'
@@ -293,8 +293,8 @@ export const feedMapa = op(z.strictObject(filtroShape), async (actor, i) => {
     sin_ubicacion: todos.filter((x) => x.ubicacion.estado !== 'ok'),
     total: total.rows[0].n as number,
     truncado: total.rows[0].n > MAPA_MAX,
-    /** false si el servidor no tiene proveedor de geocodificación (GEOCODER=off): los «pendientes» no se resolverán solos. */
-    geocodificador: !!geocoder(),
+    /** false si el servidor no tiene proveedor de geocodificación (GEOCODER=off o mal configurado): los «pendientes» no se resolverán solos. */
+    geocodificador: !!geocoderOSinConfigurar(),
     ...meta,
   }
 })
@@ -479,10 +479,12 @@ export const feedGeocodificar = op(
     limite: z.number().int().min(1).max(500).optional(),
   }),
   async (_actor, b) => {
-    if (!geocoder()) throw new HttpError(409, 'El geocodificador está apagado en este servidor (GEOCODER=off)')
+    const g = estadoGeocoder()
+    if (g.error) throw new HttpError(409, `El geocodificador está mal configurado: ${g.error}`)
+    if (!g.proveedor) throw new HttpError(409, 'El geocodificador está apagado en este servidor (GEOCODER=off)')
     const plan = await rellenarUbicaciones({ tipo: b.tipo, reintentar: b.reintentar, limite: b.limite, ensayo: true })
     const iniciado = plan.pendientes > 0 && iniciarRelleno({ tipo: b.tipo, reintentar: b.reintentar, limite: b.limite })
-    return { con_direccion: plan.con_direccion, ya_ubicados: plan.ya_ubicados, por_buscar: plan.pendientes, iniciado, en_curso: relleno_en_curso(), cobertura: plan.cobertura }
+    return { proveedor: g.proveedor, con_direccion: plan.con_direccion, ya_ubicados: plan.ya_ubicados, por_buscar: plan.pendientes, iniciado, en_curso: relleno_en_curso(), cobertura: plan.cobertura }
   },
 )
 

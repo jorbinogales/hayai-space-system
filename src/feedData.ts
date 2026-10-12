@@ -45,8 +45,8 @@ export interface Ubicacion {
   lng: number | null
   /** exacta | calle | zona (aproximada: centro de la urbanización o del barrio) */
   precision: 'exacta' | 'calle' | 'zona' | null
-  /** nominatim: se buscó la dirección · manual: alguien puso el pin · datos: ya venía con coordenadas */
-  origen: 'nominatim' | 'manual' | 'datos' | null
+  /** nominatim | mapbox: se buscó la dirección con ese proveedor · manual: alguien puso el pin · datos: ya venía con coordenadas */
+  origen: 'nominatim' | 'mapbox' | 'manual' | 'datos' | null
 }
 
 export interface FeedItem {
@@ -510,6 +510,38 @@ export interface FeedMapa {
   truncado: boolean
   /** false: el servidor no tiene con qué buscar direcciones (GEOCODER=off) */
   geocodificador: boolean
+}
+/** Las teselas del mapa, como las dice el servidor (OpenStreetMap o Mapbox: el token público nunca está en el código del front). */
+export interface TeselasCfg {
+  proveedor: 'osm' | 'mapbox'
+  url: string
+  atribucion: string
+  tamano: number
+  zoom_offset: number
+  max_zoom: number
+}
+export const TESELAS_OSM: TeselasCfg = {
+  proveedor: 'osm',
+  url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  atribucion: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>',
+  tamano: 256,
+  zoom_offset: 0,
+  max_zoom: 19,
+}
+/**
+ * VITE_MAP_TILES (en el build) manda sobre todo, como siempre: misma forma {z}/{x}/{y}. Si no está, se le pregunta al servidor una vez;
+ * si no responde, OpenStreetMap (el mapa nunca se queda gris).
+ */
+const TESELAS_ENV = (import.meta.env.VITE_MAP_TILES as string | undefined)?.trim()
+let teselasP: Promise<TeselasCfg> | null = null
+export const teselasIniciales = (): TeselasCfg | null => (TESELAS_ENV ? { ...TESELAS_OSM, url: TESELAS_ENV } : null)
+export const loadTeselas = (): Promise<TeselasCfg> => {
+  const env = teselasIniciales()
+  if (env) return Promise.resolve(env)
+  return (teselasP ??= api.get<TeselasCfg>('/feed/mapa/teselas').catch(() => {
+    teselasP = null
+    return TESELAS_OSM
+  }))
 }
 export const loadFeedMapa = (f: FeedFilters = {}) => api.get<FeedMapa>(`/feed/mapa${qs({ ...f, page: undefined, per_page: undefined })}`)
 /** Corrige la dirección (se vuelve a buscar) y/o fija el pin a mano (lat + lng). Devuelve el ítem ya actualizado. */

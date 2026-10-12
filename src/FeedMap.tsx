@@ -1,4 +1,4 @@
-// Vista de mapa del Feed: los hallazgos con dirección como pines sobre OpenStreetMap (Leaflet, sin llave ni facturación).
+// Vista de mapa del Feed: los hallazgos con dirección como pines sobre OpenStreetMap o Mapbox (Leaflet; OpenStreetMap por defecto, sin llave ni facturación).
 // Los filtros y el buscador son los de la lista (los pone FeedScreen). Tocar un pin abre la MISMA tarjeta de la lista (WhatsApp, convertir,
 // descartar, seguimiento…); lo que no tiene pin va a la bandeja «Sin ubicación», donde se corrige la dirección o se fija el pin a mano.
 // Se carga aparte (React.lazy): Leaflet solo se descarga cuando alguien abre el mapa.
@@ -17,6 +17,7 @@ import {
   fmtN,
   loadFeedItem,
   loadFeedMapa,
+  loadTeselas,
   type FeedEstado,
   type FeedFilters,
   type FeedItem,
@@ -29,9 +30,8 @@ import { Icon } from './ui'
 /** Barquisimeto: el mapa arranca aquí. */
 const CENTRO: [number, number] = [10.0647, -69.357]
 const ZOOM = 12
-/** Teselas: OpenStreetMap por defecto. Se puede apuntar a otro proveedor con VITE_MAP_TILES (misma forma {z}/{x}/{y}) sin tocar el código. */
-const TILES = (import.meta.env.VITE_MAP_TILES as string | undefined) || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
-const ATRIBUCION = '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'
+// Teselas: las dice el servidor (MAP_TILES=osm | mapbox; el token público de Mapbox nunca está en el código del front). VITE_MAP_TILES, si se
+// definió en el build, manda sobre todo; sin respuesta, OpenStreetMap.
 /** Los pines a menos de esto (km) de Barquisimeto encuadran el mapa; uno lejano no aleja a todos los demás. */
 const RADIO_KM = 60
 const POLL_MS = 4000
@@ -145,7 +145,6 @@ export default function FeedMap({ query, rev, card, onItem, onGone }: Props) {
     const el = boxRef.current
     if (!el) return
     const map = L.map(el, { center: CENTRO, zoom: ZOOM, zoomControl: true, attributionControl: true, minZoom: 5 })
-    L.tileLayer(TILES, { attribution: ATRIBUCION, maxZoom: 19 }).addTo(map)
     // la rueda mueve la página hasta que se toca el mapa (si no, el mapa se traga el scroll de toda la pantalla)
     map.scrollWheelZoom.disable()
     map.on('click focus', () => map.scrollWheelZoom.enable())
@@ -165,6 +164,22 @@ export default function FeedMap({ query, rev, card, onItem, onGone }: Props) {
       layerRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // ---- las teselas (cuando el servidor dice cuáles) ----
+  useEffect(() => {
+    let vivo = true
+    let capa: L.TileLayer | null = null
+    void loadTeselas().then((t) => {
+      const map = mapRef.current
+      if (!vivo || !map) return
+      capa = L.tileLayer(t.url, { attribution: t.atribucion, maxZoom: t.max_zoom, tileSize: t.tamano, zoomOffset: t.zoom_offset }).addTo(map)
+      capa.bringToBack()
+    })
+    return () => {
+      vivo = false
+      capa?.remove()
+    }
   }, [])
 
   const grupos = useMemo(() => agrupar(data?.pines ?? []), [data])

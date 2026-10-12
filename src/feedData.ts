@@ -216,10 +216,66 @@ export function accionesDe(it: FeedItem): AccionesDe {
   return { principal, secundarias: todas.filter((a) => a !== principal) }
 }
 
-/** Texto de WhatsApp con el guion del ítem ya escrito (wa.me?text=…). Sin guion, el enlace queda igual. */
-export function conGuion(href: string, d: Record<string, unknown>): string {
-  const g = txt(d.guion)
-  return g ? `${href}${href.includes('?') ? '&' : '?'}text=${encodeURIComponent(g)}` : href
+/** Enlace de WhatsApp con un texto ya escrito (wa.me?text=…). */
+export function conTexto(href: string, texto: string): string {
+  return `${href}${href.includes('?') ? '&' : '?'}text=${encodeURIComponent(texto)}`
+}
+
+const hash = (s: string) => {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0
+  return Math.abs(h)
+}
+const quitaPunto = (s: string) => s.trim().replace(/[.\s]+$/, '')
+
+/**
+ * Mensaje de ventas para el botón de WhatsApp: presentación de HAYAI, qué ofrecemos, consulta sin costo, precios competitivos
+ * y acompañamiento. Es personal por prospecto: usa su negocio, rubro, ciudad y la primera fuga detectada, y la apertura,
+ * el gancho y el cierre rotan según el ítem (misma tarjeta = mismo texto; tarjetas distintas = textos distintos).
+ */
+export function mensajeVentas(it: Pick<FeedItem, 'id' | 'titulo' | 'categoria' | 'datos'>, remitente = ''): string {
+  const d = it.datos
+  const n = d.negocio
+  const nombre = (typeof n === 'string' ? str(n) : isRec(n) ? (str(n.nombre) ?? str(n.name)) : null) ?? str(it.titulo) ?? 'su negocio'
+  const ciudad = isRec(n) ? str(n.ciudad) ?? str(n.city) ?? str(n.ubicacion) : null
+  const rubro = it.categoria ? it.categoria.replace(/[-_]+/g, ' ').trim().toLowerCase() : null
+  const fuga = strs(d.fugas)[0] ?? null
+  const yo = str(remitente)?.split(/\s+/)[0] ?? null
+  const h = hash(it.id)
+  const pick = <T,>(xs: T[], salt: number) => xs[(h >> salt) % xs.length]
+
+  const saludo = pick(['Hola', 'Buen día', 'Hola, ¿cómo está?'], 0)
+  const quien = yo ? `soy ${yo}, de HAYAI` : 'le escribo de HAYAI'
+  const lugar = ciudad ? ` en ${ciudad}` : ''
+  const sobre = rubro ? `vi que ${nombre} trabaja en ${rubro}${lugar}` : `conocí ${nombre}${lugar}`
+
+  const gancho = fuga
+    ? `Y notamos algo puntual en ${nombre}: ${quitaPunto(fuga).replace(/^./, (c) => c.toLowerCase())}. Es justo el tipo de cosa que un buen sistema resuelve y que, mientras no se atiende, le cuesta clientes y dinero.`
+    : pick(
+        [
+          `Muchos negocios${rubro ? ` de ${rubro}` : ''} pierden ventas y tiempo por llevar todo a mano o con herramientas sueltas; un sistema a la medida lo corrige.`,
+          `Vemos a diario cómo los negocios${rubro ? ` de ${rubro}` : ''} dejan escapar clientes y dinero por no tener sus procesos ordenados en un solo sistema.`,
+          `Un sistema bien hecho le devuelve horas al día y le muestra en qué punto se le va el dinero${rubro ? ` en un negocio de ${rubro}` : ''}.`,
+        ],
+        3,
+      )
+
+  const cierre = pick(
+    [
+      `¿Le parece si conversamos 15 minutos esta semana? Sin compromiso.`,
+      `¿Cuándo le queda bien que lo llame o le escriba con más detalle?`,
+      `Si le interesa, le preparo una revisión de ${nombre} sin costo. ¿Le escribo por aquí?`,
+    ],
+    6,
+  )
+
+  return [
+    `${saludo}, ${quien}. ${sobre[0].toUpperCase() + sobre.slice(1)} y quise escribirle directamente.`,
+    `Somos HAYAI, una agencia de software que diseña e implementa sistemas a la medida: ventas, facturación, inventario, atención a clientes y automatización para que su negocio funcione ordenado y crezca.`,
+    gancho,
+    `La consulta no tiene ningún costo, y nuestros precios de implementación son competitivos. Antes de contratar a otra agencia y arriesgar su dinero o perder la oportunidad, déjenos mostrarle qué podemos hacer por ${nombre}. Estaremos con usted en todo momento: desde el diagnóstico hasta que el sistema esté funcionando y después.`,
+    cierre,
+  ].join('\n\n')
 }
 
 // ---------- números ----------

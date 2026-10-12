@@ -15,7 +15,8 @@ import {
   accionesDe,
   categoriaLabel,
   closeFeed,
-  conGuion,
+  conTexto,
+  mensajeVentas,
   conceptoDe,
   contactoDe,
   convertFeed,
@@ -835,9 +836,9 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
       return (
         <a
           className={`fd-btn ${primary ? 'is-contact' : 'is-contact-soft fd-sm'}`}
-          href={wa ? conGuion(contacto.href, it.datos) : contacto.href}
+          href={wa ? conTexto(contacto.href, mensajeVentas(it, me)) : contacto.href}
           {...(wa ? external : {})}
-          aria-label={`${wa ? 'Escribir por WhatsApp a' : contacto.tipo === 'llamar' ? 'Llamar al' : 'Enviar correo a'} ${contacto.detalle}${wa && typeof it.datos.guion === 'string' ? ' con el guion ya escrito' : ''}`}
+          aria-label={`${wa ? 'Escribir por WhatsApp a' : contacto.tipo === 'llamar' ? 'Llamar al' : 'Enviar correo a'} ${contacto.detalle}${wa ? ' con un mensaje de presentación ya escrito' : ''}`}
         >
           <Svg d={wa ? PATH.whatsapp : contacto.tipo === 'llamar' ? PATH.phone : PATH.mail} size={primary ? 16 : 14} />
           {contacto.label}

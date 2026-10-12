@@ -12,6 +12,7 @@ import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResum
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
 import { chatBorrar, chatContadores, chatEditar, chatListar, chatMarcarLeido, chatPublicar, chatUsuarios, chatVer } from '../services/chat.ts'
+import { feedEjecutarAccion, feedSugerirAcciones } from '../services/feedAcciones.ts'
 import { feedBorrar, feedConvertir, feedDeshacer, feedGuardar, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
@@ -195,6 +196,8 @@ route('get', '/feed/:id', feedVer)
 route('post', '/feed', feedPublicar, (o) => ((o.creado ?? o.creados) ? 201 : 200))
 route('patch', '/feed/:id/estado', feedMarcar)
 route('post', '/feed/:id/guardar', feedGuardar)
+route('post', '/feed/:id/sugerir-acciones', feedSugerirAcciones)
+route('post', '/feed/:id/acciones/:accion/ejecutar', feedEjecutarAccion)
 route('post', '/feed/:id/convertir', feedConvertir)
 route('post', '/feed/:id/deshacer', feedDeshacer)
 route('delete', '/feed/:id', feedBorrar) // elimina el ítem (definitivo); un privado de otro socio da 404

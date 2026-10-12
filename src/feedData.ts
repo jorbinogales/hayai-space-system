@@ -26,6 +26,32 @@ export interface FeedVinculo {
 }
 export type Creados = Partial<Record<CreadoKind, { id: string | null; por: string | null; el: string | null }>>
 
+/** Acciones sugeridas por la IA (oportunidades e ideas): botones concretos que ejecutan una operación real tras confirmar. */
+export type AccionTipo = 'crear_tarea' | 'crear_seguimiento' | 'crear_proyecto' | 'crear_propuesta' | 'agendar_cobro' | 'crear_posible_cliente' | 'promover_cliente' | 'mover_a_contenido'
+export interface AccionSugerida {
+  id: string
+  tipo: AccionTipo
+  /** texto del botón */
+  etiqueta: string
+  /** por qué la sugiere (una frase) */
+  motivo: string
+  /** lo que va a pasar al confirmar, en una o dos frases */
+  detalle: string
+  parametros: Record<string, unknown>
+  /** quién la ejecutó y cuándo (se conserva como historial) */
+  hecha: { por: string; el: string; ref_id: string | null } | null
+}
+export interface AccionesSugeridas {
+  /** sin_generar: nunca se pidió (o no hay IA) · pendiente: la IA está pensando · listo: puede venir vacío · error */
+  estado: 'sin_generar' | 'pendiente' | 'listo' | 'error'
+  generado_el: string | null
+  modelo: string | null
+  error: string | null
+  data: AccionSugerida[]
+}
+/** Solo las oportunidades y las ideas llevan acciones sugeridas. */
+export const esAccionable = (tipo: FeedTipo) => tipo === 'oportunidad' || tipo === 'idea'
+
 export const FEED_TIPO_LABEL: Record<FeedTipo, string> = {
   idea: 'Idea',
   prospecto: 'Prospecto',
@@ -62,6 +88,8 @@ export interface FeedItem {
   vinculo: FeedVinculo
   /** v1.6.6: lo que ya se creó desde el ítem, por clase (tarea, proyecto, propuesta...): ahí el botón dice «✓ Creada» */
   creados: Creados
+  /** acciones sugeridas por la IA (se guardan con el ítem: todo el equipo ve las mismas) */
+  acciones_sugeridas: AccionesSugeridas
   actualizado_el: string | null
 }
 /** Lo que el socio ve de un ítem: convertido (global) manda; si no, su estado personal. */
@@ -79,6 +107,8 @@ export interface FeedMeta {
   fuentes: { fuente: string; total: number; nuevos: number }[]
   categorias: { categoria: string; total: number }[]
   sin_categoria: number
+  /** ¿el servidor tiene un proveedor de IA? Sin él no hay «Sugerir acciones» */
+  ia_configurada: boolean
 }
 export interface FeedPage {
   data: FeedItem[]
@@ -143,6 +173,25 @@ export const convertFeed = (it: Pick<FeedItem, 'id'>, b: ConvertBody) => api.pos
 /** «Devolver al feed» desde la ficha del posible cliente: sin límite de tiempo (el posible cliente va a la papelera y el ítem queda nuevo). */
 export const devolverAlFeed = (itemId: string) => api.post<{ item: FeedItem; deshecho: string }>(`/feed/${itemId}/deshacer`, { a: 'posible_cliente', devolver: true })
 export const undoFeed = (it: Pick<FeedItem, 'id'>, a: Exclude<CreadoKind, 'propuesta'>) => api.post<{ item: FeedItem; deshecho: string }>(`/feed/${it.id}/deshacer`, { a })
+
+/** «Sugerir acciones»: pide (o vuelve a pedir) las acciones de un ítem. Responde ya con el ítem «pendiente»; el resultado llega en segundo plano. */
+export const sugerirAcciones = (itemId: string) => api.post<FeedItem>(`/feed/${itemId}/sugerir-acciones`, {})
+export interface EjecutarAccionResult {
+  item: FeedItem
+  ejecutada: { id: string; tipo: AccionTipo }
+  creado: { tipo: string; id: string; detalle: Record<string, unknown> } | null
+}
+/** Ejecuta una acción sugerida (la web lo llama DESPUÉS de que el socio confirma en pantalla). */
+export const ejecutarAccion = (itemId: string, accionId: string) => api.post<EjecutarAccionResult>(`/feed/${itemId}/acciones/${encodeURIComponent(accionId)}/ejecutar`, { confirmar: true })
+/** Qué se creó con cada acción, si es una de las conversiones del feed (las que se pueden deshacer y abrir). */
+export const CONVERSION_DE_ACCION: Partial<Record<AccionTipo, FeedConversion>> = {
+  crear_tarea: 'tarea',
+  crear_seguimiento: 'seguimiento',
+  crear_proyecto: 'proyecto',
+  crear_posible_cliente: 'posible_cliente',
+  promover_cliente: 'cliente',
+  mover_a_contenido: 'contenido',
+}
 
 // ---------- botones inteligentes (v1.6.6): qué acciones tiene cada tarjeta y cuál va destacada ----------
 export const ES_LEAD: FeedTipo[] = ['prospecto', 'oportunidad']

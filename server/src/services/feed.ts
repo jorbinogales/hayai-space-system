@@ -15,6 +15,7 @@ import { SOURCES, esquemaCobro, fichaShape } from '../crm.ts'
 import { pool, tx, type Db } from '../db.ts'
 import { HttpError, id, text } from '../util.ts'
 import { boolFlag, exec, filters, op, pageShape, paged, TZ, type Actor } from './common.ts'
+import { llmConfig } from '../llm.ts'
 import { VINCULO_TABLA, type Vinculo } from '../feedLinks.ts'
 import { sendToTrash } from '../trash.ts'
 import { insertContenido } from '../mkContenido.ts'
@@ -34,6 +35,24 @@ const DESHACER_SEG = 120
 /** Cuántos días sigue en la campana el aviso de un ítem nuevo que nadie ha revisado. */
 export const AVISO_DIAS = 14
 export const VISIBILIDADES = ['equipo', 'privado'] as const
+/** Los tipos que traen acciones sugeridas por IA (generadas al publicar o a pedido): oportunidades e ideas. */
+export const TIPOS_ACCIONABLES = ['oportunidad', 'idea'] as const
+export const esAccionable = (t: string) => (TIPOS_ACCIONABLES as readonly string[]).includes(t)
+/** Qué clase de vínculo deja en el ítem cada acción sugerida (agendar_cobro no deja ninguno). Sirve para no repetir lo ya creado y para liberar la acción al deshacerlo. */
+export const VINCULO_DE_ACCION: Record<string, Vinculo> = {
+  crear_tarea: 'tarea',
+  crear_seguimiento: 'seguimiento',
+  crear_proyecto: 'proyecto',
+  crear_propuesta: 'propuesta',
+  crear_posible_cliente: 'posible_cliente',
+  promover_cliente: 'cliente',
+  mover_a_contenido: 'contenido',
+}
+/** Si la generación en segundo plano lleva más de esto «pendiente», se dio por perdida (p. ej. el servidor se reinició). */
+const ACCIONES_PENDIENTE_MS = 3 * 60_000
+/** Lo registra feedAcciones.ts: arranca la generación de acciones de los ítems recién publicados (así feed.ts no depende de él). */
+let programador: ((items: { id: string; actorId: string }[]) => void) | null = null
+export const registrarProgramador = (fn: typeof programador) => void (programador = fn)
 /** Si una fuente ya avisó de un tipo hace menos de esto, la siguiente publicación no repite el aviso en vivo (una siembra de 20 es UN aviso). */
 const AVISO_AGRUPA_MIN = 10
 
@@ -81,7 +100,7 @@ type Item = z.infer<typeof itemSchema>
 // ---------- salida ----------
 /** `u` es el marcador ($n) del id del socio que mira: su estado personal y sus guardados salen de feed_item_usuarios. */
 const SELECT = (u: string) => `SELECT f.id, f.title, f.summary, f.kind, f.source, f.external_key, f.category, f.visibility, f.status, f.data, f.found_at, f.status_at, f.converted_to, f.converted_id,
-    f.created_at, f.updated_at, pu.id AS pub_id, pu.name AS pub_name, su.name AS status_by,
+    f.created_at, f.updated_at, f.actions, f.actions_status, f.actions_at, f.actions_error, f.actions_model, pu.id AS pub_id, pu.name AS pub_name, su.name AS status_by,
     mu.status AS my_status, mu.discard_reason AS my_reason, COALESCE(mu.saved, false) AS saved
   FROM feed_items f JOIN users pu ON pu.id = f.published_by LEFT JOIN users su ON su.id = f.status_by
   LEFT JOIN feed_item_usuarios mu ON mu.item_id = f.id AND mu.user_id = ${u}`
@@ -115,8 +134,47 @@ export const itemOut = (r: any) => ({
   vinculo: { estado: 'sin_vinculo', cliente_id: null, cliente: null, origen: null } as Vinculado,
   /** Lo que ya se creó desde el ítem, una de cada clase (global, lo ve todo el equipo). */
   creados: {} as Creados,
+  acciones_sugeridas: accionesOut(r),
   actualizado_el: stamp(r.updated_at),
 })
+
+export type AccionOut = {
+  id: string
+  tipo: string
+  etiqueta: string
+  motivo: string
+  /** lo que va a pasar, en una frase (el texto de la confirmación) */
+  detalle: string
+  parametros: Record<string, unknown>
+  /** null mientras no se ejecuta; luego quién y cuándo (la acción ya hecha no se vuelve a ofrecer) */
+  hecha: { por: string; el: string; ref_id: string | null } | null
+}
+/** Las acciones sugeridas del ítem (IA): se guardan con el ítem y las ve todo el equipo. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function accionesOut(r: any) {
+  const lista = Array.isArray(r.actions) ? (r.actions as Record<string, unknown>[]) : []
+  let estado = (r.actions_status ?? 'sin_generar') as 'sin_generar' | 'pendiente' | 'listo' | 'error'
+  let error = (r.actions_error ?? null) as string | null
+  // Una generación «pendiente» que no terminó (el servidor se reinició) no se queda esperando para siempre.
+  if (estado === 'pendiente' && r.actions_at && Date.now() - (r.actions_at as Date).getTime() > ACCIONES_PENDIENTE_MS) (estado = 'error'), (error = 'La generación se interrumpió: vuelve a pedirla')
+  return {
+    estado,
+    generado_el: r.actions_at && estado !== 'pendiente' ? (r.actions_at as Date).toISOString() : null,
+    modelo: (r.actions_model ?? null) as string | null,
+    error,
+    data: lista.map(
+      (a): AccionOut => ({
+        id: String(a.id),
+        tipo: String(a.tipo),
+        etiqueta: String(a.etiqueta),
+        motivo: String(a.motivo ?? ''),
+        detalle: String(a.detalle ?? ''),
+        parametros: (a.parametros ?? {}) as Record<string, unknown>,
+        hecha: a.hecha ? (a.hecha as AccionOut['hecha']) : null,
+      }),
+    ),
+  }
+}
 
 type Vinculado = { estado: 'sin_vinculo' | 'posible_cliente' | 'cliente'; cliente_id: string | null; cliente: string | null; origen: 'conversion' | 'datos' | 'nombre' | null }
 type Creados = Partial<Record<Vinculo, { id: string; por: string; el: string }>>
@@ -125,7 +183,7 @@ type ItemOut = ReturnType<typeof itemOut>
 /** Lo que un socio puede ver: lo del equipo y lo privado que publicó él. `me` es el marcador ($n) de su id; `a` el alias de la tabla. */
 export const visible = (me: string, a = 'f.') => `(${a}visibility = 'equipo' OR ${a}published_by = ${me})`
 
-const plano = (v: string) => v.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim()
+export const plano = (v: string) => v.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
@@ -174,7 +232,7 @@ export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
   })
 }
 
-async function item(db: Db, itemId: string, userId: string) {
+export async function item(db: Db, itemId: string, userId: string) {
   const r = (await db.query(`${SELECT('$2')} WHERE f.id = $1 AND ${visible('$2')}`, [itemId, userId])).rows[0]
   if (!r) throw new HttpError(404, 'Ítem del feed no encontrado')
   return (await enriquecer(db, [itemOut(r)]))[0]
@@ -230,6 +288,8 @@ export const feedListar = op(
       fuentes: fuentes.rows.map((r) => ({ fuente: r.source as string, total: r.n as number, nuevos: r.nuevos as number })),
       categorias: categorias.rows.map((r) => ({ categoria: r.category as string, total: r.n as number })),
       sin_categoria: extra.rows[0].sin_categoria as number,
+      /** hay un proveedor de IA configurado: si no, la web no ofrece «Sugerir acciones» */
+      ia_configurada: !!llmConfig(),
     })
   },
 )
@@ -256,7 +316,11 @@ async function insertar(c: Db, actor: Actor, b: Item): Promise<Resultado> {
      ON CONFLICT (source, external_key) WHERE external_key IS NOT NULL DO NOTHING RETURNING id`,
     [b.titulo, b.resumen ?? null, b.tipo, b.fuente, b.clave_externa ?? null, actor.id, JSON.stringify(b.datos ?? {}), b.fecha ?? null, b.categoria ?? null, b.visibilidad ?? 'equipo'],
   )
-  if (ins.rowCount) return { item: await item(c, ins.rows[0].id, actor.id), creado: true }
+  if (ins.rowCount) {
+    // Oportunidades e ideas: sus acciones sugeridas se generan en segundo plano (si hay IA); mientras tanto el ítem sale «pendiente».
+    if (esAccionable(b.tipo) && llmConfig()) await c.query(`UPDATE feed_items SET actions_status = 'pendiente', actions_at = now() WHERE id = $1`, [ins.rows[0].id])
+    return { item: await item(c, ins.rows[0].id, actor.id), creado: true }
+  }
   const ya = (await c.query('SELECT id, visibility, published_by FROM feed_items WHERE source = $1 AND external_key = $2', [b.fuente, b.clave_externa])).rows[0]
   // Esa clave ya es de un ítem privado de otro socio: no se le muestra ni se le confirma que existe su contenido.
   if (ya.visibility === 'privado' && ya.published_by !== actor.id) throw new HttpError(409, 'Esa clave_externa ya está en uso en esa fuente: usa otra')
@@ -321,6 +385,8 @@ export const feedPublicar = op(
       )
       return out
     })
+    // Ya confirmado: las acciones sugeridas de lo recién publicado se piden a la IA sin hacer esperar a quien publicó.
+    programador?.(resultados.filter((r) => r.creado && r.item.acciones_sugeridas.estado === 'pendiente').map((r) => ({ id: r.item.id, actorId: actor.id })))
     // Un ítem: el ítem y si se creó. Varios: el resumen del lote y el resultado de cada uno, en el orden enviado.
     if (!b.items) return { ...resultados[0].item, creado: resultados[0].creado }
     return {
@@ -489,8 +555,8 @@ async function proyectoDeLaTarea(actor: Actor, clienteId: string | null): Promis
   return proyectoInterno(actor)
 }
 
-const hoyISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
-const masDias = (iso: string, n: number) => {
+export const hoyISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+export const masDias = (iso: string, n: number) => {
   const [y, m, d] = iso.split('-').map(Number)
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10)
 }
@@ -639,6 +705,11 @@ export const feedDeshacer = op(
     const otro = (await c.query('SELECT kind, ref_id FROM feed_item_vinculos WHERE item_id = $1 AND ref_id IS NOT NULL ORDER BY created_at, kind LIMIT 1', [b.id])).rows[0]
     if (otro) await c.query(`UPDATE feed_items SET converted_to = $2, converted_id = $3 WHERE id = $1`, [b.id, otro.kind, otro.ref_id])
     else await c.query(`UPDATE feed_items SET status = 'nuevo', converted_to = NULL, converted_id = NULL, status_by = NULL, status_at = NULL WHERE id = $1`, [b.id])
+    // Una acción sugerida que ya se ejecutó pero cuyo resultado se deshizo vuelve a estar disponible (su botón no queda «hecho» sin nada detrás).
+    const quedan = new Set((await c.query('SELECT kind FROM feed_item_vinculos WHERE item_id = $1', [b.id])).rows.map((r) => r.kind as string))
+    const acts = (await c.query('SELECT actions FROM feed_items WHERE id = $1', [b.id])).rows[0]?.actions as { tipo: string; hecha: unknown }[] | undefined
+    if (acts?.some((a) => a.hecha && VINCULO_DE_ACCION[a.tipo] && !quedan.has(VINCULO_DE_ACCION[a.tipo])))
+      await c.query('UPDATE feed_items SET actions = $2::jsonb WHERE id = $1', [b.id, JSON.stringify(acts.map((a) => (a.hecha && VINCULO_DE_ACCION[a.tipo] && !quedan.has(VINCULO_DE_ACCION[a.tipo]) ? { ...a, hecha: null } : a)))])
   })
   return { item: await item(pool, b.id, actor.id), deshecho: b.a }
   },

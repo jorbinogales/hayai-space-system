@@ -19,6 +19,7 @@ import { VINCULO_TABLA, type Vinculo } from '../feedLinks.ts'
 import { sendToTrash } from '../trash.ts'
 import { insertContenido } from '../mkContenido.ts'
 import { userByName } from '../socios.ts'
+import { adjuntarGuiones, sembrarGuion, type GuionOut } from '../feedGuion.ts'
 import { clienteActualizar, clienteCrear } from './clientes.ts'
 import { interaccionRegistrar } from './interacciones.ts'
 import { proyectoCrear } from './proyectos.ts'
@@ -115,6 +116,8 @@ export const itemOut = (r: any) => ({
   vinculo: { estado: 'sin_vinculo', cliente_id: null, cliente: null, origen: null } as Vinculado,
   /** Lo que ya se creó desde el ítem, una de cada clase (global, lo ve todo el equipo). */
   creados: {} as Creados,
+  /** El guión del prospecto, versionado (lo calcula `enriquecer`); null si el ítem no trae guión. `datos.guion` queda con el texto vigente. */
+  guion: null as GuionOut | null,
   actualizado_el: stamp(r.updated_at),
 })
 
@@ -157,7 +160,7 @@ export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
     )
   ).rows
   const porId = new Map(cl.map((c) => [c.id as string, c]))
-  return items.map((it) => {
+  const out = items.map((it) => {
     const mios = vivos.filter((l) => l.item_id === it.id)
     const creados: Creados = {}
     for (const l of mios) creados[l.kind as Vinculo] = { id: l.ref_id as string, por: l.por as string, el: (l.created_at as Date).toISOString() }
@@ -172,9 +175,10 @@ export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
     const vinculo: Vinculado = c ? { estado: c.is_prospect ? 'posible_cliente' : 'cliente', cliente_id: c.id as string, cliente: c.name as string, origen } : { estado: 'sin_vinculo', cliente_id: null, cliente: null, origen: null }
     return { ...it, vinculo, creados }
   })
+  return adjuntarGuiones(db, out)
 }
 
-async function item(db: Db, itemId: string, userId: string) {
+export async function item(db: Db, itemId: string, userId: string) {
   const r = (await db.query(`${SELECT('$2')} WHERE f.id = $1 AND ${visible('$2')}`, [itemId, userId])).rows[0]
   if (!r) throw new HttpError(404, 'Ítem del feed no encontrado')
   return (await enriquecer(db, [itemOut(r)]))[0]
@@ -256,7 +260,10 @@ async function insertar(c: Db, actor: Actor, b: Item): Promise<Resultado> {
      ON CONFLICT (source, external_key) WHERE external_key IS NOT NULL DO NOTHING RETURNING id`,
     [b.titulo, b.resumen ?? null, b.tipo, b.fuente, b.clave_externa ?? null, actor.id, JSON.stringify(b.datos ?? {}), b.fecha ?? null, b.categoria ?? null, b.visibilidad ?? 'equipo'],
   )
-  if (ins.rowCount) return { item: await item(c, ins.rows[0].id, actor.id), creado: true }
+  if (ins.rowCount) {
+    await sembrarGuion(c, ins.rows[0].id, b.datos ?? {}, actor.id) // el guión publicado es la versión 1 (original, inmutable)
+    return { item: await item(c, ins.rows[0].id, actor.id), creado: true }
+  }
   const ya = (await c.query('SELECT id, visibility, published_by FROM feed_items WHERE source = $1 AND external_key = $2', [b.fuente, b.clave_externa])).rows[0]
   // Esa clave ya es de un ítem privado de otro socio: no se le muestra ni se le confirma que existe su contenido.
   if (ya.visibility === 'privado' && ya.published_by !== actor.id) throw new HttpError(409, 'Esa clave_externa ya está en uso en esa fuente: usa otra')

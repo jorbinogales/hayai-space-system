@@ -786,10 +786,10 @@ describe('MCP', () => {
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 97) // lectura + escritura
+    assert.equal(names.length, 100) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 109)
+    assert.equal(full.length, 112)
     assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -4521,10 +4521,10 @@ describe('Feed de oportunidades', () => {
     assert.equal((await http(`${ROOT}/api/feed`)).status, 401)
   })
 
-  it('MCP: las seis herramientas (la de lectura se ve con solo lectura), publicar idempotente, marcar y guardar personales y convertir', async () => {
+  it('MCP: las herramientas del feed (las de lectura se ven con solo lectura), publicar idempotente, marcar y guardar personales y convertir', async () => {
     const nombres = async (key: string) => ((await rpc('tools/list', {}, key)).body.result.tools as any[]).map((t) => t.name).filter((x: string) => x.startsWith('hayai_feed'))
-    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_convertir', 'hayai_feed_deshacer', 'hayai_feed_guardar', 'hayai_feed_listar', 'hayai_feed_marcar', 'hayai_feed_publicar'])
-    assert.deepEqual(await nombres(KEY_R), ['hayai_feed_listar'])
+    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_convertir', 'hayai_feed_deshacer', 'hayai_feed_guardar', 'hayai_feed_guion', 'hayai_feed_guion_editar', 'hayai_feed_guion_restablecer', 'hayai_feed_listar', 'hayai_feed_marcar', 'hayai_feed_publicar'])
+    assert.deepEqual((await nombres(KEY_R)).sort(), ['hayai_feed_guion', 'hayai_feed_listar'])
     const tools = (await rpc('tools/list')).full.result.tools as any[] // full: body quita `actualizado_el`
     assert.equal(tools.find((t) => t.name === 'hayai_feed_listar').annotations.readOnlyHint, true)
     assert.ok(!tools.find((t) => t.name === 'hayai_feed_marcar').inputSchema.properties.actualizado_el, 'marcar es personal: no hay conflicto que cuidar')

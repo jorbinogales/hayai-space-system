@@ -4,7 +4,8 @@
 //
 // Esta parte (sin dependencias del servicio del feed) la usan el listado/detalle (adjuntar el guión vigente a cada ítem), la publicación
 // (sembrar el original de un ítem nuevo) y el script de reescritura. Las operaciones (ver, editar, restablecer) están en services/feedGuion.ts.
-import type { Db } from './db.ts'
+import { pool, tx, type Db } from './db.ts'
+import { entradaDe, guionPAS } from './guionPAS.ts'
 import { textoWhatsapp, whatsappDe, type WhatsappDe } from './whatsapp.ts'
 
 export const GUION_MAX = 1200 // un mensaje de WhatsApp por enlace: más largo no cabe cómodo en la URL ni se lee
@@ -127,4 +128,52 @@ export async function adjuntarGuiones<T extends ConGuion>(db: Db, items: T[]): P
     it.datos = { ...it.datos, guion: g.actual }
   }
   return items
+}
+
+// ---------- reescritura masiva del original (PAS + BAB) ----------
+export type ResultadoReescritura = 'reescrito' | 'sin_fugas' | 'editado' | 'ya_reescrito' | 'igual'
+export type Reescritura = { revisados: number } & Record<ResultadoReescritura, number>
+
+/**
+ * Reescribe el guión ORIGINAL de los ítems que lo tienen con la plantilla PAS+BAB (server/src/guionPAS.ts). El texto anterior queda como
+ * versión 0 («previo»: nada se pierde) y el nuevo pasa a ser el original. Respeta lo humano: un guión que alguien ya editó no se toca, uno ya
+ * reescrito tampoco (idempotente) y un ítem sin fugas no se inventa (queda para escribirlo a mano). `aplicar: false` solo cuenta y muestra.
+ */
+export async function reescribirOriginales(o: { aplicar: boolean; id?: string; limite?: number; progreso?: (id: string, titulo: string, r: ResultadoReescritura, nuevo: string | null) => void } = { aplicar: false }): Promise<Reescritura> {
+  const rows = (
+    await pool.query(
+      `SELECT DISTINCT f.id, f.title, f.data, f.found_at FROM feed_items f JOIN feed_guion_versiones v ON v.item_id = f.id WHERE ($1::uuid IS NULL OR f.id = $1) ORDER BY f.found_at DESC, f.id`,
+      [o.id ?? null],
+    )
+  ).rows
+  const out: Reescritura = { revisados: 0, reescrito: 0, sin_fugas: 0, editado: 0, ya_reescrito: 0, igual: 0 }
+  let hechos = 0
+  for (const r of rows) {
+    if (o.limite !== undefined && hechos >= o.limite) break
+    out.revisados++
+    const nuevo = guionPAS(entradaDe((r.data ?? {}) as Record<string, unknown>, r.title as string))
+    const res = await tx(async (c): Promise<ResultadoReescritura> => {
+      await c.query('SELECT 1 FROM feed_items WHERE id = $1 FOR UPDATE', [r.id])
+      const vs = await versionesDe(c, r.id as string)
+      const original = vs.find((v) => v.tipo === 'original')
+      if (!original) return 'igual'
+      if (vs.some((v) => v.tipo === 'previo')) return 'ya_reescrito'
+      if (vs[0].nro !== original.nro) return 'editado' // alguien ya lo tocó: no se pisa su trabajo
+      if (!nuevo) return 'sin_fugas'
+      if (nuevo === original.contenido) return 'igual'
+      if (o.aplicar) {
+        await c.query(`SELECT set_config('hayai.guion_reescritura', 'on', true)`) // solo esta transacción: el trigger deja tocar el original
+        await c.query(
+          `INSERT INTO feed_guion_versiones (item_id, nro, contenido, tipo, editado_por, editado_en) SELECT item_id, 0, contenido, 'previo', editado_por, editado_en FROM feed_guion_versiones WHERE item_id = $1 AND tipo = 'original'`,
+          [r.id],
+        )
+        await c.query(`UPDATE feed_guion_versiones SET contenido = $2, editado_por = NULL, editado_en = now() WHERE item_id = $1 AND tipo = 'original'`, [r.id, nuevo])
+      }
+      return 'reescrito'
+    })
+    out[res]++
+    if (res === 'reescrito') hechos++
+    o.progreso?.(r.id as string, r.title as string, res, res === 'reescrito' ? nuevo : null)
+  }
+  return out
 }

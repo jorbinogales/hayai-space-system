@@ -235,7 +235,9 @@ function buildServer(actor: SessionUser, version: string | null) {
           // Los errores de negocio (validación, 404...) vuelven como resultado de la herramienta para que el agente los lea y corrija.
           if (e instanceof HttpError) {
             const now = e.extra.codigo === 'conflicto' ? ` (actualizado_el actual: ${String(e.extra.actualizado_el)})` : ''
-            return { isError: true, content: [{ type: 'text' as const, text: e.message + now }] }
+            const v = e.extra.codigo === 'conflicto_guion' ? (e.extra.vigente as { nro: number; contenido: string } | undefined) : undefined
+            const vigente = v ? ` Guión vigente (versión ${v.nro}): ${JSON.stringify(v.contenido)}. Si quieres guardar el tuyo igual, repite con forzar=true; si no, rebasa sobre este (base=${v.nro}).` : ''
+            return { isError: true, content: [{ type: 'text' as const, text: e.message + now + vigente }] }
           }
           console.error(e)
           return { isError: true, content: [{ type: 'text' as const, text: 'Error interno del servidor' }] }

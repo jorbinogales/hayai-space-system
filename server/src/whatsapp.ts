@@ -108,10 +108,10 @@ export const reiniciarEnviador = () => {
 }
 
 /** El punto de entrada de «mandar este mensaje a este número»: quien lo llama no sabe por qué vía sale. */
-export const enviarWhatsApp = (m: MensajeWhatsapp): Promise<ResultadoEnvio> => {
+export async function enviarWhatsApp(m: MensajeWhatsapp): Promise<ResultadoEnvio> {
   const t = normalizarTelefono(m.telefono)
-  if (!t) return Promise.reject(new Error('Teléfono inválido para WhatsApp'))
+  if (!t) throw new Error('Teléfono inválido para WhatsApp')
   const texto = textoWhatsapp(m.texto)
-  if (!texto) return Promise.reject(new Error('El mensaje está vacío'))
+  if (!texto) throw new Error('El mensaje está vacío')
   return enviador().enviar({ telefono: t.digitos, texto })
 }

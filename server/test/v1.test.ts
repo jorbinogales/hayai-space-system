@@ -12,6 +12,8 @@ import { after, before, describe, it } from 'node:test'
 import EmbeddedPostgres from 'embedded-postgres'
 import pg from 'pg'
 import { keyRateLimit } from '../src/v1/apiKey.ts'
+import { elegirFuga, entradaDe, GUION_PAS_MAX, guionPAS, nombreCorto } from '../src/guionPAS.ts'
+import { enlaceWhatsapp, enviarWhatsApp, normalizarTelefono, reiniciarEnviador, whatsappDe } from '../src/whatsapp.ts'
 
 const root = resolve(import.meta.dirname, '../..')
 const PG_PORT = 54331
@@ -4742,6 +4744,308 @@ describe('Feed: visibilidad (equipo | privado) y borrado', () => {
     assert.equal(it.visibility, 'equipo')
     await assert.rejects(admin.query(`UPDATE feed_items SET visibility = 'publico' WHERE source = 'vis-test'`), /check/i)
     assert.equal((await admin.query(`SELECT count(*)::int AS n FROM feed_items WHERE visibility NOT IN ('equipo','privado')`)).rows[0].n, 0)
+  })
+})
+
+describe('Feed: guión versionado, envío por WhatsApp y copy PAS+BAB', () => {
+  let n = 0
+  const rpc = (method: string, params: unknown = {}, key: string | null = KEY) =>
+    http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: ++n, method, params } })
+  const call = async (name: string, args: unknown, key = KEY) => JSON.parse((await rpc('tools/call', { name, arguments: args }, key)).body.result.content[0].text)
+  const pub = (body: unknown, key = KEY) => api('/feed', { body, key })
+  const guion = (id: string, key = KEY) => api(`/feed/${id}/guion`, { key })
+  const editar = (id: string, body: unknown, key = KEY) => api(`/feed/${id}/guion`, { method: 'PATCH', body, key })
+  const restablecer = (id: string, body: unknown = {}, key = KEY) => api(`/feed/${id}/guion/restablecer`, { body, key })
+  const G0 = 'Hola, vi tu panadería y creo que podemos ayudarte.\nTe mando una muestra.'
+  let A = '' // prospecto con móvil
+  let KEY_R = ''
+
+  before(() => {
+    KEY_R = newKey('Jorbi', 'solo-lectura-guion', 'read')
+  })
+
+  it('normalización VE para WhatsApp: sin +, sin espacios ni guiones, sin el 0 inicial y con 58', () => {
+    for (const v of ['0414-5502190', '0414 5502190', '+58 414 550 2190', '58414-5502190', '4145502190', '(0414) 550.21.90', '+584145502190', '00584145502190']) {
+      assert.deepEqual(normalizarTelefono(v), { digitos: '584145502190', movil: true }, v)
+    }
+    assert.deepEqual(normalizarTelefono('0251-2345678'), { digitos: '582512345678', movil: false }, 'un fijo se reconoce pero no es de WhatsApp')
+    assert.deepEqual(normalizarTelefono('+1 305 555 0100'), { digitos: '13055550100', movil: false })
+    for (const v of ['', '   ', '123', 'no tiene', null, undefined, '0414-55021']) assert.equal(normalizarTelefono(v), null, String(v))
+    assert.equal(enlaceWhatsapp('584145502190', 'Hola\nuno & dos ¿ok?'), 'https://wa.me/584145502190?text=Hola%0Auno%20%26%20dos%20%C2%BFok%3F', 'saltos de línea reales (%0A) y todo codificado')
+    assert.equal(enlaceWhatsapp('584145502190', '  '), 'https://wa.me/584145502190')
+    assert.equal(enlaceWhatsapp('584145502190', 'a\r\nb  \r\n\r\n\r\nc'), 'https://wa.me/584145502190?text=a%0Ab%0A%0Ac', 'CRLF se vuelve \\n, sin espacios al final de línea ni más de una línea en blanco')
+  })
+
+  it('whatsappDe: el WhatsApp declarado va primero, luego el primer móvil; solo fijo y sin número se distinguen', () => {
+    assert.deepEqual(whatsappDe({ contacto: { telefono: '0251-2345678', whatsapp: '0424-1112233' } }, 'Hola'), { estado: 'ok', telefono: '584241112233', url: 'https://wa.me/584241112233?text=Hola' })
+    assert.equal(whatsappDe({ telefono: '0412-9998877', contacto: { telefono: '0414-1112233' } }, 'x').telefono, '584141112233', 'contacto.telefono antes que datos.telefono')
+    assert.equal(whatsappDe({ contacto: { celular_2: '0416 7776655' } }, 'x').telefono, '584167776655', 'tolera claves sueltas de teléfono')
+    assert.deepEqual(whatsappDe({ contacto: { telefono: '0251-2345678' } }, 'x'), { estado: 'solo_fijo', telefono: null, url: null })
+    assert.deepEqual(whatsappDe({ contacto: { correo: 'a@b.co' } }, 'x'), { estado: 'sin_numero', telefono: null, url: null })
+    assert.deepEqual(whatsappDe({}, 'x'), { estado: 'sin_numero', telefono: null, url: null })
+  })
+
+  it('enviarWhatsApp(): fase 1 = enlace wa.me que abre la persona (enviado:false); la Cloud API es fase 2 y falla con un mensaje claro', async () => {
+    const r = await enviarWhatsApp({ telefono: '0414-5502190', texto: 'Hola\nmundo' })
+    assert.deepEqual(r, { via: 'wa.me', enviado: false, url: 'https://wa.me/584145502190?text=Hola%0Amundo' })
+    await assert.rejects(enviarWhatsApp({ telefono: '123', texto: 'x' }), /Teléfono inválido/)
+    await assert.rejects(enviarWhatsApp({ telefono: '0414-5502190', texto: '   ' }), /vacío/)
+    process.env.WHATSAPP_ENVIO = 'cloud'
+    reiniciarEnviador()
+    await assert.rejects(enviarWhatsApp({ telefono: '0414-5502190', texto: 'x' }), /fase 2/)
+    delete process.env.WHATSAPP_ENVIO
+    reiniciarEnviador()
+    assert.equal((await enviarWhatsApp({ telefono: '0414-5502190', texto: 'x' })).via, 'wa.me')
+  })
+
+  it('al publicar, el guión nace como versión 1 (original) a nombre de quien publicó; datos.guion es el vigente y trae el enlace wa.me con el número normalizado', async () => {
+    const r = await pub({ titulo: 'Panadería La Espiga', tipo: 'prospecto', fuente: 'growi', clave_externa: 'guion-a', datos: { guion: G0, fugas: ['No responde DMs'], contacto: { telefono: '0414-5502190' } } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    A = r.body.id
+    const g = r.body.guion
+    assert.deepEqual([g.version, g.actual, g.original, g.por, g.tipo, g.ediciones, g.modificado], [1, G0, G0, 'Leandro', 'original', 0, false])
+    assert.equal(r.body.datos.guion, G0)
+    assert.deepEqual(g.whatsapp, { estado: 'ok', telefono: '584145502190', url: `https://wa.me/584145502190?text=${encodeURIComponent(G0)}` })
+    assert.ok(g.whatsapp.url.includes('%0A'), 'los saltos de línea viajan como saltos de línea')
+    const sin = await pub({ titulo: 'Sin guión', tipo: 'prospecto', fuente: 'growi', clave_externa: 'guion-sin', datos: { fugas: ['x'] } })
+    assert.equal(sin.body.guion, null)
+    assert.equal((await guion(sin.body.id)).status, 404)
+    const solo = await pub({ titulo: 'Solo fijo', tipo: 'prospecto', fuente: 'growi', clave_externa: 'guion-fijo', datos: { guion: G0, contacto: { telefono: '0251-2345678' } } })
+    assert.equal(solo.body.guion.whatsapp.estado, 'solo_fijo')
+    assert.equal(solo.body.guion.whatsapp.url, null)
+    const nada = await pub({ titulo: 'Sin teléfono', tipo: 'prospecto', fuente: 'growi', clave_externa: 'guion-nada', datos: { guion: G0 } })
+    assert.deepEqual([nada.body.guion.whatsapp.estado, nada.body.guion.whatsapp.telefono, nada.body.guion.whatsapp.url], ['sin_numero', null, null])
+  })
+
+  it('volver a publicar lo mismo no pisa el guión vigente ni agrega versiones', async () => {
+    const r = await pub({ titulo: 'Panadería La Espiga', tipo: 'prospecto', fuente: 'growi', clave_externa: 'guion-a', datos: { guion: 'OTRO TEXTO DE LA FUENTE' } })
+    assert.equal(r.status, 200)
+    assert.equal(r.body.guion.actual, G0)
+    assert.equal((await guion(A)).body.versiones.length, 1)
+  })
+
+  it('editar guarda una versión NUEVA con autor y fecha; el original no cambia y el historial lo ve todo el equipo', async () => {
+    const e = await editar(A, { contenido: 'Hola, ¿qué tal?\n\nVi tu panadería.', base: 1 }, KEY_J)
+    assert.equal(e.status, 200, JSON.stringify(e.body))
+    assert.deepEqual([e.body.guion.version, e.body.guion.por, e.body.guion.tipo, e.body.guion.ediciones, e.body.guion.modificado], [2, 'Jorbi', 'edicion', 1, true])
+    assert.equal(e.body.guion.original, G0, 'el original es inmutable')
+    assert.equal(e.body.item.datos.guion, 'Hola, ¿qué tal?\n\nVi tu panadería.')
+    assert.match(e.body.guion.whatsapp.url, /text=Hola%2C%20%C2%BFqu%C3%A9%20tal%3F%0A%0AVi%20tu%20panader%C3%ADa\.$/, 'el enlace lleva el guión ACTUAL')
+    // el historial lo ve cualquiera que vea el ítem: otro socio y una llave de solo lectura
+    for (const k of [KEY, KEY_R]) {
+      const h = (await guion(A, k)).body
+      assert.deepEqual(h.versiones.map((v: any) => [v.nro, v.tipo, v.editado_por, v.base_nro]), [[2, 'edicion', 'Jorbi', 1], [1, 'original', 'Leandro', null]])
+      assert.ok(h.versiones.every((v: any) => /^\d{4}-\d{2}-\d{2}T/.test(v.editado_el)))
+      assert.equal(h.versiones[1].contenido, G0)
+    }
+    // la tarjeta del listado ya trae el vigente (lo que ve el otro socio al refrescar)
+    const lista = (await api('/feed?q=Espiga', { key: KEY })).body.data[0]
+    assert.deepEqual([lista.guion.version, lista.guion.por], [2, 'Jorbi'])
+  })
+
+  it('validación: sin cambios, vacío, demasiado largo y campos desconocidos; sin guión, 404', async () => {
+    assert.equal((await editar(A, { contenido: 'Hola, ¿qué tal?\n\nVi tu panadería.', base: 2 })).status, 400, 'igual al vigente')
+    assert.equal((await editar(A, { contenido: '   ' })).status, 400)
+    assert.equal((await editar(A, { contenido: 'x'.repeat(1201) })).status, 400)
+    assert.equal((await editar(A, { contenido: 'x', cosa: 1 })).status, 400)
+    assert.equal((await editar(A, { contenido: 'x', base: -1 })).status, 400)
+    assert.equal((await editar(NOPE, { contenido: 'x' })).status, 404)
+    assert.equal((await editar(A, { contenido: 'x'.repeat(1200) })).status, 200, 'justo en el máximo cabe')
+    assert.equal((await guion(A)).body.guion.version, 3)
+  })
+
+  it('si otra persona guardó mientras editabas: 409 conflicto_guion con su versión y NO se guarda; con forzar se guarda la tuya y queda dicho sobre cuál estabas', async () => {
+    // Leandro abrió la versión 3; Jorbi guarda la 4
+    const j = await editar(A, { contenido: 'Versión de Jorbi', base: 3 }, KEY_J)
+    assert.equal(j.body.guion.version, 4)
+    const c = await editar(A, { contenido: 'Versión de Leandro', base: 3 })
+    assert.equal(c.status, 409, JSON.stringify(c.body))
+    assert.equal(c.body.error.code, 'conflict')
+    assert.equal(c.body.error.codigo, 'conflicto_guion')
+    assert.deepEqual([c.body.error.vigente.nro, c.body.error.vigente.por, c.body.error.vigente.contenido], [4, 'Jorbi', 'Versión de Jorbi'])
+    assert.match(c.body.error.message, /Jorbi guardó la versión 4/)
+    assert.equal((await guion(A)).body.versiones.length, 4, 'el conflicto no guardó nada')
+    const f = await editar(A, { contenido: 'Versión de Leandro', base: 3, forzar: true })
+    assert.equal(f.status, 200)
+    assert.deepEqual([f.body.guion.version, f.body.guion.por], [5, 'Leandro'])
+    const h = (await guion(A)).body.versiones
+    assert.equal(h[0].base_nro, 3, 'queda dicho que se guardó sobre la versión 3, pasando por encima de la 4')
+    assert.equal(h.find((v: any) => v.nro === 4).contenido, 'Versión de Jorbi', 'la de Jorbi sigue en el historial')
+    // sin base (agentes que escriben a ciegas) no se comprueba nada
+    assert.equal((await editar(A, { contenido: 'A ciegas' })).body.guion.version, 6)
+  })
+
+  it('restablecer al original es una versión nueva marcada «restablecido»; no borra las ediciones; no hay nada que restablecer si ya es el original; avisa si hubo un cambio ajeno', async () => {
+    const stale = await restablecer(A, { base: 5 })
+    assert.equal(stale.status, 409)
+    assert.equal(stale.body.error.codigo, 'conflicto_guion')
+    const r = await restablecer(A, { base: 6 }, KEY_J)
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual([r.body.guion.version, r.body.guion.tipo, r.body.guion.por, r.body.guion.actual, r.body.guion.modificado], [7, 'restablecido', 'Jorbi', G0, false])
+    assert.equal(r.body.versiones.length, 7)
+    assert.equal(r.body.versiones.filter((v: any) => v.tipo === 'edicion').length, 5, 'las ediciones siguen ahí')
+    const otra = await restablecer(A, {})
+    assert.equal(otra.status, 409)
+    assert.match(otra.body.error.message, /ya es el original/)
+    // y se puede volver a editar a partir de ahí
+    assert.equal((await editar(A, { contenido: 'Otra vez editado', base: 7 })).body.guion.version, 8)
+  })
+
+  it('ítems privados: el historial y la edición no existen para otro socio (404)', async () => {
+    const p = await pub({ titulo: 'Privado de Leandro', tipo: 'prospecto', fuente: 'muse-leandro', clave_externa: 'guion-priv', visibilidad: 'privado', datos: { guion: G0 } })
+    assert.equal(p.status, 201)
+    assert.equal((await guion(p.body.id, KEY_J)).status, 404)
+    assert.equal((await editar(p.body.id, { contenido: 'x' }, KEY_J)).status, 404)
+    assert.equal((await restablecer(p.body.id, {}, KEY_J)).status, 404)
+    assert.equal((await editar(p.body.id, { contenido: 'mío' })).status, 200)
+  })
+
+  it('la base de datos hace valer lo inmutable: no se puede modificar ni borrar una versión; borrar el ítem sí se lleva su historial', async () => {
+    await assert.rejects(admin.query(`UPDATE feed_guion_versiones SET contenido = 'trampa' WHERE item_id = $1 AND nro = 1`, [A]), /no se modifican/)
+    await assert.rejects(admin.query(`UPDATE feed_guion_versiones SET tipo = 'edicion' WHERE item_id = $1 AND nro = 1`, [A]), /no se modifican/)
+    await assert.rejects(admin.query(`DELETE FROM feed_guion_versiones WHERE item_id = $1 AND nro = 2`, [A]), /no se borran/)
+    assert.equal((await admin.query(`SELECT count(*)::int AS n FROM feed_guion_versiones WHERE item_id = $1`, [A])).rows[0].n, 8)
+    const x = await pub({ titulo: 'Para borrar', tipo: 'prospecto', fuente: 'growi', clave_externa: 'guion-borrar', datos: { guion: G0 } })
+    await editar(x.body.id, { contenido: 'v2' })
+    assert.equal((await apiD(`/feed/${x.body.id}`, { method: 'DELETE' })).status, 200)
+    assert.equal((await admin.query(`SELECT count(*)::int AS n FROM feed_guion_versiones WHERE item_id = $1`, [x.body.id])).rows[0].n, 0)
+  })
+
+  it('MCP: hayai_feed_guion (lectura), hayai_feed_guion_editar y hayai_feed_guion_restablecer con el mismo contrato', async () => {
+    const tools = (await rpc('tools/list', {}, KEY_R)).body.result.tools.map((t: any) => t.name)
+    assert.ok(tools.includes('hayai_feed_guion') && !tools.includes('hayai_feed_guion_editar') && !tools.includes('hayai_feed_guion_restablecer'))
+    const g = await call('hayai_feed_guion', { id: A })
+    assert.equal(g.guion.version, 8)
+    const e = await call('hayai_feed_guion_editar', { id: A, contenido: 'Desde el Muse', base: 8 })
+    assert.deepEqual([e.guion.version, e.guion.por], [9, 'Leandro'])
+    const r = await rpc('tools/call', { name: 'hayai_feed_guion_editar', arguments: { id: A, contenido: 'Pisado', base: 8 } }, KEY)
+    assert.equal(r.body.result.isError, true)
+    assert.match(r.body.result.content[0].text, /guardó la versión 9/)
+    const rs = await call('hayai_feed_guion_restablecer', { id: A, base: 9 })
+    assert.deepEqual([rs.guion.tipo, rs.guion.actual], ['restablecido', G0])
+  })
+
+  describe('copy PAS+BAB', () => {
+    const FUGAS = ['No responde DMs de Instagram', 'Sin catálogo digital']
+    const BANNED = /gur[uú]|disruptiv|revolucion|innovador|el mejor|garantiz|100 ?%|siempre|nunca/i
+
+    it('cuatro movimientos y un solo cierre: problema real → agitación → transformación → solución + CTA suave; < 600 caracteres, 5 líneas, tuteo', () => {
+      const g = guionPAS({ negocio: 'PANADERÍA LA ESPIGA C.A.', fugas: FUGAS })!
+      const lineas = g.split('\n')
+      assert.equal(lineas.length, 5)
+      assert.ok(g.length < GUION_PAS_MAX, `${g.length} caracteres`)
+      assert.match(lineas[0], /^Hola/)
+      assert.equal(lineas[1], 'Estuve viendo Panadería La Espiga y noté esto: no responde DMs de Instagram.', 'problema: un dato real de sus fugas, con el nombre limpio')
+      assert.match(lineas[2], /cliente que termina escribiéndole a otro/, 'agitación: qué pierde')
+      assert.match(lineas[3], /^Imagina que cada mensaje se contesta/, 'transformación: cómo se ve después')
+      assert.match(lineas[4], /HAYAI armamos ese sistema.*¿Te mando la muestra gratis\?$/, 'solución + CTA suave')
+      assert.equal((g.match(/\?/g) ?? []).length, 2, 'un saludo con pregunta y UN solo cierre (la pregunta de la muestra)')
+      assert.doesNotMatch(g, BANNED)
+      assert.doesNotMatch(g, /usted|estimad/i, 'tuteo, no usted')
+      assert.doesNotMatch(g, /\d/, 'sin cifras: no hay ninguna en las fugas, así que no aparece ninguna')
+    })
+
+    it('la agitación y la transformación salen del tema de la fuga (catálogo, pedidos, Google, redes…) y la primera fuga reconocible manda', () => {
+      const tema = (f: string) => elegirFuga([f])!.tema.id
+      assert.equal(tema('Sin catálogo en WhatsApp'), 'catalogo', 'más concreto que «mensajes»')
+      assert.equal(tema('Pedidos por WhatsApp a mano'), 'pedidos')
+      assert.equal(tema('No tiene horario en Google Maps'), 'google')
+      assert.equal(tema('Instagram sin publicar hace meses'), 'redes')
+      assert.equal(tema('No responde los mensajes'), 'mensajes')
+      assert.equal(tema('Cuadra la caja en un cuaderno'), 'pedidos')
+      assert.equal(tema('Algo que no reconocemos'), 'general')
+      assert.equal(elegirFuga(['Algo raro', 'Sin catálogo'])!.tema.id, 'catalogo', 'salta lo que no reconoce si más abajo hay un tema claro')
+      assert.equal(elegirFuga(['   ', '.'])?.fuga, undefined)
+    })
+
+    it('conserva las cifras REALES de la fuga y no inventa ninguna; recorta fugas larguísimas; el nombre sale limpio', () => {
+      const g = guionPAS({ negocio: 'Dulces Mía', fugas: ['41 mensajes sin responder en la última semana'] })!
+      assert.match(g, /noté esto: 41 mensajes sin responder en la última semana\./)
+      assert.deepEqual(g.match(/\d+/g), ['41'])
+      const larga = guionPAS({ negocio: null, fugas: [`Sin catálogo ${'muy '.repeat(80)}claro`] })!
+      assert.ok(larga.length < GUION_PAS_MAX)
+      assert.match(larga, /Estuve viendo tu negocio y/)
+      assert.equal(nombreCorto('Charcutería El Buen Corte C.A.'), 'Charcutería El Buen Corte')
+      assert.equal(nombreCorto('  Café   Lara  '), 'Café Lara')
+      assert.equal(nombreCorto('PASTELERÍA DOÑA ANA S.A.'), 'Pastelería Doña Ana')
+      assert.equal(nombreCorto('  '), null)
+    })
+
+    it('sin fugas no inventa un problema (null); lee las fugas en las formas que trae Growi', () => {
+      assert.equal(guionPAS({ negocio: 'X', fugas: [] }), null)
+      assert.deepEqual(entradaDe({ negocio: { nombre: 'La Espiga' }, fugas: ['a', { texto: 'b' }, ['c']] }, 'Título'), { negocio: 'La Espiga', fugas: ['a', 'b', 'c'] })
+      assert.deepEqual(entradaDe({ fugas: 'solo una' }, 'Título'), { negocio: 'Título', fugas: ['solo una'] })
+      assert.deepEqual(entradaDe({}, 'T'), { negocio: 'T', fugas: [] })
+    })
+  })
+
+  describe('reescritura masiva (npm run feed:guiones)', () => {
+    const cli3 = (args: string[]) =>
+      new Promise<{ status: number | null; stdout: string; stderr: string }>((ok) => {
+        const c = spawn(process.execPath, ['--import', 'tsx', 'server/src/feed-guiones.ts', ...args], { cwd: root, env })
+        let stdout = ''
+        let stderr = ''
+        c.stdout.on('data', (d) => (stdout += d))
+        c.stderr.on('data', (d) => (stderr += d))
+        c.on('close', (status) => ok({ status, stdout, stderr }))
+      })
+    const VIEJO = 'Estimado, somos una empresa disruptiva líder en innovación, el mejor gurú de la automatización. Llámenos ya.'
+    let R = ''
+    let E = '' // ya editado por alguien
+    let F = '' // sin fugas
+
+    it('ensayo (por defecto) muestra cómo quedaría y no cambia nada', async () => {
+      const r = await pub({ titulo: 'Charcutería El Buen Corte C.A.', tipo: 'prospecto', fuente: 'growi', clave_externa: 'rw-1', datos: { negocio: { nombre: 'Charcutería El Buen Corte C.A.' }, fugas: ['No responde DMs de Instagram', 'Sin catálogo digital'], guion: VIEJO, contacto: { telefono: '0414-5502190' } } })
+      R = r.body.id
+      E = (await pub({ titulo: 'Editada a mano', tipo: 'prospecto', fuente: 'growi', clave_externa: 'rw-2', datos: { fugas: ['Pedidos a mano'], guion: VIEJO } })).body.id
+      await editar(E, { contenido: 'Mi guión, escrito por una persona', base: 1 }, KEY_J)
+      F = (await pub({ titulo: 'Sin fugas', tipo: 'prospecto', fuente: 'growi', clave_externa: 'rw-3', datos: { guion: VIEJO } })).body.id
+      const o = await cli3([])
+      assert.equal(o.status, 0, o.stdout + o.stderr)
+      assert.match(o.stdout, /ENSAYO: no se cambia nada/)
+      assert.match(o.stdout, /Estuve viendo Charcutería El Buen Corte y noté esto: no responde DMs de Instagram\./)
+      assert.match(o.stdout, /se reescribirían: \d+/)
+      const g = (await guion(R)).body
+      assert.equal(g.versiones.length, 1)
+      assert.equal(g.guion.actual, VIEJO)
+    })
+
+    it('--aplicar: el texto anterior queda como versión 0 («previo»), el nuevo es el original; lo editado a mano y lo que no tiene fugas no se toca; es idempotente', async () => {
+      const o = await cli3(['--aplicar'])
+      assert.equal(o.status, 0, o.stdout + o.stderr)
+      assert.match(o.stdout, /APLICANDO la reescritura/)
+      const g = (await guion(R)).body
+      assert.deepEqual(g.versiones.map((v: any) => [v.nro, v.tipo]), [[1, 'original'], [0, 'previo']])
+      assert.equal(g.versiones[1].contenido, VIEJO, 'nada se pierde: el guión anterior es la versión 0')
+      assert.equal(g.guion.original, g.guion.actual)
+      assert.equal(g.guion.version, 1)
+      assert.ok(g.guion.actual.length < GUION_PAS_MAX && g.guion.actual.split('\n').length === 5)
+      assert.doesNotMatch(g.guion.actual, /gur[uú]|disruptiv|\d/i)
+      assert.match(g.guion.actual, /no responde DMs de Instagram/, 'parte de una fuga real')
+      assert.equal(g.versiones[0].editado_por, null, 'la reescritura es del sistema')
+      assert.equal(g.item.datos.guion, g.guion.actual)
+      assert.equal(g.guion.whatsapp.url, `https://wa.me/584145502190?text=${encodeURIComponent(g.guion.actual)}`)
+      // el guión que una persona editó, intacto; el que no tiene fugas, intacto
+      const e = (await guion(E)).body
+      assert.equal(e.guion.actual, 'Mi guión, escrito por una persona')
+      assert.equal(e.versiones.length, 2)
+      assert.equal((await guion(F)).body.guion.actual, VIEJO)
+      assert.match(o.stdout, /sin fugas \(a mano\): [1-9]/)
+      assert.match(o.stdout, /ya editados por alguien: [1-9]/)
+      // idempotente
+      const otra = await cli3(['--aplicar'])
+      assert.match(otra.stdout, /reescritos: 0/)
+      assert.equal((await guion(R)).body.versiones.length, 2)
+    })
+
+    it('después de reescribir se puede editar y restablecer: restablecer vuelve al NUEVO original, y el respaldo (versión 0) sigue ahí', async () => {
+      const e = await editar(R, { contenido: 'Retoque', base: 1 }, KEY_J)
+      assert.equal(e.body.guion.version, 2)
+      const r = await restablecer(R, { base: 2 })
+      assert.equal(r.body.guion.actual, r.body.guion.original)
+      assert.equal(r.body.versiones.find((v: any) => v.nro === 0).contenido, VIEJO)
+      assert.deepEqual(r.body.versiones.map((v: any) => v.nro), [3, 2, 1, 0])
+    })
   })
 })
 

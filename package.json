@@ -16,6 +16,7 @@
     "dev:all": "concurrently -k -n db,api,web -c cyan,green,magenta \"npm:db:dev\" \"npm:dev:api\" \"npm:dev\"",
     "typecheck:server": "tsc -p server/tsconfig.json",
     "test:server": "tsx --test server/test/api.test.ts server/test/v1.test.ts",
+    "feed:guiones": "tsx --env-file-if-exists=.env server/src/feed-guiones.ts",
     "apikey": "tsx --env-file-if-exists=.env server/src/apikey-cli.ts"
   },
   "dependencies": {

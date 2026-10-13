@@ -5098,6 +5098,12 @@ describe('Feed: Mapbox como segundo proveedor (geocodificación y teselas)', () 
     const y = readFileSync(resolve(root, 'docker-compose.prod.yml'), 'utf8')
     for (const [k, def] of [['GEOCODER', 'nominatim'], ['MAP_TILES', 'osm'], ['MAPBOX_PUBLIC_TOKEN', ''], ['MAPBOX_PERMANENT', 'false']]) assert.ok(y.includes(`${k}: \${${k}:-${def}}`), `${k} debe ir como \${${k}:-${def}}`)
     assert.doesNotMatch(y, /MAPBOX_PUBLIC_TOKEN:\s*["']?pk\./, 'el valor del token no se escribe en el compose')
+    const wf = readFileSync(resolve(root, '.github/workflows/deploy.yml'), 'utf8')
+    assert.match(wf, /MAPBOX_PUBLIC_TOKEN:\s*\$\{\{\s*secrets\.MAPBOX_PUBLIC_TOKEN\s*\}\}/, 'el workflow toma el token de GitHub Secrets')
+    assert.match(wf, /-o SendEnv=MAPBOX_PUBLIC_TOKEN\b/, 'y lo manda por SSH con SendEnv')
+    const sinComentarios = wf.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n')
+    assert.equal((sinComentarios.match(/MAPBOX_PUBLIC_TOKEN/g) ?? []).length, 3, 'solo en el env, el secret y el SendEnv: ni echo ni otro uso')
+    assert.doesNotMatch(sinComentarios, /\becho\b[^\n]*MAPBOX|set -x|ssh\s+-v/, 'el valor no se imprime en ningún paso')
   })
 
   it('mapbox(): pide con país, idioma, sesgo a Barquisimeto, sin autocompletar y con el token; lo guardable exige permanent solo si se pide', async () => {

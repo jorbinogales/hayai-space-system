@@ -185,7 +185,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
   const [form, setForm] = useState(false)
   const [cal, setCal] = useState(false)
   const [invoice, setInvoice] = useState<InvoiceData | null>(null)
-  const [prosp, setProsp] = useState(false) // alta de posible cliente
+  const [prosp, setProsp] = useState(false) // alta de cliente potencial
   const [edit, setEdit] = useState<string | null>(null) // cliente que se esta editando
   const projects = useProjects()
   const tasks = useTasks()
@@ -353,7 +353,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
             onBlur={hoverOff}
           >
             <span className="node-dot" />
-            <span className="node-label">{cl.name}{cl.prospect ? ' · posible' : ''}</span>
+            <span className="node-label">{cl.name}{cl.prospect ? ' · potencial' : ''}</span>
           </button>
         ))}
 
@@ -369,10 +369,10 @@ export default function Clients({ onBack }: { onBack: () => void }) {
           <div ref={(el) => void (br.current.sum = el)}>
             <p className="summary">
               {sm.activos} activos
-              {sm.posibles > 0 && (
+              {sm.potenciales > 0 && (
                 <>
                   <br />
-                  {sm.posibles} {sm.posibles === 1 ? 'posible' : 'posibles'}
+                  {sm.potenciales} {sm.potenciales === 1 ? 'potencial' : 'potenciales'}
                 </>
               )}
               <br />
@@ -389,7 +389,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
               </button>
               <button className="new alt" onClick={() => setProsp(true)}>
                 <Icon name="plus" size={16} />
-                Posible cliente
+                Cliente potencial
               </button>
             </div>
           </div>
@@ -405,7 +405,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
             </div>
             {c.prospect ? (
               <>
-                <p className="lbl">Posible cliente</p>
+                <p className="lbl">Cliente potencial</p>
                 <p className="amt small">{projects.find((p) => p.clientId === c.id)?.name ?? 'Sin proyecto'}</p>
               </>
             ) : (
@@ -423,7 +423,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
                     const stage = stages.data?.find((x) => x.etapa === (c as Lead).stage)
                     return (
                       <>
-                        <li>{stage?.nombre ?? 'Posible cliente'}</li>
+                        <li>{stage?.nombre ?? 'Cliente potencial'}</li>
                         <li>{v?.due ? `Visita el ${fmtDate(v.due)}` : 'Visita sin fecha'}</li>
                       </>
                     )
@@ -506,7 +506,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
             onNew={() => setForm(true)}
             onProspect={() => setProsp(true)}
             eyebrow={view === 'orbital' ? 'PLANETA VENTAS · VISTA ORBITAL' : 'PLANETA VENTAS · PIPELINE'}
-            title={view === 'orbital' ? 'Quién está cerca de cerrar' : 'El camino de cada posible cliente'}
+            title={view === 'orbital' ? 'Quién está cerca de cerrar' : 'El camino de cada cliente potencial'}
           >
             {view === 'orbital' ? (
               <OrbitalView clients={clients as Lead[]} stages={stages} openId={open} onPick={pickLink} onSwitch={setView} onProspect={() => setProsp(true)} nextOf={nextOf} />

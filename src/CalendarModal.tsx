@@ -33,7 +33,7 @@ export default function CalendarModal({ onClose }: { onClose: () => void }) {
         avatar: avatarOf(c),
       })),
     )
-    // tareas agendadas (p.ej. visitas a posibles clientes), sin monto
+    // tareas agendadas (p.ej. visitas a clientes potenciales), sin monto
     const visits: CalEvent[] = tasks
       .filter((t) => t.due)
       .map((t) => {

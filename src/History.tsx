@@ -114,7 +114,7 @@ function NoteText({ text }: { text: string }) {
 }
 
 /**
- * De qué hallazgo del feed salió el cliente. En un posible cliente creado con «Convertir» trae «Devolver al feed»: la red de seguridad para
+ * De qué hallazgo del feed salió el cliente. En un cliente potencial creado con «Convertir» trae «Devolver al feed»: la red de seguridad para
  * cuando el «Deshacer» del aviso ya expiró (lo manda a la papelera y el ítem vuelve a «Nuevos»).
  */
 function DelFeed({ c, onClose }: { c: Client; onClose: () => void }) {
@@ -162,7 +162,7 @@ function DelFeed({ c, onClose }: { c: Client; onClose: () => void }) {
       {c.prospect && asking && (
         <div className="fx-origin-ask" role="group" aria-label="Confirmar devolver al feed">
           <p>
-            Se borra este posible cliente (con su bitácora, proyectos y propuestas) y el hallazgo vuelve a <b>Nuevos</b>. Queda 30 días en la papelera.
+            Se borra este cliente potencial (con su bitácora, proyectos y propuestas) y el hallazgo vuelve a <b>Nuevos</b>. Queda 30 días en la papelera.
           </p>
           <div>
             <button type="button" className="fx-linkbtn is-warn" disabled={busy} onClick={() => void volver()} autoFocus>
@@ -507,7 +507,7 @@ function PaysPanel({ c, onOpen, onEdit }: { c: Client; onOpen: (id: string) => v
   if (c.movements.length === 0)
     return (
       <div className="fx-empty">
-        <p>{c.prospect ? 'Un posible cliente aún no tiene cobros.' : 'Este cliente aún no tiene cobros.'}</p>
+        <p>{c.prospect ? 'Un cliente potencial aún no tiene cobros.' : 'Este cliente aún no tiene cobros.'}</p>
         {onEdit && !c.prospect && (
           <button type="button" className="primary" onClick={() => onEdit(c.id)}>
             Crear el primero
@@ -644,9 +644,9 @@ export default function History({
   client: Client | null
   onClose: () => void
   onEdit?: (id: string) => void
-  /** posible cliente: pasa a ser cliente */
+  /** cliente potencial: pasa a ser cliente */
   onConvert?: (id: string) => void
-  /** posible proyecto del prospecto y su tarea de visita */
+  /** posible proyecto del potencial y su tarea de visita */
   project?: Project | null
   visit?: Task | null
   /** proxima accion real (visitas y cobros agendados + seguimiento manual) */
@@ -718,7 +718,7 @@ export default function History({
                 <Blobvatar seed={avatarOf(c)} size={44} />
               </span>
               <div>
-                <p className="eyebrow">{c.prospect ? 'Posible cliente' : 'Cliente'}</p>
+                <p className="eyebrow">{c.prospect ? 'Cliente potencial' : 'Cliente'}</p>
                 <h2>{c.name}</h2>
               </div>
               {onEdit && (

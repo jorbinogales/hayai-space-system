@@ -70,7 +70,7 @@ export interface HubData {
 
 export interface Funnel {
   dias: number
-  etapas: { etapa: string; nombre: string; probabilidad: number; posibles: number; valor_mensual: number; valor_ponderado: number }[]
+  etapas: { etapa: string; nombre: string; probabilidad: number; potenciales: number; valor_mensual: number; valor_ponderado: number }[]
   cierres: { ganados: number; perdidos: number; tasa_cierre: number | null }
   /** Los estados no se solapan: abiertos + ganados + perdidos + descartados (archivados sin cerrar) + directos (alta directa, sin pasar por el pipeline) = entraron. */
   por_origen: { origen: string; entraron: number; ganados: number; perdidos: number; abiertos: number; descartados: number; directos: number }[]

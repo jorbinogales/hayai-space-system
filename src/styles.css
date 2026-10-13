@@ -1572,7 +1572,7 @@ legend { padding: 0 6px; }
 .sheet .repeat input[type='checkbox'] { width: 16px; height: 16px; padding: 0; accent-color: var(--amber); }
 .sheet .repeat .rep-n { width: 64px; padding: 5px 8px; text-align: center; }
 
-/* ---------- posibles clientes, edicion de clientes ---------- */
+/* ---------- clientes potenciales, edicion de clientes ---------- */
 .new-row-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .new-row-btns .new { margin-top: 0; }
 .new.alt { background: rgba(246, 238, 226, 0.78); color: var(--ink); box-shadow: 0 8px 20px -14px rgba(60, 40, 15, 0.5); border: 1.5px dashed rgba(22, 17, 11, 0.4); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }

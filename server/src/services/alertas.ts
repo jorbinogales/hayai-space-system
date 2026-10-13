@@ -83,7 +83,7 @@ async function calcular(userId: string): Promise<Alerta[]> {
       version: r.version as string,
     })
   }
-  // Feed de oportunidades: alerta, noticia y prospecto nuevos sin revisar (para todos los socios; la lectura es por socio).
+  // Feed de oportunidades: alerta, noticia y potencial nuevos sin revisar (para todos los socios; la lectura es por socio).
   for (const f of feed) {
     out.push({
       clave: f.clave,

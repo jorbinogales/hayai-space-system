@@ -23,5 +23,23 @@ jobs:
 
       # La llave del VPS esta restringida con command="..." en authorized_keys:
       # el comando que pasemos aqui se ignora y siempre corre el script de deploy.
+      # La config viaja por stdin (KEY=VALUE, solo las no vacias); el script del VPS la aplica
+      # a su .env con deploy/apply-env.sh. Para agregar una variable: ponla aqui y en Settings > Secrets/Variables.
       - name: Desplegar
-        run: ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" deploy
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          META_APP_SECRET: ${{ secrets.META_APP_SECRET }}
+          META_VERIFY_TOKEN: ${{ secrets.META_VERIFY_TOKEN }}
+          META_PAGE_TOKEN: ${{ secrets.META_PAGE_TOKEN }}
+          RECEIVER_DOCUMENTS: ${{ secrets.RECEIVER_DOCUMENTS }}
+          MAPBOX_PUBLIC_TOKEN: ${{ secrets.MAPBOX_PUBLIC_TOKEN }}
+          DOMAIN: ${{ vars.DOMAIN }}
+          META_LEADS_ENABLED: ${{ vars.META_LEADS_ENABLED }}
+          META_LEADS_OWNER: ${{ vars.META_LEADS_OWNER }}
+          SYSTEMS_CHECK_MS: ${{ vars.SYSTEMS_CHECK_MS }}
+        run: |
+          for k in POSTGRES_PASSWORD META_APP_SECRET META_VERIFY_TOKEN META_PAGE_TOKEN RECEIVER_DOCUMENTS MAPBOX_PUBLIC_TOKEN DOMAIN META_LEADS_ENABLED META_LEADS_OWNER SYSTEMS_CHECK_MS; do
+            v="${!k}"
+            if [ -n "$v" ]; then printf '%s=%s
+' "$k" "$v"; fi
+          done | ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" deploy

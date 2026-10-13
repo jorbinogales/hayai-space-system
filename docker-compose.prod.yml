@@ -38,6 +38,8 @@ services:
       RECEIVER_DOCUMENTS: ${RECEIVER_DOCUMENTS:-}
       # Semaforo de los sistemas de los clientes: cada cuantos ms se verifican (0 lo apaga; por defecto 600000 = 10 min).
       SYSTEMS_CHECK_MS: ${SYSTEMS_CHECK_MS:-600000}
+      # Token publico de Mapbox (pk.*). Va en el .env del VPS.
+      MAPBOX_PUBLIC_TOKEN: ${MAPBOX_PUBLIC_TOKEN:-}
     depends_on:
       db:
         condition: service_healthy

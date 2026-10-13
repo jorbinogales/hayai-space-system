@@ -5,7 +5,8 @@ import { comprobanteArchivo, comprobanteDetectar, comprobanteSubir, comprobanteV
 import { pagoActualizar } from '../services/clientes.ts'
 import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
 import { feedEjecutarAccion, feedSugerirAcciones } from '../services/feedAcciones.ts'
-import { feedBorrar, feedContacto, feedConvertir, feedDeshacer, feedGuardar, feedListar, feedMarcar, feedPublicar, feedVer } from '../services/feed.ts'
+import { teselas } from '../geocode.ts'
+import { feedBorrar, feedContacto, feedConvertir, feedDeshacer, feedGeocodificar, feedGuardar, feedListar, feedMapa, feedMarcar, feedPublicar, feedUbicacion, feedVer } from '../services/feed.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 
 import { MK_RUTAS } from '../services/marketingRutas.ts'
@@ -66,12 +67,16 @@ hubRouter.delete('/receptores/:id', async (req, res) => void res.json(await exec
 
 // Feed de oportunidades (lo que encontraron las máquinas y los agentes). La web publica con fuente "manual" o la que mande la pantalla.
 hubRouter.get('/feed', async (req, res) => void res.json(await exec(feedListar, req.user!, query(req))))
+hubRouter.get('/feed/mapa/teselas', (_req, res) => void res.json(teselas())) // qué teselas pinta el mapa (OSM o Mapbox); solo para la web con sesión
+hubRouter.get('/feed/mapa', async (req, res) => void res.json(await exec(feedMapa, req.user!, query(req)))) // antes de /feed/:id
+hubRouter.post('/feed/geocodificar', async (req, res) => void res.json(await exec(feedGeocodificar, req.user!, body(req))))
 hubRouter.get('/feed/:id', async (req, res) => void res.json(await exec(feedVer, req.user!, { id: req.params.id })))
 hubRouter.post('/feed', async (req, res) => {
   const out = (await exec(feedPublicar, req.user!, body(req))) as { creado?: boolean; creados?: number }
   res.status(out.creado ?? out.creados ? 201 : 200).json(out)
 })
 hubRouter.patch('/feed/:id/estado', async (req, res) => void res.json(await exec(feedMarcar, req.user!, { ...body(req), id: req.params.id })))
+hubRouter.patch('/feed/:id/ubicacion', async (req, res) => void res.json(await exec(feedUbicacion, req.user!, { ...body(req), id: req.params.id })))
 hubRouter.post('/feed/:id/guardar', async (req, res) => void res.json(await exec(feedGuardar, req.user!, { ...body(req), id: req.params.id })))
 hubRouter.patch('/feed/:id/contacto', async (req, res) => void res.json(await exec(feedContacto, req.user!, { ...body(req), id: req.params.id })))
 hubRouter.post('/feed/:id/sugerir-acciones', async (req, res) => void res.json(await exec(feedSugerirAcciones, req.user!, { ...body(req), id: req.params.id })))

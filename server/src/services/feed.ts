@@ -17,6 +17,8 @@ import { HttpError, id, text } from '../util.ts'
 import { boolFlag, exec, filters, op, pageShape, paged, TZ, type Actor } from './common.ts'
 import { llmConfig } from '../llm.ts'
 import { VINCULO_TABLA, type Vinculo } from '../feedLinks.ts'
+import { CLAVES_UBICACION, direccionDe, geocodificarItem, iniciarRelleno, programarGeocodificacion, relleno_en_curso, rellenarUbicaciones, telefonoDe, ubicacionDe } from '../feedGeo.ts'
+import { enVenezuela, estadoGeocoder, geocoderOSinConfigurar } from '../geocode.ts'
 import { sendToTrash } from '../trash.ts'
 import { insertContenido } from '../mkContenido.ts'
 import { userByName } from '../socios.ts'
@@ -126,6 +128,8 @@ export const itemOut = (r: any) => ({
   /** PERSONAL: lo guardó el socio que consulta. */
   guardado: !!r.saved,
   datos: (r.data ?? {}) as Record<string, unknown>,
+  /** Dónde queda (para el mapa): estado ok | pendiente | sin_resultado | error | sin_direccion, con lat/lng y su precisión cuando hay. */
+  ubicacion: ubicacionDe((r.data ?? {}) as Record<string, unknown>),
   fecha: (r.found_at as Date).toISOString(),
   publicado_el: (r.created_at as Date).toISOString(),
   convertido: r.converted_to
@@ -244,56 +248,116 @@ export async function item(db: Db, itemId: string, userId: string) {
 const MI_ESTADO = `CASE WHEN f.status = 'convertido' THEN 'convertido' ELSE COALESCE(mu.status, 'nuevo') END`
 const joinMi = (u: string) => `LEFT JOIN feed_item_usuarios mu ON mu.item_id = f.id AND mu.user_id = ${u}`
 
-export const feedListar = op(
-  z.strictObject({
-    tipo: tipo.optional(),
-    estado: estado.optional(), // el que ve este socio: nuevo | revisado | descartado | convertido
-    fuente: fuente.optional(),
-    categoria: z.union([categoria, z.literal('sin_categoria')]).optional(),
-    guardado: boolFlag.optional(), // true: solo los que este socio guardó
-    q: z.string().trim().min(1).max(100).optional(), // busca en título y resumen
-    visibilidad: z.enum(VISIBILIDADES, 'visibilidad debe ser equipo o privado').optional(), // privado: solo los míos
-    ...pageShape,
-  }),
-  async (actor, i) => {
-    const g = filters()
-    if (i.visibilidad) g.add('f.visibility = ?', i.visibilidad)
-    if (i.tipo) g.add('f.kind = ?', i.tipo)
-    if (i.estado) g.add(`${MI_ESTADO} = ?`, i.estado)
-    if (i.fuente) g.add('f.source = ?', i.fuente)
-    if (i.categoria) i.categoria === 'sin_categoria' ? g.raw('f.category IS NULL') : g.add('f.category = ?', i.categoria)
-    if (i.guardado !== undefined) g.raw(i.guardado === true || i.guardado === 'true' ? 'COALESCE(mu.saved, false)' : 'NOT COALESCE(mu.saved, false)')
-    if (i.q) g.add(`fold(f.title || ' ' || COALESCE(f.summary, '')) LIKE '%' || fold(?) || '%'`, i.q)
-    const n = g.params().length
-    const me = `$${n + 1}` // el socio que mira: siempre el parámetro siguiente a los de los filtros
-    g.raw(visible(me)) // los privados de otros socios no existen para este
-    const [total, rows, porEstado, porTipo, fuentes, categorias, extra] = await Promise.all([
-      pool.query(`SELECT count(*)::int AS n FROM feed_items f ${joinMi(me)} ${g.where()}`, [...g.params(), actor.id]),
-      pool.query(`${SELECT(me)} ${g.where()} ORDER BY f.found_at DESC, f.created_at DESC, f.id LIMIT $${n + 2} OFFSET $${n + 3}`, [...g.params(), actor.id, i.per_page, (i.page - 1) * i.per_page]),
-      // Contadores (no dependen del filtro; son los de este socio): sirven para el "N nuevos" y para armar los filtros.
-      pool.query(`SELECT ${MI_ESTADO} AS e, count(*)::int AS n FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY 1`, [actor.id]),
-      pool.query(`SELECT f.kind, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY f.kind`, [actor.id]),
-      pool.query(`SELECT f.source, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY f.source ORDER BY 3 DESC, 2 DESC, 1`, [actor.id]),
-      pool.query(`SELECT f.category, count(*)::int AS n FROM feed_items f WHERE f.category IS NOT NULL AND ${visible('$1')} GROUP BY f.category ORDER BY 2 DESC, 1`, [actor.id]),
-      pool.query(`SELECT count(*) FILTER (WHERE COALESCE(mu.saved, false))::int AS guardados, count(*) FILTER (WHERE f.category IS NULL)::int AS sin_categoria FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')}`, [actor.id]),
-    ])
-    const por_estado = Object.fromEntries(ESTADOS.map((e) => [e, 0])) as Record<string, number>
-    for (const r of porEstado.rows) por_estado[r.e] = r.n
-    const por_tipo = Object.fromEntries(TIPOS.map((t) => [t, { total: 0, nuevos: 0 }])) as Record<string, { total: number; nuevos: number }>
-    for (const r of porTipo.rows) por_tipo[r.kind] = { total: r.n, nuevos: r.nuevos }
-    return paged(await enriquecer(pool, rows.rows.map(itemOut)), total.rows[0].n, i.page, i.per_page, {
-      nuevos: por_estado.nuevo,
-      guardados: extra.rows[0].guardados as number,
-      por_estado,
-      por_tipo,
-      fuentes: fuentes.rows.map((r) => ({ fuente: r.source as string, total: r.n as number, nuevos: r.nuevos as number })),
-      categorias: categorias.rows.map((r) => ({ categoria: r.category as string, total: r.n as number })),
-      sin_categoria: extra.rows[0].sin_categoria as number,
-      /** hay un proveedor de IA configurado: si no, la web no ofrece «Sugerir acciones» */
-      ia_configurada: !!llmConfig(),
-    })
-  },
-)
+/** Los filtros del feed: los mismos para la lista y para el mapa (así lo que se ve en uno es lo que se ve en el otro). */
+const filtroShape = {
+  tipo: tipo.optional(),
+  estado: estado.optional(), // el que ve este socio: nuevo | revisado | descartado | convertido
+  fuente: fuente.optional(),
+  categoria: z.union([categoria, z.literal('sin_categoria')]).optional(),
+  guardado: boolFlag.optional(), // true: solo los que este socio guardó
+  q: z.string().trim().min(1).max(100).optional(), // busca en título y resumen
+  visibilidad: z.enum(VISIBILIDADES, 'visibilidad debe ser equipo o privado').optional(), // privado: solo los míos
+}
+type Filtro = { [K in keyof typeof filtroShape]?: z.infer<(typeof filtroShape)[K]> }
+
+/** WHERE de los filtros + visibilidad. Devuelve el marcador del socio que mira (siempre el parámetro siguiente a los de los filtros). */
+function filtrar(i: Filtro) {
+  const g = filters()
+  if (i.visibilidad) g.add('f.visibility = ?', i.visibilidad)
+  if (i.tipo) g.add('f.kind = ?', i.tipo)
+  if (i.estado) g.add(`${MI_ESTADO} = ?`, i.estado)
+  if (i.fuente) g.add('f.source = ?', i.fuente)
+  if (i.categoria) i.categoria === 'sin_categoria' ? g.raw('f.category IS NULL') : g.add('f.category = ?', i.categoria)
+  if (i.guardado !== undefined) g.raw(i.guardado === true || i.guardado === 'true' ? 'COALESCE(mu.saved, false)' : 'NOT COALESCE(mu.saved, false)')
+  if (i.q) g.add(`fold(f.title || ' ' || COALESCE(f.summary, '')) LIKE '%' || fold(?) || '%'`, i.q)
+  const n = g.params().length
+  const me = `$${n + 1}`
+  g.raw(visible(me)) // los privados de otros socios no existen para este
+  return { g, n, me }
+}
+
+/** Contadores del socio (no dependen del filtro): sirven para el «N nuevos» y para armar los filtros, en la lista y en el mapa. */
+async function contadores(actor: Actor) {
+  const [porEstado, porTipo, fuentes, categorias, extra] = await Promise.all([
+    pool.query(`SELECT ${MI_ESTADO} AS e, count(*)::int AS n FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY 1`, [actor.id]),
+    pool.query(`SELECT f.kind, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY f.kind`, [actor.id]),
+    pool.query(`SELECT f.source, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY f.source ORDER BY 3 DESC, 2 DESC, 1`, [actor.id]),
+    pool.query(`SELECT f.category, count(*)::int AS n FROM feed_items f WHERE f.category IS NOT NULL AND ${visible('$1')} GROUP BY f.category ORDER BY 2 DESC, 1`, [actor.id]),
+    pool.query(`SELECT count(*) FILTER (WHERE COALESCE(mu.saved, false))::int AS guardados, count(*) FILTER (WHERE f.category IS NULL)::int AS sin_categoria FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')}`, [actor.id]),
+  ])
+  const por_estado = Object.fromEntries(ESTADOS.map((e) => [e, 0])) as Record<string, number>
+  for (const r of porEstado.rows) por_estado[r.e] = r.n
+  const por_tipo = Object.fromEntries(TIPOS.map((t) => [t, { total: 0, nuevos: 0 }])) as Record<string, { total: number; nuevos: number }>
+  for (const r of porTipo.rows) por_tipo[r.kind] = { total: r.n, nuevos: r.nuevos }
+  return {
+    nuevos: por_estado.nuevo,
+    guardados: extra.rows[0].guardados as number,
+    por_estado,
+    por_tipo,
+    fuentes: fuentes.rows.map((r) => ({ fuente: r.source as string, total: r.n as number, nuevos: r.nuevos as number })),
+    categorias: categorias.rows.map((r) => ({ categoria: r.category as string, total: r.n as number })),
+    sin_categoria: extra.rows[0].sin_categoria as number,
+  }
+}
+
+export const feedListar = op(z.strictObject({ ...filtroShape, ...pageShape }), async (actor, i) => {
+  const { g, n, me } = filtrar(i)
+  const [total, rows, meta] = await Promise.all([
+    pool.query(`SELECT count(*)::int AS n FROM feed_items f ${joinMi(me)} ${g.where()}`, [...g.params(), actor.id]),
+    pool.query(`${SELECT(me)} ${g.where()} ORDER BY f.found_at DESC, f.created_at DESC, f.id LIMIT $${n + 2} OFFSET $${n + 3}`, [...g.params(), actor.id, i.per_page, (i.page - 1) * i.per_page]),
+    contadores(actor),
+  ])
+  /** `ia_configurada`: hay un proveedor de IA configurado; si no, la web no ofrece «Sugerir acciones» */
+  return paged(await enriquecer(pool, rows.rows.map(itemOut)), total.rows[0].n, i.page, i.per_page, { ...meta, ia_configurada: !!llmConfig() })
+})
+
+// ---------- mapa ----------
+/** Tope de ítems que devuelve el mapa de una vez (un mapa con miles de pines no sirve; se afina con los filtros). */
+const MAPA_MAX = 1500
+
+const mapaItem = (r: { id: string; title: string; category: string | null; kind: string; estado: string; found_at: Date; data: Record<string, unknown> }) => {
+  const u = ubicacionDe(r.data)
+  return {
+    id: r.id,
+    titulo: r.title,
+    tipo: r.kind as (typeof TIPOS)[number],
+    categoria: r.category,
+    /** El estado que ve este socio: nuevo | revisado | descartado | convertido (define el color del pin). */
+    estado: r.estado as (typeof ESTADOS)[number],
+    telefono: telefonoDe(r.data),
+    fecha: r.found_at.toISOString(),
+    ubicacion: u,
+  }
+}
+
+/**
+ * Los ítems del feed para el mapa: con coordenadas (pines) y sin ellas («Sin ubicación», con el motivo). Mismos filtros que la lista.
+ * Es liviano a propósito (sin guion ni fugas): al tocar un pin la pantalla pide el ítem completo con `feedVer`.
+ */
+export const feedMapa = op(z.strictObject(filtroShape), async (actor, i) => {
+  const { g, me } = filtrar(i)
+  const claves = CLAVES_UBICACION.map((k) => `'${k}', f.data -> '${k}'`).join(', ')
+  const [rows, total, meta] = await Promise.all([
+    pool.query(
+      `SELECT f.id, f.title, f.category, f.kind, ${MI_ESTADO} AS estado, f.found_at, jsonb_strip_nulls(jsonb_build_object(${claves})) AS data
+       FROM feed_items f ${joinMi(me)} ${g.where()} ORDER BY f.found_at DESC, f.created_at DESC, f.id LIMIT ${MAPA_MAX}`,
+      [...g.params(), actor.id],
+    ),
+    pool.query(`SELECT count(*)::int AS n FROM feed_items f ${joinMi(me)} ${g.where()}`, [...g.params(), actor.id]),
+    contadores(actor),
+  ])
+  const todos = rows.rows.map(mapaItem)
+  const pines = todos.filter((x) => x.ubicacion.estado === 'ok')
+  return {
+    pines,
+    sin_ubicacion: todos.filter((x) => x.ubicacion.estado !== 'ok'),
+    total: total.rows[0].n as number,
+    truncado: total.rows[0].n > MAPA_MAX,
+    /** false si el servidor no tiene proveedor de geocodificación (GEOCODER=off o mal configurado): los «pendientes» no se resolverán solos. */
+    geocodificador: !!geocoderOSinConfigurar(),
+    ...meta,
+  }
+})
 
 export const feedVer = op(z.strictObject({ id }), (actor, i) => item(pool, i.id, actor.id))
 
@@ -388,6 +452,8 @@ export const feedPublicar = op(
     })
     // Ya confirmado: las acciones sugeridas de lo recién publicado se piden a la IA sin hacer esperar a quien publicó.
     programador?.(resultados.filter((r) => r.creado && r.item.acciones_sugeridas.estado === 'pendiente').map((r) => ({ id: r.item.id, actorId: actor.id })))
+    // Las direcciones de lo recién publicado se buscan en segundo plano (no demora la respuesta): en unos segundos el pin aparece en el mapa.
+    programarGeocodificacion(resultados.filter((r) => r.item.ubicacion.estado === 'pendiente').map((r) => r.item.id))
     // Un ítem: el ítem y si se creó. Varios: el resumen del lote y el resultado de cada uno, en el orden enviado.
     if (!b.items) return { ...resultados[0].item, creado: resultados[0].creado }
     return {
@@ -491,6 +557,57 @@ export const feedContacto = op(z.strictObject({ id, instagram: z.string('instagr
   })
   return item(pool, b.id, actor.id)
 })
+// ---------- ubicación (mapa) ----------
+/**
+ * Corrige dónde queda un ítem. Con `direccion` cambia la dirección y la vuelve a buscar (si no se encuentra queda en «Sin ubicación» con ese motivo);
+ * con `lat` y `lng` pone el pin a mano (nunca se pisa después); con las tres, la dirección y el pin del socio.
+ */
+export const feedUbicacion = op(
+  z
+    .strictObject({
+      id,
+      direccion: text(300).optional(),
+      lat: z.number('lat debe ser un número').min(-90, 'lat fuera de rango').max(90, 'lat fuera de rango').optional(),
+      lng: z.number('lng debe ser un número').min(-180, 'lng fuera de rango').max(180, 'lng fuera de rango').optional(),
+    })
+    .refine((v) => (v.lat === undefined) === (v.lng === undefined), 'lat y lng van juntas')
+    .refine((v) => v.direccion !== undefined || v.lat !== undefined, 'Envía la dirección corregida (direccion) o el punto (lat y lng)'),
+  async (actor, b) => {
+    const manual = b.lat !== undefined && b.lng !== undefined
+    if (manual && !enVenezuela(b.lat!, b.lng!)) throw new HttpError(400, 'Ese punto queda fuera de Venezuela: revisa lat y lng')
+    await tx(async (c) => {
+      const cur = (await c.query(`SELECT data FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id])).rows[0]
+      if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
+      let data = { ...((cur.data ?? {}) as Record<string, unknown>) }
+      if (b.direccion) data.donde = b.direccion
+      if (manual) data.geo = { estado: 'ok', lat: b.lat, lng: b.lng, precision: 'exacta', origen: 'manual', consulta: direccionDe(data), el: new Date().toISOString() }
+      else {
+        // Otra dirección: lo calculado de la anterior ya no vale (tampoco unas coordenadas que trajera quien publicó).
+        for (const k of ['geo', 'lat', 'lng', 'latitud', 'longitud']) delete data[k]
+      }
+      await c.query('UPDATE feed_items SET data = $2::jsonb WHERE id = $1', [b.id, JSON.stringify(data)])
+    })
+    if (!manual) await geocodificarItem(pool, b.id, { forzar: true })
+    return item(pool, b.id, actor.id)
+  },
+)
+
+/** Pone a buscar, en segundo plano, las coordenadas de los ítems con dirección que aún no las tienen (lo mismo que el script feed:geocodificar). */
+export const feedGeocodificar = op(
+  z.strictObject({
+    tipo: tipo.optional(),
+    reintentar: z.boolean('reintentar debe ser true o false').optional(), // también los que ya dieron «sin resultado»
+    limite: z.number().int().min(1).max(500).optional(),
+  }),
+  async (_actor, b) => {
+    const g = estadoGeocoder()
+    if (g.error) throw new HttpError(409, `El geocodificador está mal configurado: ${g.error}`)
+    if (!g.proveedor) throw new HttpError(409, 'El geocodificador está apagado en este servidor (GEOCODER=off)')
+    const plan = await rellenarUbicaciones({ tipo: b.tipo, reintentar: b.reintentar, limite: b.limite, ensayo: true })
+    const iniciado = plan.pendientes > 0 && iniciarRelleno({ tipo: b.tipo, reintentar: b.reintentar, limite: b.limite })
+    return { proveedor: g.proveedor, con_direccion: plan.con_direccion, ya_ubicados: plan.ya_ubicados, por_buscar: plan.pendientes, iniciado, en_curso: relleno_en_curso(), cobertura: plan.cobertura }
+  },
+)
 
 // ---------- convertir ----------
 const linea = (k: string, v: unknown) => (v === undefined || v === null || v === '' ? null : `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)

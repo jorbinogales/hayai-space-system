@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process'
 import { createHmac } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -12,6 +12,7 @@ import { after, before, describe, it } from 'node:test'
 import EmbeddedPostgres from 'embedded-postgres'
 import pg from 'pg'
 import { keyRateLimit } from '../src/v1/apiKey.ts'
+import { avisosMapa, crearGeocoder, geocoder, GeocoderError, mapbox, precisionMapbox, reiniciarGeocoder, teselas } from '../src/geocode.ts'
 
 const root = resolve(import.meta.dirname, '../..')
 const PG_PORT = 54331
@@ -55,11 +56,57 @@ const SERP_FALSO = [
 ]
 
 // IA falsa (DeepSeek, API chat/completions): responde según el título del ítem (guion por título); sin guion, «sin acciones». Registra cada llamada.
-const LLM_PORT = 3194
+const LLM_PORT = 3190
 let llm: Server
 type LlmGuion = { status?: number; reply?: unknown; raw?: string; delayMs?: number }
 const llmGuion = new Map<string, LlmGuion>()
 const llmCalls: { auth: string | undefined; model: string; system: string; user: any }[] = []
+// Nominatim falso: nunca sale a internet. Responde según la consulta y anota cada petición (para probar User-Agent y ritmo).
+const GEO_PORT = 3194
+let geo: Server
+const geoHits: { q: string; ua: string | undefined; t: number }[] = []
+const geoState = { down: false }
+const geoRespuesta = (q: string): unknown[] => {
+  const n = q.toLowerCase()
+  const r = (lat: number, lon: number, place_rank: number, display_name: string) => [{ lat: String(lat), lon: String(lon), place_rank, display_name }]
+  if (n.includes('calle 30')) return r(10.0701, -69.3201, 30, 'Calle 30, Barquisimeto, Lara, Venezuela')
+  if (n.includes('nueva segovia')) return r(10.0522, -69.3105, 22, 'Urbanización Nueva Segovia, Barquisimeto')
+  if (n.includes('cabudare')) return r(10.0333, -69.2667, 26, 'Avenida Intercomunal, Cabudare')
+  if (n.includes('en caracas')) return r(10.5, -66.9, 30, 'Caracas') // dentro de Venezuela, pero lejos: el servidor no lo juzga
+  if (n.includes('ciudadmundo')) return r(48.85, 2.35, 30, 'París') // fuera de Venezuela: se descarta
+  if (/^barquisimeto/.test(n) || n.includes('solo la ciudad')) return r(10.0647, -69.357, 16, 'Barquisimeto, Lara') // demasiado grueso: se descarta
+  return []
+}
+
+// Mapbox falso (Geocoding v6): nunca sale a internet. Anota cada petición (parámetros y token) y responde según la consulta.
+const MBX_PORT = 3191
+const MBX_TOKEN = 'pk.token-de-prueba'
+let mbx: Server
+const mbxHits: { q: string; p: Record<string, string>; t: number }[] = []
+const mbxState = { status: 0 }
+const mbxF = (lat: number, lng: number, feature_type: string, o: { accuracy?: string; confidence?: string; full?: string } = {}) => ({
+  type: 'Feature',
+  geometry: { type: 'Point', coordinates: [lng, lat] },
+  properties: {
+    feature_type,
+    name: (o.full ?? 'Lugar').split(',')[0],
+    full_address: o.full ?? 'Lugar, Barquisimeto, Lara, Venezuela',
+    place_formatted: 'Barquisimeto, Lara, Venezuela',
+    coordinates: { latitude: lat, longitude: lng, ...(o.accuracy ? { accuracy: o.accuracy } : {}) },
+    ...(o.confidence ? { match_code: { confidence: o.confidence } } : {}),
+  },
+})
+const mbxRespuesta = (q: string): unknown[] => {
+  const n = q.toLowerCase()
+  if (n.includes('zzmapbox')) return [mbxF(10.0712, -69.3305, 'address', { accuracy: 'rooftop', confidence: 'exact', full: 'Av. Rotaria 12, Barquisimeto, Lara, Venezuela' })]
+  if (n.includes('interpol')) return [mbxF(10.0801, -69.3401, 'address', { accuracy: 'interpolated', confidence: 'high', full: 'Calle 24 con Carrera 17, Barquisimeto' })]
+  if (n.includes('nueva segovia')) return [mbxF(10.0522, -69.3105, 'neighborhood', { full: 'Nueva Segovia, Barquisimeto' })]
+  if (n.includes('multi')) return [mbxF(10.0647, -69.357, 'place'), mbxF(10.09, -69.3, 'poi', { full: 'Panadería Multi, Barquisimeto' })]
+  if (n.includes('lowconf')) return [mbxF(10.07, -69.33, 'address', { accuracy: 'rooftop', confidence: 'low' })]
+  if (n.includes('ciudadmundo')) return [mbxF(48.85, 2.35, 'address', { accuracy: 'rooftop', confidence: 'exact' })]
+  if (/^barquisimeto/.test(n) || n.includes('solo la ciudad')) return [mbxF(10.0647, -69.357, 'place', { full: 'Barquisimeto, Lara, Venezuela' })] // demasiado grueso
+  return []
+}
 
 type Res = { status: number; body: any; headers: Headers; full?: any }
 type Opts = { method?: string; body?: unknown; raw?: string; key?: string | null; headers?: Record<string, string> }
@@ -182,6 +229,24 @@ before(async () => {
     })
   })
   await new Promise<void>((ok) => llm.listen(LLM_PORT, ok))
+  geo = createServer((req, res) => {
+    const u = new URL(req.url ?? '/', 'http://x')
+    const q = u.searchParams.get('q') ?? ''
+    geoHits.push({ q, ua: req.headers['user-agent'], t: Date.now() })
+    if (geoState.down) return void res.writeHead(503).end('{}')
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(geoRespuesta(q)))
+  })
+  await new Promise<void>((ok) => geo.listen(GEO_PORT, ok))
+  mbx = createServer((req, res) => {
+    const u = new URL(req.url ?? '/', 'http://x')
+    if (u.pathname !== '/search/geocode/v6/forward') return void res.writeHead(404).end('{}')
+    const p = Object.fromEntries(u.searchParams)
+    mbxHits.push({ q: p.q ?? '', p, t: Date.now() })
+    if (p.access_token !== MBX_TOKEN) return void res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ message: 'Not Authorized - Invalid Token' }))
+    if (mbxState.status) return void res.writeHead(mbxState.status).end('{}')
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ type: 'FeatureCollection', features: mbxRespuesta(p.q ?? '') }))
+  })
+  await new Promise<void>((ok) => mbx.listen(MBX_PORT, ok))
 
   target = createServer((req, res) => {
     if (req.url?.startsWith('/siempre')) return void res.writeHead(200).end('ok')
@@ -232,6 +297,11 @@ before(async () => {
     BCV_SOURCES: `http://localhost:${BCV_PORT}/principal,http://localhost:${BCV_PORT}/respaldo`,
     BCV_TTL_MS: '300',
     BCV_REFRESH_MS: '0',
+    // Mapa del feed: la geocodificación apunta a un Nominatim falso (nunca a internet) y espera 120 ms entre peticiones.
+    GEOCODER: 'nominatim',
+    GEOCODER_URL: `http://localhost:${GEO_PORT}`,
+    GEOCODER_USER_AGENT: 'HAYAI-Pruebas/1.0 (+https://hayai.test)',
+    GEOCODER_MIN_MS: '120',
     // El aviso de versión al arrancar se apaga: cada prueba que lo necesita publica su propia versión.
     ANNOUNCE_VERSION: 'false',
     // Acciones sugeridas por IA: DeepSeek falso local (nunca internet ni créditos reales).
@@ -266,6 +336,8 @@ after(async () => {
   bcvServer?.close()
   ext?.close()
   llm?.close()
+  geo?.close()
+  mbx?.close()
   await embedded?.stop().catch(() => {})
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 })
 })
@@ -814,10 +886,10 @@ describe('MCP', () => {
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 100) // lectura + escritura
+    assert.equal(names.length, 103) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 112)
+    assert.equal(full.length, 115)
     assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -4625,10 +4697,10 @@ describe('Feed de oportunidades', () => {
     assert.equal((await http(`${ROOT}/api/feed`)).status, 401)
   })
 
-  it('MCP: las nueve herramientas (la de lectura se ve con solo lectura), publicar idempotente, marcar y guardar personales y convertir', async () => {
+  it('MCP: las herramientas del feed (las de lectura se ven con solo lectura), publicar idempotente, marcar y guardar personales y convertir', async () => {
     const nombres = async (key: string) => ((await rpc('tools/list', {}, key)).body.result.tools as any[]).map((t) => t.name).filter((x: string) => x.startsWith('hayai_feed'))
-    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_contacto', 'hayai_feed_convertir', 'hayai_feed_deshacer', 'hayai_feed_ejecutar_accion', 'hayai_feed_guardar', 'hayai_feed_listar', 'hayai_feed_marcar', 'hayai_feed_publicar', 'hayai_feed_sugerir_acciones'])
-    assert.deepEqual(await nombres(KEY_R), ['hayai_feed_listar'])
+    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_contacto', 'hayai_feed_convertir', 'hayai_feed_deshacer', 'hayai_feed_ejecutar_accion', 'hayai_feed_geocodificar', 'hayai_feed_guardar', 'hayai_feed_listar', 'hayai_feed_mapa', 'hayai_feed_marcar', 'hayai_feed_publicar', 'hayai_feed_sugerir_acciones', 'hayai_feed_ubicacion'])
+    assert.deepEqual((await nombres(KEY_R)).sort(), ['hayai_feed_listar', 'hayai_feed_mapa'])
     const tools = (await rpc('tools/list')).full.result.tools as any[] // full: body quita `actualizado_el`
     assert.equal(tools.find((t) => t.name === 'hayai_feed_listar').annotations.readOnlyHint, true)
     assert.ok(!tools.find((t) => t.name === 'hayai_feed_marcar').inputSchema.properties.actualizado_el, 'marcar es personal: no hay conflicto que cuidar')
@@ -5276,6 +5348,478 @@ describe('Acciones sugeridas por IA (feed)', () => {
     } finally {
       srv.kill()
     }
+describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
+  let n = 0
+  const rpc = (method: string, params: unknown = {}, key: string | null = KEY) =>
+    http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: ++n, method, params } })
+  const pub = (body: unknown, key = KEY) => api('/feed', { body, key })
+  const ver = async (id: string, key = KEY) => (await api(`/feed/${id}`, { key })).body
+  const esperar = async (id: string, estado: string, key = KEY) => {
+    for (let i = 0; i < 60; i++) {
+      const it = await ver(id, key)
+      if (it.ubicacion.estado === estado) return it
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    return ver(id, key)
+  }
+  let cookie = ''
+  let KEY_R = ''
+  let A = '' // Calle 30 -> pin exacto
+  let Z = '' // Nueva Segovia -> pin de zona (aproximado)
+  let G = '' // solo la ciudad -> demasiado grueso: sin pin
+  let S = '' // sin dirección
+  let C = '' // Cabudare, privado de Leandro
+
+  before(async () => {
+    KEY_R = newKey('Jorbi', 'solo-lectura-mapa', 'read')
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+  })
+
+  it('al publicar un prospecto con "donde" nace pendiente y el servidor lo ubica solo, con User-Agent propio y sin inventar', async () => {
+    const r = await pub({ titulo: 'Charcutería El Mesón', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-a', categoria: 'charcutería', resumen: 'Atienden por WhatsApp pero sin catálogo.', datos: { donde: 'Av. Los Leones, Calle 30 con Carrera 19, Local 4', contacto: { telefono: '0414-1234567' } } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.equal(r.body.ubicacion.estado, 'pendiente', 'la respuesta no espera al proveedor')
+    assert.equal(r.body.ubicacion.direccion, 'Av. Los Leones, Calle 30 con Carrera 19, Local 4')
+    A = r.body.id
+    const it = await esperar(A, 'ok')
+    assert.deepEqual([it.ubicacion.estado, it.ubicacion.lat, it.ubicacion.lng, it.ubicacion.precision, it.ubicacion.origen], ['ok', 10.0701, -69.3201, 'exacta', 'nominatim'])
+    assert.equal(it.datos.geo.consulta, 'Av. Los Leones, Calle 30 con Carrera 19, Local 4', 'las coordenadas quedan en datos.geo junto a la dirección que las originó')
+    const h = geoHits.filter((x) => /calle 30/i.test(x.q))
+    assert.ok(h.length >= 1)
+    assert.equal(h[0].ua, 'HAYAI-Pruebas/1.0 (+https://hayai.test)', 'identifica a la aplicación, no a la librería HTTP')
+    assert.match(h[0].q, /Barquisimeto, Lara$/, 'sin ciudad en la dirección, se acota a Barquisimeto')
+  })
+
+  it('volver a publicar lo mismo no repite la consulta (idempotente)', async () => {
+    const antes = geoHits.length
+    const r = await pub({ titulo: 'Charcutería El Mesón', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-a', datos: { donde: 'Av. Los Leones, Calle 30 con Carrera 19, Local 4' } })
+    assert.equal(r.status, 200)
+    assert.equal(r.body.ubicacion.estado, 'ok')
+    await new Promise((r) => setTimeout(r, 400))
+    assert.equal(geoHits.length, antes)
+  })
+
+  it('una zona (urbanización) queda como aproximada; solo "Barquisimeto" o un resultado fuera de Venezuela NO dan pin', async () => {
+    const lote = await pub({
+      items: [
+        { titulo: 'Repostería Dulce Luna', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-z', categoria: 'repostería', datos: { donde: 'Urbanización Nueva Segovia, Barquisimeto' } },
+        { titulo: 'Negocio sin calle', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-g', categoria: 'servicios', datos: { donde: 'Barquisimeto' } },
+        { titulo: 'Negocio sin dirección', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-s', categoria: 'servicios', datos: { contacto: { telefono: '0412-0000000' } } },
+        { titulo: 'Resultado en París', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-p', datos: { donde: 'Av. Ciudadmundo 1' } },
+      ],
+    })
+    assert.equal(lote.status, 201, JSON.stringify(lote.body))
+    ;[Z, G, S] = lote.body.data.map((x: any) => x.id)
+    const P = lote.body.data[3].id
+    const z = await esperar(Z, 'ok')
+    assert.deepEqual([z.ubicacion.precision, z.ubicacion.lat], ['zona', 10.0522])
+    const g = await esperar(G, 'sin_resultado')
+    assert.deepEqual([g.ubicacion.estado, g.ubicacion.lat, g.ubicacion.lng], ['sin_resultado', null, null], 'la ciudad entera no es la ubicación de un negocio')
+    assert.equal(g.datos.geo.estado, 'sin_resultado')
+    assert.equal((await ver(S)).ubicacion.estado, 'sin_direccion')
+    assert.equal((await esperar(P, 'sin_resultado')).ubicacion.lat, null, 'un punto fuera de Venezuela se descarta')
+  })
+
+  it('las consultas respetan la política: 120 ms de espera mínima en la prueba (1 s con el servidor público) y nunca dos a la vez', async () => {
+    const t = geoHits.map((x) => x.t)
+    for (let i = 1; i < t.length; i++) assert.ok(t[i] - t[i - 1] >= 100, `consulta ${i}: ${t[i] - t[i - 1]} ms`)
+  })
+
+  it('GET /feed/mapa: pines con coordenadas y bandeja «sin ubicación» con el motivo, mismos filtros que la lista', async () => {
+    const m = await api('/feed/mapa?tipo=prospecto&fuente=growi')
+    assert.equal(m.status, 200, JSON.stringify(m.body))
+    const pin = (id: string) => m.body.pines.find((x: any) => x.id === id)
+    assert.deepEqual([pin(A).titulo, pin(A).estado, pin(A).telefono, pin(A).categoria, pin(A).ubicacion.lat], ['Charcutería El Mesón', 'nuevo', '0414-1234567', 'charcutería', 10.0701])
+    assert.ok(pin(Z))
+    assert.deepEqual(m.body.sin_ubicacion.map((x: any) => [x.id, x.ubicacion.estado]).sort(), [[G, 'sin_resultado'], [S, 'sin_direccion']].concat(m.body.sin_ubicacion.filter((x: any) => ![G, S].includes(x.id)).map((x: any) => [x.id, x.ubicacion.estado])).sort())
+    assert.equal(m.body.geocodificador, true)
+    assert.ok(m.body.por_estado && Array.isArray(m.body.categorias), 'trae los contadores que arman los filtros')
+    assert.equal(m.body.pines.length + m.body.sin_ubicacion.length, m.body.total)
+    // filtros: categoría, buscador, estado
+    const cat = await api('/feed/mapa?categoria=repostería')
+    assert.deepEqual(cat.body.pines.map((x: any) => x.id), [Z])
+    const q = await api('/feed/mapa?q=meson')
+    assert.deepEqual([q.body.pines.map((x: any) => x.id), q.body.sin_ubicacion.length], [[A], 0], 'el buscador ignora acentos y mayúsculas')
+    const sinCat = await api('/feed/mapa?categoria=sin_categoria&tipo=prospecto')
+    assert.ok(sinCat.body.sin_ubicacion.every((x: any) => x.categoria === null))
+    // lo mismo que la lista: el mapa y GET /feed filtran igual
+    const lista = await api('/feed?categoria=repostería&per_page=50')
+    assert.deepEqual(lista.body.data.map((x: any) => x.id), [Z])
+    assert.deepEqual([lista.body.data[0].ubicacion.estado], ['ok'], 'la lista también trae la ubicación')
+    // el estado del pin es el del socio que mira
+    await api(`/feed/${A}/estado`, { method: 'PATCH', body: { estado: 'revisado' } })
+    assert.equal((await api('/feed/mapa?tipo=prospecto')).body.pines.find((x: any) => x.id === A).estado, 'revisado')
+    assert.equal((await api('/feed/mapa?tipo=prospecto', { key: KEY_J })).body.pines.find((x: any) => x.id === A).estado, 'nuevo', 'revisar es personal')
+    assert.deepEqual((await api('/feed/mapa?estado=revisado')).body.pines.map((x: any) => x.id), [A])
+    assert.equal((await api('/feed/mapa?estado=raro')).status, 400)
+  })
+
+  it('la web (sesión) usa el mismo servicio: /api/feed/mapa va antes que /api/feed/:id', async () => {
+    const r = await http(`${ROOT}/api/feed/mapa?tipo=prospecto`, { headers: { cookie } })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.ok(r.body.pines.some((x: any) => x.id === A))
+  })
+
+  it('un ítem privado no sale en el mapa de otro socio ni se puede mover', async () => {
+    const r = await pub({ titulo: 'Privado en Cabudare', tipo: 'prospecto', fuente: 'manual', visibilidad: 'privado', datos: { donde: 'Av. Intercomunal, Cabudare' } })
+    C = r.body.id
+    assert.equal((await esperar(C, 'ok')).ubicacion.precision, 'calle')
+    assert.ok((await api('/feed/mapa')).body.pines.some((x: any) => x.id === C))
+    const otro = await api('/feed/mapa', { key: KEY_J })
+    assert.ok(![...otro.body.pines, ...otro.body.sin_ubicacion].some((x: any) => x.id === C))
+    assert.equal((await api(`/feed/${C}/ubicacion`, { method: 'PATCH', body: { lat: 10.1, lng: -69.3 }, key: KEY_J })).status, 404)
+  })
+
+  it('fijar el pin a mano: queda con origen manual, valida lat/lng y la búsqueda automática nunca lo pisa', async () => {
+    const mal = (body: unknown) => api(`/feed/${G}/ubicacion`, { method: 'PATCH', body })
+    assert.equal((await mal({})).status, 400)
+    assert.equal((await mal({ lat: 10.07 })).status, 400, 'lat y lng van juntas')
+    assert.equal((await mal({ lat: 95, lng: -69.3 })).status, 400)
+    const fuera = await mal({ lat: 48.85, lng: 2.35 })
+    assert.equal(fuera.status, 400)
+    assert.match(fuera.body.error?.message ?? fuera.body.message ?? JSON.stringify(fuera.body), /Venezuela/)
+    const ok = await mal({ lat: 10.0555, lng: -69.3333 })
+    assert.equal(ok.status, 200, JSON.stringify(ok.body))
+    assert.deepEqual([ok.body.ubicacion.estado, ok.body.ubicacion.origen, ok.body.ubicacion.lat, ok.body.ubicacion.lng, ok.body.ubicacion.precision], ['ok', 'manual', 10.0555, -69.3333, 'exacta'])
+    assert.ok((await api('/feed/mapa?tipo=prospecto')).body.pines.some((x: any) => x.id === G))
+    // el relleno (reintentar incluido) no toca un pin manual
+    const antes = geoHits.length
+    const rel = await api('/feed/geocodificar', { body: { reintentar: true } })
+    assert.equal(rel.status, 200)
+    await new Promise((r) => setTimeout(r, 600))
+    assert.ok(!geoHits.slice(antes).some((x) => /^Barquisimeto/i.test(x.q)))
+    assert.deepEqual((await ver(G)).ubicacion.origen, 'manual')
+    assert.equal((await api(`/feed/${G}/ubicacion`, { method: 'PATCH', body: { lat: 10.07, lng: -69.3 }, key: KEY_R })).status, 403)
+  })
+
+  it('corregir la dirección: se guarda en datos.donde y se vuelve a buscar; si no aparece, queda sin pin con el motivo', async () => {
+    const bien = await api(`/feed/${S}/ubicacion`, { method: 'PATCH', body: { direccion: 'Calle 30 entre carreras 18 y 19' } })
+    assert.equal(bien.status, 200, JSON.stringify(bien.body))
+    assert.deepEqual([bien.body.datos.donde, bien.body.ubicacion.estado, bien.body.ubicacion.lat], ['Calle 30 entre carreras 18 y 19', 'ok', 10.0701])
+    assert.equal(bien.body.datos.contacto.telefono, '0412-0000000', 'lo demás de datos se conserva')
+    const mal = await api(`/feed/${S}/ubicacion`, { method: 'PATCH', body: { direccion: 'Un lugar que no existe' } })
+    assert.deepEqual([mal.body.ubicacion.estado, mal.body.ubicacion.lat, mal.body.datos.geo?.estado], ['sin_resultado', null, 'sin_resultado'], 'la dirección nueva invalida el pin de la anterior')
+    // dirección + pin: el pin del socio manda y queda atado a la dirección nueva
+    const ambos = await api(`/feed/${S}/ubicacion`, { method: 'PATCH', body: { direccion: 'Carrera 21 con calle 36', lat: 10.06, lng: -69.31 } })
+    assert.deepEqual([ambos.body.ubicacion.origen, ambos.body.ubicacion.direccion, ambos.body.datos.geo.consulta], ['manual', 'Carrera 21 con calle 36', 'Carrera 21 con calle 36'])
+  })
+
+  it('si el proveedor falla queda "error" (no "sin resultado") y el relleno lo reintenta; el relleno es idempotente', async () => {
+    geoState.down = true
+    const r = await pub({ titulo: 'Casa de cambio Centro', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-e', categoria: 'finanzas', datos: { donde: 'Av. 20 con calle 30, Centro' } })
+    const E = r.body.id
+    assert.equal((await esperar(E, 'error')).ubicacion.estado, 'error')
+    assert.equal((await ver(E)).datos.geo.intentos, 1)
+    assert.ok((await api('/feed/mapa')).body.sin_ubicacion.some((x: any) => x.id === E && x.ubicacion.estado === 'error'))
+    geoState.down = false
+    const plan = await api('/feed/geocodificar', { body: { tipo: 'prospecto' } })
+    assert.equal(plan.status, 200, JSON.stringify(plan.body))
+    assert.ok(plan.body.por_buscar >= 1)
+    assert.equal((await esperar(E, 'ok')).ubicacion.lat, 10.0701)
+    // segunda vuelta: nada que buscar (los «sin resultado» no se repiten sin reintentar), ni una consulta nueva
+    await new Promise((r) => setTimeout(r, 300))
+    const antes = geoHits.length
+    const otra = await api('/feed/geocodificar', { body: {} })
+    assert.deepEqual([otra.body.por_buscar, otra.body.iniciado], [0, false])
+    await new Promise((r) => setTimeout(r, 300))
+    assert.equal(geoHits.length, antes)
+    // con reintentar sí repite los «sin resultado» (p. ej. después de corregir el proveedor o las direcciones)
+    const re = await api('/feed/geocodificar', { body: { reintentar: true } })
+    assert.ok(re.body.por_buscar >= 1)
+    assert.equal((await api('/feed/geocodificar', { body: { limite: 0 } })).status, 400)
+  })
+
+  it('el relleno que corre desde la línea de comandos usa la misma lógica (ensayo: cuenta sin consultar)', async () => {
+    const antes = geoHits.length
+    const r = spawnSync(process.execPath, ['--import', 'tsx', 'server/src/feed-geocodificar.ts', '--ensayo', '--tipo', 'prospecto'], { cwd: root, env, encoding: 'utf8' })
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    assert.match(r.stdout, /con dirección: \d+/)
+    assert.match(r.stdout, /Cobertura: [\d.]+%/)
+    assert.equal(geoHits.length, antes, 'el ensayo no pregunta nada')
+  })
+
+  it('MCP: hayai_feed_mapa, hayai_feed_ubicacion y hayai_feed_geocodificar; la llave de solo lectura solo ve el mapa', async () => {
+    const tools = (await rpc('tools/list', {}, KEY_R)).body.result.tools.map((t: any) => t.name)
+    assert.ok(tools.includes('hayai_feed_mapa'))
+    assert.ok(!tools.includes('hayai_feed_ubicacion') && !tools.includes('hayai_feed_geocodificar'))
+    const call = async (name: string, args: unknown, key = KEY) => JSON.parse((await rpc('tools/call', { name, arguments: args }, key)).body.result.content[0].text)
+    const m = await call('hayai_feed_mapa', { tipo: 'prospecto' })
+    assert.ok(m.pines.some((x: any) => x.id === A))
+    const u = await call('hayai_feed_ubicacion', { id: Z, lat: 10.0611, lng: -69.3012 })
+    assert.deepEqual([u.ubicacion.origen, u.ubicacion.lat], ['manual', 10.0611])
+  })
+})
+
+describe('Feed: Mapbox como segundo proveedor (geocodificación y teselas)', () => {
+  const m = (o: { permanent?: boolean; token?: string } = {}) => mapbox({ url: `http://localhost:${MBX_PORT}`, token: o.token ?? MBX_TOKEN, minMs: 0, timeoutMs: 3000, permanent: o.permanent })
+  const hit = () => mbxHits[mbxHits.length - 1]
+
+  it('GEOCODER elige el proveedor: nominatim por defecto, mapbox con su token, off lo apaga; lo mal configurado dice por qué', () => {
+    assert.equal(crearGeocoder({})?.nombre, 'nominatim', 'Nominatim sigue siendo el predeterminado')
+    assert.equal(crearGeocoder({ GEOCODER: 'nominatim' })?.nombre, 'nominatim')
+    assert.equal(crearGeocoder({ GEOCODER: 'mapbox', MAPBOX_PUBLIC_TOKEN: MBX_TOKEN })?.nombre, 'mapbox')
+    assert.equal(crearGeocoder({ GEOCODER: ' MapBox ', MAPBOX_PUBLIC_TOKEN: MBX_TOKEN })?.nombre, 'mapbox')
+    assert.equal(crearGeocoder({ GEOCODER: 'off' }), null)
+    assert.throws(() => crearGeocoder({ GEOCODER: 'mapbox' }), /MAPBOX_PUBLIC_TOKEN/, 'sin token no finge que busca')
+    assert.throws(() => crearGeocoder({ GEOCODER: 'mapbox', MAPBOX_PUBLIC_TOKEN: '  ' }), /MAPBOX_PUBLIC_TOKEN/)
+    assert.throws(() => crearGeocoder({ GEOCODER: 'mapbox', MAPBOX_PUBLIC_TOKEN: 'sk.secreto' }), /secreto/, 'un token secreto se rechaza: tiene que ser público')
+    assert.throws(() => crearGeocoder({ GEOCODER: 'bing' }), /desconocido/)
+  })
+
+  it('el token no está en el repositorio ni en el front: solo se lee de MAPBOX_PUBLIC_TOKEN en el servidor', () => {
+    const archivos = (dir: string): string[] =>
+      readdirSync(dir).flatMap((f) => {
+        const p = join(dir, f)
+        return statSync(p).isDirectory() ? (f === 'node_modules' ? [] : archivos(p)) : /\.(ts|tsx|css|md|mjs|json|html)$/.test(f) ? [p] : []
+      })
+    const todos = [...archivos(join(root, 'src')), ...archivos(join(root, 'server/src')), join(root, 'README.md'), join(root, '.env.example'), join(root, '.env.production.example'), join(root, 'docker-compose.prod.yml'), join(root, '.github/workflows/deploy.yml'), join(root, 'index.html')]
+    for (const f of todos) assert.doesNotMatch(readFileSync(f, 'utf8'), /\b[ps]k\.eyJ[\w-]{10,}/, `${f}: parece un token de Mapbox escrito en el código`)
+    for (const f of archivos(join(root, 'src'))) assert.doesNotMatch(readFileSync(f, 'utf8'), /MAPBOX_PUBLIC_TOKEN|access_token/, `${f}: el front no lee el token ni arma URLs con él: lo recibe del servidor`)
+  })
+
+  it('arranque: sin MAPBOX_PUBLIC_TOKEN avisa pero no es un error (el mapa sigue con Nominatim/OSM); con token solo dice que está, nunca el valor', () => {
+    const sin = avisosMapa({})
+    assert.deepEqual(sin.map((a) => a.nivel), ['info'])
+    assert.match(sin[0].texto, /no está definido.*Nominatim.*OpenStreetMap/)
+    const pidePeroSin = avisosMapa({ GEOCODER: 'mapbox', MAP_TILES: 'mapbox' })
+    assert.equal(pidePeroSin[0].nivel, 'warn', 'pide Mapbox sin token: aviso fuerte')
+    assert.match(pidePeroSin[0].texto, /se usa Nominatim\/OpenStreetMap/)
+    assert.equal(avisosMapa({ MAPBOX_PUBLIC_TOKEN: '   ' })[0].nivel, 'info', 'un token en blanco cuenta como no definido')
+    const malo = avisosMapa({ MAPBOX_PUBLIC_TOKEN: 'sk.secreto-de-prueba' })
+    assert.equal(malo[0].nivel, 'warn')
+    assert.doesNotMatch(malo[0].texto, /secreto-de-prueba/, 'ni el token rechazado aparece en el log')
+    const con = avisosMapa({ MAPBOX_PUBLIC_TOKEN: MBX_TOKEN })
+    assert.equal(con[0].nivel, 'info')
+    assert.ok(!con[0].texto.includes(MBX_TOKEN) && !con[0].texto.includes(MBX_TOKEN.slice(0, 6)), 'el log no lleva el token ni un pedazo')
+    assert.match(con[0].texto, /geocodificación: nominatim · teselas: osm/)
+  })
+
+  it('en el servidor, GEOCODER=mapbox sin token cae a Nominatim (no apaga ni tumba nada); el modo estricto (scripts/mediciones) sigue avisando', () => {
+    const antes = { g: process.env.GEOCODER, t: process.env.MAPBOX_PUBLIC_TOKEN }
+    const warn = console.warn
+    const dichos: string[] = []
+    console.warn = (...a: unknown[]) => void dichos.push(a.join(' '))
+    try {
+      process.env.GEOCODER = 'mapbox'
+      delete process.env.MAPBOX_PUBLIC_TOKEN
+      reiniciarGeocoder()
+      assert.equal(geocoder()?.nombre, 'nominatim')
+      assert.equal(dichos.length, 1)
+      assert.doesNotMatch(dichos[0], /pk\./)
+      geocoder()
+      assert.equal(dichos.length, 1, 'se dice una sola vez')
+      assert.throws(() => crearGeocoder(), /MAPBOX_PUBLIC_TOKEN/, 'crearGeocoder sigue siendo estricto')
+      process.env.MAPBOX_PUBLIC_TOKEN = 'sk.no-sirve'
+      reiniciarGeocoder()
+      assert.throws(() => geocoder(), /secreto/, 'un token secreto sí es un error de configuración, no se esconde')
+    } finally {
+      console.warn = warn
+      if (antes.g === undefined) delete process.env.GEOCODER
+      else process.env.GEOCODER = antes.g
+      if (antes.t === undefined) delete process.env.MAPBOX_PUBLIC_TOKEN
+      else process.env.MAPBOX_PUBLIC_TOKEN = antes.t
+      reiniciarGeocoder()
+    }
+  })
+
+  it('despliegue: docker-compose.prod.yml pasa el token y la elección de proveedor desde el entorno, con los defaults de siempre y sin ningún valor', () => {
+    const y = readFileSync(resolve(root, 'docker-compose.prod.yml'), 'utf8')
+    for (const [k, def] of [['GEOCODER', 'nominatim'], ['MAP_TILES', 'osm'], ['MAPBOX_PUBLIC_TOKEN', ''], ['MAPBOX_PERMANENT', 'false']]) assert.ok(y.includes(`${k}: \${${k}:-${def}}`), `${k} debe ir como \${${k}:-${def}}`)
+    assert.doesNotMatch(y, /MAPBOX_PUBLIC_TOKEN:\s*["']?pk\./, 'el valor del token no se escribe en el compose')
+    const wf = readFileSync(resolve(root, '.github/workflows/deploy.yml'), 'utf8')
+    assert.match(wf, /MAPBOX_PUBLIC_TOKEN:\s*\$\{\{\s*secrets\.MAPBOX_PUBLIC_TOKEN\s*\}\}/, 'el workflow toma el token de GitHub Secrets')
+    assert.match(wf, /-o SendEnv=MAPBOX_PUBLIC_TOKEN\b/, 'y lo manda por SSH con SendEnv')
+    const sinComentarios = wf.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n')
+    assert.equal((sinComentarios.match(/MAPBOX_PUBLIC_TOKEN/g) ?? []).length, 3, 'solo en el env, el secret y el SendEnv: ni echo ni otro uso')
+    assert.doesNotMatch(sinComentarios, /\becho\b[^\n]*MAPBOX|set -x|ssh\s+-v/, 'el valor no se imprime en ningún paso')
+  })
+
+  it('mapbox(): pide con país, idioma, sesgo a Barquisimeto, sin autocompletar y con el token; lo guardable exige permanent solo si se pide', async () => {
+    const r = await m().buscar('Av. Rotaria, ZZMapbox 12')
+    assert.deepEqual(r, { lat: 10.0712, lng: -69.3305, precision: 'exacta', nombre: 'Av. Rotaria 12, Barquisimeto, Lara, Venezuela' })
+    const p = hit().p
+    assert.deepEqual([p.country, p.language, p.limit, p.autocomplete, p.proximity, p.access_token], ['ve', 'es', '4', 'false', '-69.357,10.0647', MBX_TOKEN])
+    assert.equal(p.permanent, undefined, 'por defecto no pide la geocodificación permanente (puede requerir plan)')
+    await m({ permanent: true }).buscar('ZZMapbox permanente')
+    assert.equal(hit().p.permanent, 'true')
+  })
+
+  it('mapbox(): exacta / calle / zona según el tipo; descarta ciudad, baja confianza y lo que cae fuera de Venezuela; sin resultado es null', async () => {
+    assert.equal((await m().buscar('Calle 24 interpol'))?.precision, 'calle')
+    assert.equal((await m().buscar('Urb. Nueva Segovia'))?.precision, 'zona')
+    assert.equal(await m().buscar('Barquisimeto, solo la ciudad'), null, 'la ciudad entera no es la ubicación de un negocio')
+    assert.equal(await m().buscar('dirección lowconf'), null, 'un parecido de baja confianza no se pinta')
+    assert.equal(await m().buscar('ciudadmundo 5'), null, 'fuera de Venezuela se descarta')
+    assert.equal(await m().buscar('nada que ver'), null)
+    const multi = await m().buscar('panadería multi')
+    assert.deepEqual([multi?.lat, multi?.precision], [10.09, 'exacta'], 'salta el resultado grueso y se queda con el siguiente que sí sirve')
+    assert.deepEqual([precisionMapbox('address', 'rooftop', undefined), precisionMapbox('address', 'parcel', 'high'), precisionMapbox('address', 'approximate', 'medium'), precisionMapbox('street', undefined, undefined), precisionMapbox('locality', undefined, undefined), precisionMapbox('place', undefined, undefined), precisionMapbox('region', undefined, undefined), precisionMapbox('postcode', undefined, undefined)], ['exacta', 'exacta', 'calle', 'calle', 'zona', null, null, null])
+  })
+
+  it('mapbox(): token rechazado, límite y caída del servicio son errores reintentables que NUNCA muestran el token', async () => {
+    const mal = m({ token: 'pk.token-equivocado' })
+    const e1 = await mal.buscar('x').then(() => null, (e: Error) => e)
+    assert.ok(e1 instanceof GeocoderError)
+    assert.match(e1.message, /rechazó el token \(401\)/)
+    assert.doesNotMatch(e1.message, /token-equivocado/)
+    mbxState.status = 429
+    const e2 = await m().buscar('x').then(() => null, (e: Error) => e)
+    assert.match(e2?.message ?? '', /429/)
+    mbxState.status = 503
+    const e3 = await m().buscar('x').then(() => null, (e: Error) => e)
+    assert.ok(e3 instanceof GeocoderError)
+    assert.match(e3.message, /503/)
+    mbxState.status = 0
+    const caido = mapbox({ url: 'http://localhost:1', token: MBX_TOKEN, minMs: 0, timeoutMs: 1500 })
+    const e4 = await caido.buscar('x').then(() => null, (e: Error) => e)
+    assert.ok(e4 instanceof GeocoderError)
+    assert.doesNotMatch(e4.message, new RegExp(MBX_TOKEN.replace('.', '\\.')))
+  })
+
+  it('teselas(): OpenStreetMap por defecto; Mapbox con MAP_TILES=mapbox y el mismo token del servidor; sin token público vuelve a OpenStreetMap', () => {
+    const osm = teselas({})
+    assert.deepEqual([osm.proveedor, osm.url, osm.tamano, osm.zoom_offset], ['osm', 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', 256, 0])
+    assert.match(osm.atribucion, /OpenStreetMap/)
+    const mb = teselas({ MAP_TILES: 'mapbox', MAPBOX_PUBLIC_TOKEN: MBX_TOKEN })
+    assert.deepEqual([mb.proveedor, mb.tamano, mb.zoom_offset], ['mapbox', 512, -1])
+    assert.equal(mb.url, `https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/{z}/{x}/{y}?access_token=${encodeURIComponent(MBX_TOKEN)}`)
+    assert.match(mb.atribucion, /Mapbox/)
+    assert.match(mb.atribucion, /OpenStreetMap/, 'Mapbox exige además la atribución de OpenStreetMap')
+    assert.match(teselas({ MAP_TILES: 'mapbox', MAPBOX_PUBLIC_TOKEN: MBX_TOKEN, MAPBOX_STYLE: 'mapbox/satellite-streets-v12' }).url, /styles\/v1\/mapbox\/satellite-streets-v12\/tiles/)
+    assert.match(teselas({ MAP_TILES: 'mapbox', MAPBOX_PUBLIC_TOKEN: MBX_TOKEN, MAPBOX_STYLE: '../../x' }).url, /mapbox\/streets-v12/, 'un estilo raro no arma una URL rara')
+    assert.equal(teselas({ MAP_TILES: 'mapbox' }).proveedor, 'osm', 'sin token: OpenStreetMap, no un mapa gris')
+    assert.equal(teselas({ MAP_TILES: 'mapbox', MAPBOX_PUBLIC_TOKEN: 'sk.secreto' }).proveedor, 'osm', 'un token secreto nunca llega al navegador')
+    assert.equal(teselas({ MAPBOX_PUBLIC_TOKEN: MBX_TOKEN }).proveedor, 'osm', 'tener token no cambia las teselas: se elige con MAP_TILES')
+  })
+
+  describe('con el servidor corriendo en GEOCODER=mapbox (mismo Postgres)', () => {
+    const PORT2 = 3193
+    const ROOT2 = `http://localhost:${PORT2}`
+    let server2: ChildProcess
+    let cookie2 = ''
+    const api2 = (path: string, o: Opts = {}) => http(`${ROOT2}/api/v1${path}`, { key: KEY, ...o })
+    const esperar2 = async (id: string, estado: string) => {
+      for (let i = 0; i < 80; i++) {
+        const it = (await api2(`/feed/${id}`)).body
+        if (it.ubicacion.estado === estado) return it
+        await new Promise((r) => setTimeout(r, 100))
+      }
+      return (await api2(`/feed/${id}`)).body
+    }
+    // Asíncrono a propósito: spawnSync congelaría este proceso y el Mapbox falso (que vive aquí) no podría contestarle al script.
+    const cli2 = (args: string[], e: NodeJS.ProcessEnv) =>
+      new Promise<{ status: number | null; stdout: string; stderr: string }>((ok) => {
+        const c = spawn(process.execPath, ['--import', 'tsx', 'server/src/feed-geocodificar.ts', ...args], { cwd: root, env: e })
+        let stdout = ''
+        let stderr = ''
+        c.stdout.on('data', (d) => (stdout += d))
+        c.stderr.on('data', (d) => (stderr += d))
+        c.on('close', (status) => ok({ status, stdout, stderr }))
+      })
+    const env2 = () => ({ ...env, PORT: String(PORT2), GEOCODER: 'mapbox', MAPBOX_PUBLIC_TOKEN: MBX_TOKEN, GEOCODER_URL: `http://localhost:${MBX_PORT}`, GEOCODER_MIN_MS: '20', MAP_TILES: 'mapbox' })
+
+    before(async () => {
+      server2 = spawn(process.execPath, ['--import', 'tsx', 'server/src/index.ts'], { cwd: root, env: env2(), stdio: 'ignore' })
+      for (let i = 0; i < 100; i++) {
+        try {
+          if ((await fetch(`${ROOT2}/api/auth/me`)).status === 401) break
+        } catch {
+          /* aún arrancando */
+        }
+        await new Promise((r) => setTimeout(r, 200))
+      }
+      const login = await fetch(`${ROOT2}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+      cookie2 = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    })
+    after(() => {
+      server2?.kill()
+    })
+
+    it('al publicar, el servidor ubica con Mapbox (origen mapbox), con el token en la consulta y sin que el token aparezca en el ítem', async () => {
+      const antes = mbxHits.length
+      const r = await api2('/feed', { body: { titulo: 'Panadería Mapbox', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mbx-1', datos: { donde: 'Av. Rotaria, ZZMapbox 12' } } })
+      assert.equal(r.status, 201, JSON.stringify(r.body))
+      assert.equal(r.body.ubicacion.estado, 'pendiente')
+      const it = await esperar2(r.body.id, 'ok')
+      assert.deepEqual([it.ubicacion.estado, it.ubicacion.lat, it.ubicacion.lng, it.ubicacion.precision, it.ubicacion.origen], ['ok', 10.0712, -69.3305, 'exacta', 'mapbox'])
+      assert.equal(it.datos.geo.origen, 'mapbox')
+      assert.ok(mbxHits.length > antes && mbxHits.slice(antes).every((h) => h.p.access_token === MBX_TOKEN))
+      assert.ok(!JSON.stringify(it).includes(MBX_TOKEN), 'el token no se guarda en el ítem')
+    })
+
+    it('zona, ciudad entera (sin pin), error de red y "sin resultado" se comportan igual que con Nominatim', async () => {
+      const z = await api2('/feed', { body: { titulo: 'Zona Mapbox', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mbx-2', datos: { donde: 'Urb. Nueva Segovia, calle 5' } } })
+      assert.equal((await esperar2(z.body.id, 'ok')).ubicacion.precision, 'zona')
+      const g = await api2('/feed', { body: { titulo: 'Ciudad Mapbox', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mbx-3', datos: { donde: 'Barquisimeto, solo la ciudad' } } })
+      assert.equal((await esperar2(g.body.id, 'sin_resultado')).ubicacion.estado, 'sin_resultado')
+      mbxState.status = 503
+      const e = await api2('/feed', { body: { titulo: 'Caído Mapbox', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mbx-4', datos: { donde: 'Av. Rotaria, ZZMapbox 99' } } })
+      assert.equal((await esperar2(e.body.id, 'error')).ubicacion.estado, 'error')
+      mbxState.status = 0
+      // el relleno reintenta los que fallaron por red (no los "sin resultado"), con el proveedor del servidor
+      const rel = await api2('/feed/geocodificar', { body: {} })
+      assert.equal(rel.status, 200, JSON.stringify(rel.body))
+      assert.equal(rel.body.proveedor, 'mapbox')
+      assert.ok(rel.body.por_buscar >= 1)
+      assert.equal((await esperar2(e.body.id, 'ok')).ubicacion.origen, 'mapbox')
+    })
+
+    it('GET /api/feed/mapa/teselas dice qué teselas pintar: Mapbox aquí, OpenStreetMap en el servidor sin MAP_TILES; pide sesión', async () => {
+      const t2 = await fetch(`${ROOT2}/api/feed/mapa/teselas`, { headers: { cookie: cookie2 } })
+      const j2 = (await t2.json()) as any
+      assert.equal(t2.status, 200)
+      assert.deepEqual([j2.proveedor, j2.tamano, j2.zoom_offset], ['mapbox', 512, -1])
+      assert.match(j2.url, /^https:\/\/api\.mapbox\.com\/styles\/v1\/mapbox\/streets-v12\/tiles\/\{z\}\/\{x\}\/\{y\}\?access_token=pk\./)
+      assert.equal((await fetch(`${ROOT2}/api/feed/mapa/teselas`)).status, 401)
+      const cookie1 = (await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })).headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+      const j1 = (await (await fetch(`${ROOT}/api/feed/mapa/teselas`, { headers: { cookie: cookie1 } })).json()) as any
+      assert.deepEqual([j1.proveedor, j1.tamano], ['osm', 256])
+      assert.ok(!JSON.stringify(j1).includes('access_token'))
+    })
+
+    it('--medir compara la cobertura de Nominatim y Mapbox con las direcciones reales y no guarda NADA', async () => {
+      const antes = JSON.stringify((await api('/feed?per_page=100&tipo=prospecto')).body.data.map((i: any) => [i.id, i.datos.geo ?? null]))
+      const r = await cli2(['--medir', '--proveedor', 'ambos', '--tipo', 'prospecto'], { ...env2(), NOMINATIM_URL: `http://localhost:${GEO_PORT}`, MAPBOX_URL: `http://localhost:${MBX_PORT}` })
+      assert.equal(r.status, 0, r.stdout + r.stderr)
+      assert.match(r.stdout, /Midiendo con nominatim/)
+      assert.match(r.stdout, /Midiendo con mapbox/)
+      assert.match(r.stdout, /Proveedor +Evaluadas +Con pin +Cobertura/)
+      assert.match(r.stdout, /\nnominatim +\d+ +\d+ +[\d.]+%/)
+      assert.match(r.stdout, /\nmapbox +\d+ +\d+ +[\d.]+%/)
+      assert.match(r.stdout, /Solo nominatim encontró: \d+ · solo mapbox encontró: \d+/)
+      assert.match(r.stdout, /no se guardó nada/)
+      assert.ok(!(r.stdout + r.stderr).includes(MBX_TOKEN))
+      assert.equal(JSON.stringify((await api('/feed?per_page=100&tipo=prospecto')).body.data.map((i: any) => [i.id, i.datos.geo ?? null])), antes, 'medir no escribe en el feed')
+      const sin = await cli2(['--medir', '--proveedor', 'mapbox'], { ...env2(), MAPBOX_PUBLIC_TOKEN: '' })
+      assert.equal(sin.status, 2)
+      assert.match(sin.stderr, /MAPBOX_PUBLIC_TOKEN/)
+    })
+
+    it('el relleno desde la línea de comandos funciona con Mapbox (--reintentar vuelve a buscar con el proveedor del entorno) y con Nominatim', async () => {
+      // Un ítem que Nominatim (servidor principal) no encuentra: queda "sin resultado"; el CLI con Mapbox sí lo ubica.
+      const p = await api('/feed', { body: { titulo: 'Proyecto sin pin', tipo: 'proyecto', fuente: 'manual', clave_externa: 'mbx-cli', datos: { donde: 'Av. Rotaria, ZZMapbox CLI' } } })
+      assert.equal(p.status, 201)
+      for (let i = 0; i < 60 && (await api(`/feed/${p.body.id}`)).body.ubicacion.estado === 'pendiente'; i++) await new Promise((r) => setTimeout(r, 100))
+      assert.equal((await api(`/feed/${p.body.id}`)).body.ubicacion.estado, 'sin_resultado', 'Nominatim falso no conoce esa dirección')
+      const r = await cli2(['--reintentar', '--tipo', 'proyecto'], env2())
+      assert.equal(r.status, 0, r.stdout + r.stderr)
+      assert.match(r.stdout, /Proveedor: mapbox/)
+      assert.match(r.stdout, /ubicados ahora: 1/)
+      assert.ok(!(r.stdout + r.stderr).includes(MBX_TOKEN), 'el token no sale en la salida del script')
+      const it = (await api(`/feed/${p.body.id}`)).body
+      assert.deepEqual([it.ubicacion.estado, it.ubicacion.origen], ['ok', 'mapbox'])
+      // mal configurado: lo dice y sale con error, sin tocar nada
+      const mal = await cli2(['--ensayo'], { ...env2(), MAPBOX_PUBLIC_TOKEN: '' })
+      assert.equal(mal.status, 2)
+      assert.match(mal.stderr, /MAPBOX_PUBLIC_TOKEN/)
+      // y --ensayo con cualquiera de los dos cuenta sin consultar
+      const antes = mbxHits.length
+      const ens = await cli2(['--ensayo'], env2())
+      assert.equal(ens.status, 0, ens.stdout + ens.stderr)
+      assert.match(ens.stdout, /Proveedor: mapbox/)
+      assert.equal(mbxHits.length, antes)
+    })
   })
 })
 

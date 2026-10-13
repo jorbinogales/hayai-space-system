@@ -475,3 +475,111 @@
   .fd-entry:hover .fd-entry-go { transform: none; }
   .fd-card.is-flash, .fd-btn.is-just { animation: none; }
 }
+
+/* ---------- vista de mapa (Leaflet + OpenStreetMap) ---------- */
+.fd-screen {
+  /* color del pin = estado que ve el socio (azul, ámbar, verde, gris); la forma del centro lo repite para quien no distingue colores */
+  --fd-pin-nuevo: #2563c9;
+  --fd-pin-revisado: #d98306;
+  --fd-pin-convertido: #2f8a5b;
+  --fd-pin-descartado: #7d838d;
+  --fd-map-h: clamp(440px, 70vh, 740px);
+}
+.fd-vista { justify-self: start; }
+.fdm { display: grid; gap: var(--fd-s3); min-width: 0; }
+.fdm-stage { position: relative; isolation: isolate; z-index: 0; min-width: 0; }
+.fdm-mapbox { position: relative; height: var(--fd-map-h); border-radius: var(--fd-r-card); overflow: hidden; background: #e9e3d6; box-shadow: inset 0 0 0 1px var(--fd-line-strong); }
+.fdm-map { position: absolute; inset: 0; font-family: var(--sans); }
+.fdm-map.is-placing, .fdm-map.is-placing .leaflet-grab, .fdm-map.is-placing .leaflet-interactive { cursor: crosshair; }
+.fdm-map .leaflet-control-attribution { font-size: 0.68rem; }
+.fdm-map .leaflet-bar a { width: 36px; height: 36px; line-height: 36px; }
+.fdm-spin { position: absolute; top: 12px; left: 56px; z-index: 5; background: #fff; }
+.fdm-nopins { position: absolute; left: 50%; bottom: 20px; z-index: 5; translate: -50% 0; max-width: calc(100% - 32px); margin: 0; padding: 9px 14px; border-radius: 12px; background: rgba(255, 250, 242, 0.95); box-shadow: 0 6px 18px -8px rgba(22, 17, 11, 0.45); font-size: 0.84rem; text-align: center; color: var(--ink); }
+
+.fdm-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 6px var(--fd-s4); margin: 0; padding: 0; font-size: 0.8rem; color: var(--ink-2); }
+.fdm-legend li { display: inline-flex; align-items: center; gap: 7px; min-height: 24px; }
+.fdm-legend em { font-style: normal; font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 600; }
+.fdm-dot { flex: none; display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: var(--c, var(--fd-pin-nuevo)); box-shadow: 0 0 0 2px #fff, 0 0 0 3px var(--fd-line-strong); }
+.fdm-dot.is-nuevo { --c: var(--fd-pin-nuevo); }
+.fdm-dot.is-revisado { --c: var(--fd-pin-revisado); }
+.fdm-dot.is-convertido { --c: var(--fd-pin-convertido); }
+.fdm-dot.is-descartado { --c: var(--fd-pin-descartado); }
+.fdm-dot.is-zona { background: transparent; box-shadow: none; border: 2px dashed var(--ink-2); }
+.fdm-placing { display: flex; flex-wrap: wrap; align-items: center; gap: var(--fd-s2) var(--fd-s3); background: rgba(37, 99, 201, 0.12); color: #17407e; }
+.fdm-placing svg { flex: none; }
+
+/* el pin: gota con borde blanco; el centro cambia de forma según el estado (punto, aro, visto, raya) */
+.fdm-pin-wrap { background: none; border: 0; }
+.fdm-pin-wrap:focus-visible { outline: none; }
+.fdm-pin-wrap:focus-visible .fdm-pin { outline: 3px solid var(--night); outline-offset: 3px; }
+.fdm-pin { --c: var(--fd-pin-nuevo); position: absolute; left: 3px; top: 3px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50% 50% 50% 0; background: var(--c); border: 3px solid #fff; box-shadow: 0 3px 8px rgba(22, 17, 11, 0.45); rotate: -45deg; transition: scale var(--t-hover) var(--ease); }
+.fdm-pin.is-nuevo { --c: var(--fd-pin-nuevo); }
+.fdm-pin.is-revisado { --c: var(--fd-pin-revisado); }
+.fdm-pin.is-convertido { --c: var(--fd-pin-convertido); }
+.fdm-pin.is-descartado { --c: var(--fd-pin-descartado); }
+.fdm-pin.is-zona { border-style: dashed; }
+.fdm-pin.is-sel { scale: 1.28; box-shadow: 0 0 0 4px rgba(22, 17, 11, 0.85), 0 6px 14px rgba(22, 17, 11, 0.5); }
+.fdm-pin i { display: block; rotate: 45deg; }
+.fdm-pin.is-nuevo i { width: 8px; height: 8px; border-radius: 50%; background: #fff; }
+.fdm-pin.is-revisado i { width: 9px; height: 9px; border-radius: 50%; border: 2.5px solid #fff; }
+.fdm-pin.is-convertido i { width: 5px; height: 10px; margin-top: -2px; border: solid #fff; border-width: 0 2.5px 2.5px 0; rotate: 90deg; }
+.fdm-pin.is-descartado i { width: 10px; height: 2.5px; background: #fff; border-radius: 2px; }
+.fdm-pin b { position: absolute; rotate: 45deg; color: #fff; font: 700 12px / 1 var(--sans); font-variant-numeric: tabular-nums; }
+.fdm-pin b ~ i, .fdm-pin:has(b) i { display: none; }
+@media (hover: hover) { .fdm-pin-wrap:hover .fdm-pin:not(.is-sel) { scale: 1.12; } }
+
+/* panel del pin elegido: la misma tarjeta de la lista */
+/* pantalla ancha: el panel flota sobre el mapa, a la derecha, con su propio scroll (el mapa conserva todo el ancho) */
+.fdm-panel { position: absolute; z-index: 1001; top: var(--fd-s3); right: var(--fd-s3); bottom: var(--fd-s3); width: min(400px, 46%); min-width: 0; overflow: auto; overscroll-behavior: contain; padding: var(--fd-s3); border-radius: var(--fd-r-field); background: rgba(255, 250, 242, 0.98); box-shadow: 0 18px 40px -16px rgba(22, 17, 11, 0.55), inset 0 0 0 1px var(--fd-line-strong); }
+.fdm-panel.is-empty { display: none; }
+.fdm-hint { display: grid; gap: var(--fd-s2); padding: var(--fd-s3); }
+.fdm-hint h3 { margin: 0; font-size: 1rem; }
+.fdm-hint p { margin: 0; font-size: 0.86rem; line-height: 1.45; color: var(--ink-2); text-wrap: pretty; }
+.fdm-sel { display: grid; gap: var(--fd-s3); }
+.fdm-sel-head { display: flex; align-items: center; justify-content: space-between; gap: var(--fd-s2); }
+.fdm-sel-head p { margin: 0; font-size: 0.74rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
+.fdm-group { list-style: none; display: flex; flex-wrap: wrap; gap: var(--fd-s2); margin: 0; padding: 0; }
+.fdm-card { grid-template-columns: minmax(0, 1fr); }
+.fdm-ubic { display: grid; gap: var(--fd-s2); padding: var(--fd-s3); border-radius: var(--fd-r-field); background: rgba(255, 255, 255, 0.7); box-shadow: inset 0 0 0 1px var(--fd-line); }
+.fdm-ubic-line { display: flex; align-items: flex-start; gap: var(--fd-s2); margin: 0; font-size: 0.86rem; line-height: 1.35; overflow-wrap: anywhere; }
+.fdm-ubic-line svg { flex: none; margin-top: 1px; color: var(--fd-amber-ink); }
+.fdm-ubic-line small { display: block; margin-top: 2px; font-size: 0.76rem; color: var(--ink-2); }
+.fdm-ubic-actions { display: flex; flex-wrap: wrap; gap: var(--fd-s2); }
+.fdm-addr { display: flex; flex-wrap: wrap; gap: var(--fd-s2); }
+.fdm-addr input { flex: 1 1 200px; min-width: 0; min-height: var(--fd-hit); padding: 0 var(--fd-s3); border: 1px solid var(--fd-line-strong); border-radius: var(--fd-r-field); background: var(--fd-field); color: var(--ink); font: inherit; font-size: 0.88rem; }
+.fdm-addr input:focus-visible { outline: var(--fd-ring); outline-offset: 1px; border-color: transparent; }
+
+/* bandeja «Sin ubicación» */
+.fdm-tray { display: grid; gap: var(--fd-s3); padding: var(--fd-s4); border-radius: var(--fd-r-card); background: var(--fd-card-quiet); box-shadow: inset 0 0 0 1px var(--fd-line); }
+.fdm-tray h3 { display: flex; align-items: center; gap: var(--fd-s2); margin: 0; font-size: 1rem; }
+.fdm-tray h3 em, .fdm-nodir summary em { min-width: 1.6em; padding: 2px 7px; border-radius: var(--fd-r-pill); background: rgba(239, 157, 37, 0.3); color: var(--fd-amber-ink); font-style: normal; font-size: 0.76rem; text-align: center; font-variant-numeric: tabular-nums; }
+.fdm-tray-sub { margin: 0; max-width: 70ch; font-size: 0.84rem; line-height: 1.45; color: var(--ink-2); text-wrap: pretty; }
+.fdm-rows { list-style: none; display: grid; margin: 0; padding: 0; }
+.fdm-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--fd-s2) var(--fd-s4); align-items: center; padding: var(--fd-s3) 0; border-top: 1px solid var(--fd-line); }
+.fdm-row-main { display: grid; gap: 3px; min-width: 0; }
+.fdm-row-title { justify-self: start; max-width: 100%; text-align: left; font-weight: 600; overflow-wrap: anywhere; }
+.fdm-row-meta, .fdm-row-addr { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; font-size: 0.8rem; line-height: 1.35; color: var(--ink-2); overflow-wrap: anywhere; }
+.fdm-why { padding: 1px 8px; border-radius: var(--fd-r-pill); background: var(--fd-wash); font-size: 0.74rem; font-weight: 600; color: var(--ink); }
+.fdm-why.is-sin_resultado { background: rgba(190, 59, 31, 0.13); color: var(--fd-danger-ink); }
+.fdm-why.is-error { background: rgba(239, 157, 37, 0.25); color: #5e3700; }
+.fdm-why.is-pendiente { background: rgba(37, 99, 201, 0.13); color: #17407e; }
+.fdm-row-actions { display: flex; flex-wrap: wrap; gap: var(--fd-s2); justify-content: flex-end; }
+.fdm-row > .fdm-addr { grid-column: 1 / -1; }
+.fdm-nodir { border-top: 1px solid var(--fd-line); padding-top: var(--fd-s2); }
+.fdm-nodir summary { display: flex; align-items: center; gap: var(--fd-s2); min-height: var(--fd-hit-sm); cursor: pointer; font-size: 0.86rem; font-weight: 600; }
+
+@media (max-width: 900px) {
+  .fd-screen { --fd-map-h: clamp(340px, 56vh, 520px); }
+  /* móvil y tableta: el detalle va debajo del mapa (al tocar un pin se baja hasta él) */
+  .fdm-stage { display: grid; gap: var(--fd-s3); }
+  .fdm-panel, .fdm-panel.is-empty { position: static; display: block; width: auto; overflow: visible; padding: var(--fd-s3); border-radius: var(--fd-r-card); background: var(--fd-card-quiet); box-shadow: inset 0 0 0 1px var(--fd-line); }
+}
+@media (max-width: 640px) {
+  .fdm-row { grid-template-columns: minmax(0, 1fr); }
+  .fdm-row-actions { justify-content: flex-start; }
+  .fdm-tray { padding: var(--fd-s3); }
+  .fdm-map .leaflet-bar a { width: 44px; height: 44px; line-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fdm-pin { transition: none; }
+}

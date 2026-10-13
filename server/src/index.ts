@@ -1,4 +1,5 @@
 import { createApp } from './app.ts'
+import { avisosMapa } from './geocode.ts'
 import { pool } from './db.ts'
 import { startEvents, stopEvents } from './events.ts'
 import { startMetaWorker, stopMetaWorker } from './meta.ts'
@@ -28,6 +29,8 @@ await announce() // si la versión vigente (p. ej. sembrada por una migración) 
 startBcvWorker() // tasa BCV de la barra superior (BCV_REFRESH_MS; 0 lo apaga)
 startSystemsWorker() // semáforo de los sistemas de los clientes (SYSTEMS_CHECK_MS; 0 lo apaga)
 startMetaWorker() // solo hace algo con META_LEADS_ENABLED=true: reintenta los leads que Graph no entrego
+
+for (const a of avisosMapa()) (a.nivel === 'warn' ? console.warn : console.log)(a.texto) // ¿hay token de Mapbox? (solo si está o no; jamás el valor)
 
 const server = createApp().listen(port, () => console.log(`HAYAI API en http://localhost:${port}`))
 

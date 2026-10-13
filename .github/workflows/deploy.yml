@@ -22,13 +22,24 @@ jobs:
           echo "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
 
       # La llave del VPS esta restringida con command="..." en authorized_keys:
-      # el comando que pasemos aqui se ignora y siempre corre el script de deploy.
-      #
-      # MAPBOX_PUBLIC_TOKEN (secret de GitHub: del environment "production" o del repo) viaja por SSH con SendEnv, no en el comando ni en un archivo.
-      # El VPS tiene que aceptarla (AcceptEnv MAPBOX_PUBLIC_TOKEN en sshd_config) y su script de deploy exportarla antes del docker compose; si no,
-      # SendEnv se ignora en silencio y el servidor sigue con Nominatim/OpenStreetMap (lo dice en su log al arrancar). Ver README, "Mapa del Feed".
-      # Nunca se imprime: aqui no hay echo de la variable ni `set -x`, y GitHub enmascara el valor en los logs.
+      # el comando que pasemos aqui se ignora y siempre corre deploy/deploy.sh.
+      # La config viaja por stdin (KEY=VALUE, solo las no vacias); deploy.sh la aplica
+      # al .env del VPS con deploy/apply-env.sh. Para agregar una variable: ponla aqui (en env y
+      # en la lista del for), en docker-compose.prod.yml y en Settings > Secrets/Variables.
       - name: Desplegar
         env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          META_APP_SECRET: ${{ secrets.META_APP_SECRET }}
+          META_VERIFY_TOKEN: ${{ secrets.META_VERIFY_TOKEN }}
+          META_PAGE_TOKEN: ${{ secrets.META_PAGE_TOKEN }}
+          RECEIVER_DOCUMENTS: ${{ secrets.RECEIVER_DOCUMENTS }}
           MAPBOX_PUBLIC_TOKEN: ${{ secrets.MAPBOX_PUBLIC_TOKEN }}
-        run: ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o SendEnv=MAPBOX_PUBLIC_TOKEN "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" deploy
+          DOMAIN: ${{ vars.DOMAIN }}
+          META_LEADS_ENABLED: ${{ vars.META_LEADS_ENABLED }}
+          META_LEADS_OWNER: ${{ vars.META_LEADS_OWNER }}
+          SYSTEMS_CHECK_MS: ${{ vars.SYSTEMS_CHECK_MS }}
+        run: |
+          for k in POSTGRES_PASSWORD META_APP_SECRET META_VERIFY_TOKEN META_PAGE_TOKEN RECEIVER_DOCUMENTS MAPBOX_PUBLIC_TOKEN DOMAIN META_LEADS_ENABLED META_LEADS_OWNER SYSTEMS_CHECK_MS; do
+            v="${!k}"
+            if [ -n "$v" ]; then printf '%s=%s\n' "$k" "$v"; fi
+          done | ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" deploy

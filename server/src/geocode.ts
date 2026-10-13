@@ -317,8 +317,8 @@ export function avisosMapa(env: NodeJS.ProcessEnv = process.env): { nivel: 'info
   if (!token)
     return [
       pideMapbox
-        ? { nivel: 'warn', texto: `[mapa] MAPBOX_PUBLIC_TOKEN no está definido y GEOCODER=${prov} / MAP_TILES=${tiles} piden Mapbox: se usa Nominatim/OpenStreetMap hasta que se configure · ¿lo guardaste en GitHub Secrets y no llega? Revisa AcceptEnv en el sshd del VPS y el script de deploy (README, «Mapa del Feed»)` }
-        : { nivel: 'info', texto: '[mapa] MAPBOX_PUBLIC_TOKEN no está definido: el mapa usa Nominatim (geocodificación) y OpenStreetMap (teselas) · ¿lo guardaste en GitHub Secrets y no llega? Revisa AcceptEnv en el sshd del VPS y el script de deploy (README, «Mapa del Feed»)' },
+        ? { nivel: 'warn', texto: `[mapa] MAPBOX_PUBLIC_TOKEN no está definido y GEOCODER=${prov} / MAP_TILES=${tiles} piden Mapbox: se usa Nominatim/OpenStreetMap hasta que se configure · ¿lo guardaste en GitHub Secrets y no llega? Revisa que el secret exista y el .env del VPS (README, «Mapa del Feed»)` }
+        : { nivel: 'info', texto: '[mapa] MAPBOX_PUBLIC_TOKEN no está definido: el mapa usa Nominatim (geocodificación) y OpenStreetMap (teselas) · ¿lo guardaste en GitHub Secrets y no llega? Revisa que el secret exista y el .env del VPS (README, «Mapa del Feed»)' },
     ]
   return [{ nivel: 'info', texto: `[mapa] MAPBOX_PUBLIC_TOKEN definido · geocodificación: ${prov} · teselas: ${tiles}${pideMapbox ? '' : ' (Mapbox listo pero aún sin usar)'}` }]
 }

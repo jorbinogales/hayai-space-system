@@ -31,7 +31,7 @@ Copia de seguridad: `docker compose -f docker-compose.prod.yml exec db pg_dump -
 
 ### Mapa del Feed en producción: token de Mapbox
 
-El token de Mapbox sale de **GitHub Secrets** y viaja al VPS por SSH (`SendEnv`), sin escribirse en el repo, en el comando ni en un archivo. Las variables que el contenedor `app` recibe se declaran en `docker-compose.prod.yml` (Compose las toma del entorno de quien lo corre o del `.env` del VPS):
+El token de Mapbox sale de **GitHub Secrets** y llega al `.env` del VPS por el deploy (por stdin, no en el comando ni en un archivo del repo). Las variables que el contenedor `app` recibe se declaran en `docker-compose.prod.yml` (Compose las toma del `.env` del VPS):
 
 | Variable | Qué es | Por defecto (el comportamiento de siempre) |
 | --- | --- | --- |
@@ -40,27 +40,16 @@ El token de Mapbox sale de **GitHub Secrets** y viaja al VPS por SSH (`SendEnv`)
 | `MAP_TILES` | de dónde salen las teselas: `osm` · `mapbox` | `osm` |
 | `MAPBOX_PERMANENT`, `MAPBOX_STYLE` | geocodificación «permanente» y estilo de teselas de Mapbox | `false`, `mapbox/streets-v12` |
 
-**La vía completa** (`.github/workflows/deploy.yml` → SSH → VPS):
+**La vía completa** (`.github/workflows/deploy.yml` → SSH → `deploy/deploy.sh` → `deploy/apply-env.sh` → `.env` del VPS):
 
-1. **GitHub** (*Settings → Secrets and variables → Actions*): crea el secret `MAPBOX_PUBLIC_TOKEN` con el token `pk.…` de Mapbox (solo scopes públicos). Puede ser del repositorio o del environment `production`, que es el que usa el workflow. En el repo solo está el **nombre**; nunca el valor.
-2. **El workflow** (ya hecho en el repo): el paso «Desplegar» corre `ssh … -o SendEnv=MAPBOX_PUBLIC_TOKEN … deploy` con `env: MAPBOX_PUBLIC_TOKEN: ${{ secrets.MAPBOX_PUBLIC_TOKEN }}`. No hay `echo` de la variable ni `set -x`, y GitHub enmascara el valor en los logs.
-3. **El VPS** (esto NO está en el repo; lo hace el admin del VPS una vez):
-   - En `/etc/ssh/sshd_config` (o un archivo en `sshd_config.d/`): `AcceptEnv MAPBOX_PUBLIC_TOKEN`, y recargar sshd (`sudo systemctl reload ssh`, o `sshd` según la distribución). La llave restringida con `command="…"` no impide que sshd acepte la variable: el comando sigue siendo siempre el script de deploy, pero el entorno que ve ese script ya trae la variable.
-   - En el script de deploy, **antes** del `docker compose`, exportarla (y no dejar que una variable vacía pise lo que haya en el `.env`):
-
-     ```bash
-     # MAPBOX_PUBLIC_TOKEN llega por SendEnv desde GitHub Actions (puede venir vacía si el secret no existe)
-     if [ -n "${MAPBOX_PUBLIC_TOKEN:-}" ]; then export MAPBOX_PUBLIC_TOKEN; else unset MAPBOX_PUBLIC_TOKEN; fi
-     docker compose -f docker-compose.prod.yml up -d --build
-     ```
-
-     Compose da prioridad al entorno del shell sobre el `.env`: con el secret definido, manda GitHub; sin él (`unset`), vale lo que haya en el `.env`. Si el script usa `sudo`, hay que conservar la variable (`sudo --preserve-env=MAPBOX_PUBLIC_TOKEN …`); `sudo` la borra por defecto.
-4. **Activarlo**: con el token en el servidor, el mapa sigue en Nominatim/OpenStreetMap hasta que pongas `GEOCODER=mapbox` y/o `MAP_TILES=mapbox` (en el `.env` del VPS). Primero mide en test (`npm run feed:geocodificar -- --medir --proveedor ambos`) y decide con la cobertura real.
+1. **GitHub** (*Settings → Secrets and variables → Actions*): crea el secret `MAPBOX_PUBLIC_TOKEN` con el token `pk.…` de Mapbox (solo scopes públicos). En el repo solo está el **nombre**; nunca el valor.
+2. **El workflow** (ya en el repo): el paso «Desplegar» arma `KEY=VALUE` solo con las variables que no están vacías y las manda por **stdin** a `ssh … deploy`. No hay `echo` del valor ni `set -x`, y GitHub enmascara los secrets en los logs.
+3. **El VPS** (ya en el repo): la llave restringida corre siempre `deploy/deploy.sh`, que hace `git pull`, aplica lo recibido al `.env` con `deploy/apply-env.sh` (solo toca esas claves, deja el `.env` en modo 600) y levanta los contenedores. Una variable vacía no se manda, así que no pisa lo que ya haya en el `.env`.
+4. **Activarlo**: con el token en el servidor, el mapa sigue en Nominatim/OpenStreetMap hasta que pongas `GEOCODER=mapbox` y/o `MAP_TILES=mapbox` (en el `.env` del VPS, a mano: el workflow solo manda las variables de su lista). Primero mide en test (`npm run feed:geocodificar -- --medir --proveedor ambos`) y decide con la cobertura real.
 5. **Comprobar que llegó** (sin imprimir el token): en el log de `app` al arrancar sale `[mapa] MAPBOX_PUBLIC_TOKEN definido · geocodificación: … · teselas: …`; o `docker compose -f docker-compose.prod.yml exec app sh -c 'test -n "$MAPBOX_PUBLIC_TOKEN" && echo presente'`.
 
-- **Si el VPS no acepta la variable**: `SendEnv` se ignora en silencio (el deploy no falla). El servidor lo nota porque no recibe el token: al arrancar escribe en el log `[mapa] MAPBOX_PUBLIC_TOKEN no está definido…` (con la pista de revisar `AcceptEnv` y el script) y el mapa sigue con Nominatim/OpenStreetMap; nada se cae. Nunca imprime el valor, ni un pedazo.
-- **Alternativa sin tocar `sshd_config`**: pasar el token en el propio comando SSH (`ssh … deploy "$MAPBOX_PUBLIC_TOKEN"`) y que el script lo lea de `$SSH_ORIGINAL_COMMAND`. Funciona con la llave restringida, pero el token queda visible en los logs de sshd/auditoría del VPS y en la lista de procesos: `SendEnv` es más limpio. (El workflow del repo usa `SendEnv`.)
-- **Sin GitHub Secrets**: también sirve poner `MAPBOX_PUBLIC_TOKEN=pk.…` en el `.env` del VPS (como `META_*` o `RECEIVER_DOCUMENTS`); si ambos existen, gana el del secret cuando llega.
+- **Si el token no llega** (secret sin crear, o ausente del `.env` del VPS): el servidor lo nota al arrancar y escribe en el log `[mapa] MAPBOX_PUBLIC_TOKEN no está definido…`; el mapa sigue con Nominatim/OpenStreetMap y nada se cae. Nunca imprime el valor, ni un pedazo.
+- **Otra variable de esta lista** (`GEOCODER`, `MAP_TILES`…) por el mismo camino: agrégala al `env:` y a la lista del `for` del workflow, y créala en *Settings → Secrets and variables*.
 - **Restringe el token** en la cuenta de Mapbox a `https://space.hayai.com.ve`: con `MAP_TILES=mapbox` viaja al navegador dentro de la URL de teselas (por eso tiene que ser público). Una prueba falla si aparece un valor `pk.…`/`sk.…` en el código, el compose o el workflow.
 
 ## API REST v1 y servidor MCP (integraciones, p. ej. Growi)

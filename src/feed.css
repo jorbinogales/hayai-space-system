@@ -583,3 +583,9 @@
 @media (prefers-reduced-motion: reduce) {
   .fdm-pin { transition: none; }
 }
+
+/* «Guion» en el detalle de la tarjeta (v1.8): una fila con el estado y el botón «Ver guión»; el texto vive en el modal */
+.fd-guion { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--fd-s1) var(--fd-s3); }
+.fd-guion .fd-lbl { grid-column: 1 / -1; }
+.fd-guion-meta { margin: 0; font-size: 0.88rem; color: var(--ink-2); overflow-wrap: anywhere; }
+.fd-guion-nowa { color: var(--fd-danger-ink); }

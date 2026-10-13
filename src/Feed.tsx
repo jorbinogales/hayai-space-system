@@ -16,6 +16,7 @@ import {
   categoriaLabel,
   closeFeed,
   conTexto,
+  guionEtiqueta,
   mensajeVentas,
   conceptoDe,
   contactoDe,
@@ -78,6 +79,7 @@ import { loadTasks, taskNow } from './taskData'
 import { ago } from './time'
 import { Icon } from './ui'
 import { useCosmos } from './Cosmos'
+import FeedGuion from './FeedGuion'
 import './feed.css'
 
 const PER_PAGE = 20
@@ -297,7 +299,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 }
 
 // ---------- detalle (datos) ----------
-function Detalle({ it, d, tieneIg }: { it: FeedItem; d: ReturnType<typeof detailOf>; tieneIg: boolean }) {
+function Detalle({ it, d, tieneIg, onGuion }: { it: FeedItem; d: ReturnType<typeof detailOf>; tieneIg: boolean; onGuion: () => void }) {
   return (
     <div className="fd-detail">
       {d.negocio && (
@@ -333,7 +335,20 @@ function Detalle({ it, d, tieneIg }: { it: FeedItem; d: ReturnType<typeof detail
           </ul>
         </div>
       )}
-      {d.guion && (
+      {d.guion && it.guion && (
+        <div className="fd-guion">
+          <span className="fd-lbl">Guion</span>
+          <p className="fd-guion-meta">
+            {guionEtiqueta(it.guion)}
+            {it.guion.tipo !== 'original' && it.guion.tipo !== 'previo' && <> · {ago(it.guion.el)}</>}
+            {it.guion.whatsapp.estado !== 'ok' && <span className="fd-guion-nowa"> · {it.guion.whatsapp.estado === 'solo_fijo' ? 'solo teléfono fijo' : 'sin número'}</span>}
+          </p>
+          <button type="button" className="fd-btn" onClick={onGuion}>
+            Ver guión
+          </button>
+        </div>
+      )}
+      {d.guion && !it.guion && (
         <figure className="fd-script">
           <figcaption className="fd-lbl">Guion</figcaption>
           <blockquote>{d.guion}</blockquote>
@@ -895,6 +910,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, ia, onItem, onGon
   const [err, setErr] = useState('')
   const [done, setDone] = useState<Done | null>(null)
   const [open, setOpen] = useState(false)
+  const [guionOpen, setGuionOpen] = useState(false)
   const [said, setSaid] = useState('')
   const [confirm, setConfirm] = useState<string | null>(null)
   const lock = useRef(false)
@@ -1131,7 +1147,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, ia, onItem, onGon
       return (
         <a
           className={`fd-btn ${primary ? 'is-contact' : 'is-contact-soft fd-sm'}`}
-          href={wa ? conTexto(contacto.href, mensajeVentas(it, me)) : contacto.href}
+          href={wa ? (it.guion?.whatsapp.url ?? conTexto(contacto.href, mensajeVentas(it, me))) : contacto.href}
           {...(wa ? external : {})}
           aria-label={`${wa ? 'Escribir por WhatsApp a' : contacto.tipo === 'llamar' ? 'Llamar al' : 'Enviar correo a'} ${contacto.detalle}${wa ? ' con un mensaje de presentación ya escrito' : ''}`}
         >
@@ -1241,9 +1257,10 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, ia, onItem, onGon
             </button>
             {open && (
               <div id={`${pid}-d`}>
-                <Detalle it={it} d={detail} tieneIg={it.tipo === 'potencial' && !!contactoDe(it.datos).enlaces.find((l) => l.tipo === 'instagram')} />
+                <Detalle it={it} d={detail} tieneIg={it.tipo === 'potencial' && !!contactoDe(it.datos).enlaces.find((l) => l.tipo === 'instagram')} onGuion={() => setGuionOpen(true)} />
               </div>
             )}
+            {guionOpen && <FeedGuion item={it} onClose={() => setGuionOpen(false)} onItem={onItem} />}
           </>
         )}
 

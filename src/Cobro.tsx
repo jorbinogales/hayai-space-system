@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Blobvatar } from './blob'
+import { useModal } from './useModal'
 import {
   METODOS,
   METODO_LABEL,
@@ -127,41 +128,6 @@ function toPatch(f: Form, i: Form, usd: number): CobroPatch {
   if (f.recibido !== i.recibido) p.recibido_por = nul(f.recibido)
   if (f.notas !== i.notas) p.notas = nul(f.notas)
   return p
-}
-
-// ---------- foco atrapado, Esc y foco devuelto ----------
-const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex]:not([tabindex="-1"])'
-function useModal(ref: React.RefObject<HTMLElement | null>, onEscape: () => void) {
-  const esc = useRef(onEscape)
-  esc.current = onEscape
-  useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null
-    const el = ref.current
-    el?.focus()
-    const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (e.defaultPrevented) return
-        e.stopPropagation() // no cierra también la factura o el cajón que hay debajo
-        e.preventDefault()
-        esc.current()
-        return
-      }
-      if (e.key !== 'Tab' || !el) return
-      const items = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((n) => n.offsetParent !== null || n === document.activeElement)
-      if (!items.length) return e.preventDefault()
-      const first = items[0]
-      const last = items[items.length - 1]
-      const at = document.activeElement
-      if (e.shiftKey && (at === first || at === el)) (e.preventDefault(), last.focus())
-      else if (!e.shiftKey && at === last) (e.preventDefault(), first.focus())
-      else if (!el.contains(at)) (e.preventDefault(), first.focus())
-    }
-    window.addEventListener('keydown', key, true)
-    return () => {
-      window.removeEventListener('keydown', key, true)
-      prev?.focus?.()
-    }
-  }, [ref])
 }
 
 /** «hoy 10:42», «5 oct 10:42» */

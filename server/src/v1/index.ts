@@ -12,6 +12,7 @@ import { notificacionesLeer, notificacionesListar, pipelineEtapas, pipelineResum
 import { actividadLeer, actividadListar } from '../services/actividad.ts'
 import { buscar } from '../services/buscar.ts'
 import { chatBorrar, chatContadores, chatEditar, chatListar, chatMarcarLeido, chatPublicar, chatUsuarios, chatVer } from '../services/chat.ts'
+import { feedGuionEditar, feedGuionRestablecer, feedGuionVer } from '../services/feedGuion.ts'
 import { feedEjecutarAccion, feedSugerirAcciones } from '../services/feedAcciones.ts'
 import { feedBorrar, feedContacto, feedConvertir, feedDeshacer, feedGeocodificar, feedGuardar, feedListar, feedMapa, feedMarcar, feedPublicar, feedUbicacion, feedVer } from '../services/feed.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
@@ -204,6 +205,9 @@ route('post', '/feed/:id/sugerir-acciones', feedSugerirAcciones)
 route('post', '/feed/:id/acciones/:accion/ejecutar', feedEjecutarAccion)
 route('post', '/feed/:id/convertir', feedConvertir)
 route('post', '/feed/:id/deshacer', feedDeshacer)
+route('get', '/feed/:id/guion', feedGuionVer) // el guión vigente, el original y todas las versiones (quién, cuándo) + el enlace wa.me
+route('patch', '/feed/:id/guion', feedGuionEditar) // nueva versión; con base = la versión que viste: 409 conflicto_guion si otro guardó antes (forzar=true guarda igual)
+route('post', '/feed/:id/guion/restablecer', feedGuionRestablecer) // nueva versión con el texto del original, marcada «restablecido»
 route('delete', '/feed/:id', feedBorrar) // elimina el ítem (definitivo); un privado de otro socio da 404
 
 // Chat interno del equipo (un solo canal). El autor SALE DE LA LLAVE, nunca del cuerpo; `fuente` es el origen lógico.

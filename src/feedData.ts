@@ -3,7 +3,7 @@
 //
 // Estados (v1.6.5): revisar, descartar y guardar son PERSONALES (cada socio ve lo suyo); convertir es GLOBAL (lo ve todo el equipo).
 import { useSyncExternalStore } from 'react'
-import { api } from './api'
+import { api, ApiError } from './api'
 
 export const FEED_TIPOS = ['idea', 'potencial', 'alerta', 'noticia', 'oportunidad', 'proyecto'] as const
 /** Lo que ve el socio al filtrar: su estado personal, y «convertido» (global) manda sobre lo personal. */
@@ -105,6 +105,8 @@ export interface FeedItem {
   /** acciones sugeridas por la IA (se guardan con el ítem: todo el equipo ve las mismas) */
   acciones_sugeridas: AccionesSugeridas
   actualizado_el: string | null
+  /** v1.8: el guión versionado (solo si el ítem trae guión). `datos.guion` ya es el vigente. */
+  guion?: GuionOut
 }
 /** Lo que el socio ve de un ítem: convertido (global) manda; si no, su estado personal. */
 export const vistaDe = (it: Pick<FeedItem, 'estado' | 'mi_estado'>): FeedEstado => (it.estado === 'convertido' ? 'convertido' : it.mi_estado)
@@ -145,6 +147,55 @@ const qs = (f: FeedFilters) => {
   for (const [k, v] of Object.entries(f)) if (v !== undefined && v !== '' && v !== false) p.set(k, String(v))
   const s = p.toString()
   return s ? `?${s}` : ''
+}
+
+// ---------- guión versionado (v1.8) ----------
+export type GuionTipo = 'original' | 'previo' | 'edicion' | 'restablecido'
+export interface GuionOut {
+  version: number
+  actual: string
+  original: string
+  /** quién guardó la vigente; null si fue el sistema (reescritura PAS+BAB) */
+  por: string | null
+  el: string
+  tipo: GuionTipo
+  ediciones: number
+  modificado: boolean
+  whatsapp: { estado: 'ok' | 'solo_fijo' | 'sin_numero'; telefono: string | null; url: string | null }
+}
+export interface GuionVersion {
+  nro: number
+  tipo: GuionTipo
+  contenido: string
+  editado_por: string | null
+  editado_el: string
+  base_nro: number | null
+}
+export interface GuionDetalle {
+  item_id: string
+  titulo: string
+  guion: GuionOut
+  versiones: GuionVersion[]
+  item: FeedItem
+}
+export const GUION_MAX = 1200
+/** Largo que el copy PAS+BAB respeta: pasarse no se bloquea, solo se avisa. */
+export const GUION_SUGERIDO = 600
+const gUrl = (id: string) => `/feed/${encodeURIComponent(id)}/guion`
+export const loadGuion = (id: string) => api.get<GuionDetalle>(gUrl(id))
+export const editarGuion = (id: string, b: { contenido: string; base: number; forzar?: boolean }) => api.patch<GuionDetalle>(gUrl(id), b)
+export const restablecerGuion = (id: string, b: { base: number; forzar?: boolean }) => api.post<GuionDetalle>(`${gUrl(id)}/restablecer`, b)
+/** 409 «conflicto_guion»: otra persona guardó una versión mientras editabas; trae la vigente. */
+export const conflictoGuion = (e: unknown): { nro: number; tipo: GuionTipo; contenido: string; por: string | null; el: string } | null => {
+  if (!(e instanceof ApiError) || e.status !== 409) return null
+  const d = e.data as { codigo?: string; vigente?: { nro: number; tipo: GuionTipo; contenido: string; por: string | null; el: string } } | undefined
+  return d?.codigo === 'conflicto_guion' && d.vigente ? d.vigente : null
+}
+/** Texto bajo «Guion» en la tarjeta: «Original» / «Editado por Elis hace 5 min». */
+export function guionEtiqueta(g: GuionOut): string {
+  if (g.tipo === 'original' || g.tipo === 'previo') return 'Original'
+  const quien = g.por ?? 'el sistema'
+  return `${g.tipo === 'restablecido' ? 'Restablecido al original por' : 'Editado por'} ${quien}`
 }
 
 export const loadFeed = (f: FeedFilters = {}) => api.get<FeedPage>(`/feed${qs(f)}`)

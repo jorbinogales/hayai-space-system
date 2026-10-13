@@ -17,7 +17,8 @@
     "typecheck:server": "tsc -p server/tsconfig.json",
     "test:server": "tsx --test server/test/api.test.ts server/test/v1.test.ts",
     "apikey": "tsx --env-file-if-exists=.env server/src/apikey-cli.ts",
-    "feed:geocodificar": "tsx --env-file-if-exists=.env server/src/feed-geocodificar.ts"
+    "feed:geocodificar": "tsx --env-file-if-exists=.env server/src/feed-geocodificar.ts",
+    "feed:guiones": "tsx --env-file-if-exists=.env server/src/feed-guiones.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",

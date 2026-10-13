@@ -22,6 +22,7 @@ import { enVenezuela, estadoGeocoder, geocoderOSinConfigurar } from '../geocode.
 import { sendToTrash } from '../trash.ts'
 import { insertContenido } from '../mkContenido.ts'
 import { userByName } from '../socios.ts'
+import { adjuntarGuiones, sembrarGuion, type GuionOut } from '../feedGuion.ts'
 import { clienteActualizar, clienteCrear } from './clientes.ts'
 import { interaccionRegistrar } from './interacciones.ts'
 import { proyectoCrear } from './proyectos.ts'
@@ -140,6 +141,8 @@ export const itemOut = (r: any) => ({
   /** Lo que ya se creó desde el ítem, una de cada clase (global, lo ve todo el equipo). */
   creados: {} as Creados,
   acciones_sugeridas: accionesOut(r),
+  /** El guión del potencial, versionado (lo calcula `enriquecer`); null si el ítem no trae guión. `datos.guion` queda con el texto vigente. */
+  guion: null as GuionOut | null,
   actualizado_el: stamp(r.updated_at),
 })
 
@@ -220,7 +223,7 @@ export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
     )
   ).rows
   const porId = new Map(cl.map((c) => [c.id as string, c]))
-  return items.map((it) => {
+  const out = items.map((it) => {
     const mios = vivos.filter((l) => l.item_id === it.id)
     const creados: Creados = {}
     for (const l of mios) creados[l.kind as Vinculo] = { id: l.ref_id as string, por: l.por as string, el: (l.created_at as Date).toISOString() }
@@ -235,6 +238,7 @@ export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
     const vinculo: Vinculado = c ? { estado: c.is_prospect ? 'posible_cliente' : 'cliente', cliente_id: c.id as string, cliente: c.name as string, origen } : { estado: 'sin_vinculo', cliente_id: null, cliente: null, origen: null }
     return { ...it, vinculo, creados }
   })
+  return adjuntarGuiones(db, out)
 }
 
 export async function item(db: Db, itemId: string, userId: string) {
@@ -384,6 +388,7 @@ async function insertar(c: Db, actor: Actor, b: Item): Promise<Resultado> {
   if (ins.rowCount) {
     // Oportunidades e ideas: sus acciones sugeridas se generan en segundo plano (si hay IA); mientras tanto el ítem sale «pendiente».
     if (esAccionable(b.tipo) && llmConfig()) await c.query(`UPDATE feed_items SET actions_status = 'pendiente', actions_at = now() WHERE id = $1`, [ins.rows[0].id])
+    await sembrarGuion(c, ins.rows[0].id, b.datos ?? {}, actor.id) // el guión publicado es la versión 1 (original, inmutable)
     return { item: await item(c, ins.rows[0].id, actor.id), creado: true }
   }
   const ya = (await c.query('SELECT id, visibility, published_by FROM feed_items WHERE source = $1 AND external_key = $2', [b.fuente, b.clave_externa])).rows[0]

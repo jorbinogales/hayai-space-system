@@ -40,6 +40,5 @@ jobs:
         run: |
           for k in POSTGRES_PASSWORD META_APP_SECRET META_VERIFY_TOKEN META_PAGE_TOKEN RECEIVER_DOCUMENTS MAPBOX_PUBLIC_TOKEN DOMAIN META_LEADS_ENABLED META_LEADS_OWNER SYSTEMS_CHECK_MS; do
             v="${!k}"
-            if [ -n "$v" ]; then printf '%s=%s
-' "$k" "$v"; fi
+            if [ -n "$v" ]; then printf '%s=%s\n' "$k" "$v"; fi
           done | ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" deploy

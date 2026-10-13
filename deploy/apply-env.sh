@@ -1,5 +1,5 @@
 #!/bin/sh
-# Corre en el VPS, llamado desde el script "deploy" ANTES de `docker compose up`:
+# Corre en el VPS, llamado desde deploy/deploy.sh ANTES de `docker compose up`:
 #   sh deploy/apply-env.sh /ruta/al/.env
 # Lee KEY=VALUE por stdin (lo que manda el workflow) y los inserta/actualiza en el .env.
 # Solo toca las claves recibidas; el resto del .env queda igual.

@@ -22,9 +22,10 @@ jobs:
           echo "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
 
       # La llave del VPS esta restringida con command="..." en authorized_keys:
-      # el comando que pasemos aqui se ignora y siempre corre el script de deploy.
-      # La config viaja por stdin (KEY=VALUE, solo las no vacias); el script del VPS la aplica
-      # a su .env con deploy/apply-env.sh. Para agregar una variable: ponla aqui y en Settings > Secrets/Variables.
+      # el comando que pasemos aqui se ignora y siempre corre deploy/deploy.sh.
+      # La config viaja por stdin (KEY=VALUE, solo las no vacias); deploy.sh la aplica
+      # al .env del VPS con deploy/apply-env.sh. Para agregar una variable: ponla aqui (en env y
+      # en la lista del for), en docker-compose.prod.yml y en Settings > Secrets/Variables.
       - name: Desplegar
         env:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}

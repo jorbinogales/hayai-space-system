@@ -54,6 +54,13 @@ const SERP_FALSO = [
   { rank: 4, title: 'Otro sitio', link: 'https://otro.net/x' },
 ]
 
+// IA falsa (DeepSeek, API chat/completions): responde según el título del ítem (guion por título); sin guion, «sin acciones». Registra cada llamada.
+const LLM_PORT = 3194
+let llm: Server
+type LlmGuion = { status?: number; reply?: unknown; raw?: string; delayMs?: number }
+const llmGuion = new Map<string, LlmGuion>()
+const llmCalls: { auth: string | undefined; model: string; system: string; user: any }[] = []
+
 type Res = { status: number; body: any; headers: Headers; full?: any }
 type Opts = { method?: string; body?: unknown; raw?: string; key?: string | null; headers?: Record<string, string> }
 
@@ -160,6 +167,22 @@ before(async () => {
   })
   await new Promise<void>((ok) => ext.listen(EXT_PORT, ok))
 
+  llm = createServer((req, res) => {
+    let raw = ''
+    req.on('data', (c) => (raw += c))
+    req.on('end', async () => {
+      const b = JSON.parse(raw || '{}')
+      const user = JSON.parse(b.messages?.[1]?.content ?? '{}')
+      llmCalls.push({ auth: req.headers.authorization, model: b.model, system: b.messages?.[0]?.content ?? '', user })
+      const g = llmGuion.get(user.item?.titulo) ?? { reply: { acciones: [] } }
+      if (g.delayMs) await new Promise((r) => setTimeout(r, g.delayMs))
+      if (g.status && g.status !== 200) return void res.writeHead(g.status).end('{}')
+      const content = g.raw ?? JSON.stringify(g.reply)
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ model: 'modelo-falso', choices: [{ message: { content } }] }))
+    })
+  })
+  await new Promise<void>((ok) => llm.listen(LLM_PORT, ok))
+
   target = createServer((req, res) => {
     if (req.url?.startsWith('/siempre')) return void res.writeHead(200).end('ok')
     if (req.url?.startsWith('/redir')) return void res.writeHead(302, { location: `http://localhost:${TARGET_PORT}/health` }).end()
@@ -211,6 +234,10 @@ before(async () => {
     BCV_REFRESH_MS: '0',
     // El aviso de versión al arrancar se apaga: cada prueba que lo necesita publica su propia versión.
     ANNOUNCE_VERSION: 'false',
+    // Acciones sugeridas por IA: DeepSeek falso local (nunca internet ni créditos reales).
+    DEEPSEEK_API_KEY: 'llave-falsa-de-prueba',
+    DEEPSEEK_BASE_URL: `http://localhost:${LLM_PORT}`,
+    DEEPSEEK_MODEL: 'modelo-falso',
   }
   const mig = spawnSync(process.execPath, ['server/db/migrate.mjs'], { cwd: root, env, encoding: 'utf8' })
   assert.equal(mig.status, 0, mig.stderr + mig.stdout)
@@ -238,6 +265,7 @@ after(async () => {
   target?.close()
   bcvServer?.close()
   ext?.close()
+  llm?.close()
   await embedded?.stop().catch(() => {})
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 })
 })
@@ -786,10 +814,10 @@ describe('MCP', () => {
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 98) // lectura + escritura
+    assert.equal(names.length, 100) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 110)
+    assert.equal(full.length, 112)
     assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -4597,9 +4625,9 @@ describe('Feed de oportunidades', () => {
     assert.equal((await http(`${ROOT}/api/feed`)).status, 401)
   })
 
-  it('MCP: las siete herramientas (la de lectura se ve con solo lectura), publicar idempotente, marcar y guardar personales y convertir', async () => {
+  it('MCP: las nueve herramientas (la de lectura se ve con solo lectura), publicar idempotente, marcar y guardar personales y convertir', async () => {
     const nombres = async (key: string) => ((await rpc('tools/list', {}, key)).body.result.tools as any[]).map((t) => t.name).filter((x: string) => x.startsWith('hayai_feed'))
-    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_contacto', 'hayai_feed_convertir', 'hayai_feed_deshacer', 'hayai_feed_guardar', 'hayai_feed_listar', 'hayai_feed_marcar', 'hayai_feed_publicar'])
+    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_contacto', 'hayai_feed_convertir', 'hayai_feed_deshacer', 'hayai_feed_ejecutar_accion', 'hayai_feed_guardar', 'hayai_feed_listar', 'hayai_feed_marcar', 'hayai_feed_publicar', 'hayai_feed_sugerir_acciones'])
     assert.deepEqual(await nombres(KEY_R), ['hayai_feed_listar'])
     const tools = (await rpc('tools/list')).full.result.tools as any[] // full: body quita `actualizado_el`
     assert.equal(tools.find((t) => t.name === 'hayai_feed_listar').annotations.readOnlyHint, true)
@@ -4818,6 +4846,436 @@ describe('Feed: visibilidad (equipo | privado) y borrado', () => {
     assert.equal(it.visibility, 'equipo')
     await assert.rejects(admin.query(`UPDATE feed_items SET visibility = 'publico' WHERE source = 'vis-test'`), /check/i)
     assert.equal((await admin.query(`SELECT count(*)::int AS n FROM feed_items WHERE visibility NOT IN ('equipo','privado')`)).rows[0].n, 0)
+  })
+})
+
+describe('Acciones sugeridas por IA (feed)', () => {
+  let n = 0
+  const rpc = (method: string, params: unknown = {}, key: string | null = KEY) =>
+    http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: ++n, method, params } })
+  const mcp = async (name: string, args: unknown = {}, key: string | null = KEY) => (await rpc('tools/call', { name, arguments: args }, key)).body
+  const dato = (b: any) => JSON.parse(b.result.content[0].text)
+  const dormir = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+  const mas = (d: number) => new Date(Date.parse(`${hoy}T00:00:00Z`) + d * 86_400_000).toISOString().slice(0, 10)
+  const pub = (body: unknown, key = KEY) => api('/feed', { body, key })
+  const guion = (titulo: string, g: { status?: number; reply?: unknown; raw?: string; delayMs?: number }) => void llmGuion.set(titulo, g)
+  const llamadas = (titulo: string) => llmCalls.filter((c) => c.user.item?.titulo === titulo)
+  const esperar = async (id: string, key = KEY) => {
+    for (let i = 0; i < 80; i++) {
+      const r = await api(`/feed/${id}`, { key })
+      if (r.body.acciones_sugeridas.estado !== 'pendiente') return r.body
+      await dormir(100)
+    }
+    assert.fail('la IA nunca terminó')
+  }
+  const ejecutar = (id: string, accion: string, body: unknown = { confirmar: true }, key = KEY) => api(`/feed/${id}/acciones/${accion}/ejecutar`, { body, key })
+  const sugerir = (id: string, key = KEY) => api(`/feed/${id}/sugerir-acciones`, { body: {}, key })
+  const tipos = (f: any) => f.acciones_sugeridas.data.map((a: any) => a.tipo)
+  let KEY_R_ACC = ''
+  let sm = { id: '', cliente: '' }
+  let mo = { id: '', cliente: '', accion: '' }
+  let ofertaId = ''
+  let ofertaId2 = ''
+
+  before(async () => {
+    KEY_R_ACC = newKey('Jorbi', 'solo-lectura-acciones', 'read')
+    const o = await api('/ofertas', { body: { clave: 'acc_plan', nombre: 'Plan Acciones', tipo: 'sistema', mensualidad_sugerida: 120, instalacion_sugerida: 200 } })
+    assert.equal(o.status, 201, JSON.stringify(o.body))
+    ofertaId = o.body.id
+    const o2 = await api('/ofertas', { body: { clave: 'acc_sin_precio', nombre: 'Sin Precio Acciones', tipo: 'sistema' } })
+    ofertaId2 = o2.body.id
+  })
+
+  it('publicar: el ítem nace «pendiente», la IA lo deja «listo» con 1–3 acciones y el prompt lleva el catálogo, las ofertas y la regla de congruencia', async () => {
+    const titulo = 'Panadería Nueva: abrió su segundo local'
+    guion(titulo, {
+      reply: {
+        acciones: [
+          { tipo: 'crear_posible_cliente', etiqueta: 'Agregar al pipeline', motivo: 'Es un negocio que todavía no está en el sistema', parametros: {} },
+          { tipo: 'crear_seguimiento', etiqueta: 'Llamar esta semana', motivo: 'Abrió local nuevo', parametros: { dias: 2, titulo: 'Llamar a la panadería' } },
+          { tipo: 'crear_propuesta', parametros: { oferta_id: ofertaId } }, // sin cliente no hay propuesta
+        ],
+      },
+    })
+    const r = await pub({ titulo, tipo: 'oportunidad', fuente: 'growi', resumen: 'Segundo local en Barquisimeto', datos: { telefono: '+584140000000' } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.equal(r.body.acciones_sugeridas.estado, 'pendiente')
+    const f = await esperar(r.body.id)
+    assert.equal(f.acciones_sugeridas.estado, 'listo')
+    assert.deepEqual(tipos(f), ['crear_posible_cliente', 'crear_seguimiento'])
+    assert.equal(f.acciones_sugeridas.modelo, 'modelo-falso')
+    assert.ok(f.acciones_sugeridas.generado_el)
+    for (const a of f.acciones_sugeridas.data) assert.ok(a.id && a.etiqueta && a.detalle && a.hecha === null, JSON.stringify(a))
+    assert.equal(f.acciones_sugeridas.data[1].etiqueta, 'Llamar esta semana')
+    assert.match(f.acciones_sugeridas.data[1].detalle, /Llamar a la panadería/)
+    const c = llamadas(titulo)
+    assert.equal(c.length, 1)
+    assert.equal(c[0].auth, 'Bearer llave-falsa-de-prueba')
+    assert.equal(c[0].model, 'modelo-falso')
+    assert.match(c[0].system, /CONGRUENCIA/)
+    assert.match(c[0].system, /crear_propuesta/)
+    assert.match(c[0].user.cliente, /Sin cliente vinculado/)
+    assert.ok(c[0].user.ofertas.some((o: any) => o.id === ofertaId && o.mensualidad === 120 && o.instalacion === 200))
+    assert.ok(!JSON.stringify(c[0].user).includes('+58414'), 'los datos de contacto del ítem no salen hacia la IA')
+    // todo el equipo ve los mismos botones, y el listado los trae
+    assert.deepEqual(tipos((await api(`/feed/${r.body.id}`, { key: KEY_J })).body), ['crear_posible_cliente', 'crear_seguimiento'])
+    const lst = await api('/feed?per_page=100')
+    assert.equal(lst.body.meta.ia_configurada, true)
+    assert.equal(lst.body.data.find((x: any) => x.id === r.body.id).acciones_sugeridas.estado, 'listo')
+  })
+
+  it('solo oportunidades e ideas llevan acciones: prospecto, noticia, alerta y proyecto quedan «sin_generar», sin llamar a la IA, y «Sugerir» responde 400', async () => {
+    const antes = llmCalls.length
+    for (const tipo of ['prospecto', 'noticia', 'alerta', 'proyecto']) {
+      const r = await pub({ titulo: `No accionable ${tipo}`, tipo, fuente: 'manual' })
+      assert.equal(r.body.acciones_sugeridas.estado, 'sin_generar', tipo)
+      assert.deepEqual(r.body.acciones_sugeridas.data, [])
+      assert.equal((await sugerir(r.body.id)).status, 400, tipo)
+    }
+    await dormir(200)
+    assert.equal(llmCalls.length, antes)
+  })
+
+  it('caso Supermigas: a un cliente que YA tiene la mensualidad no se le sugiere propuesta ni cobro de mensualidad; lo demás sí se queda', async () => {
+    const cli = await api('/clientes', { body: { nombre: 'Supermigas Prueba', fecha_inicial: '2026-09-01', items: [{ concepto: 'Sistema', monto: 150 }], cobros: [{ fecha: mas(20), monto: 25, concepto: 'Mensualidad', repetir_meses: 3 }] } })
+    assert.equal(cli.status, 201, JSON.stringify(cli.body))
+    const titulo = 'Supermigas: venderle la mensualidad del sistema'
+    guion(titulo, {
+      reply: {
+        acciones: [
+          { tipo: 'crear_propuesta', etiqueta: 'Crear propuesta', parametros: { oferta_id: ofertaId } },
+          { tipo: 'agendar_cobro', etiqueta: 'Agendar mensualidad', parametros: { concepto: 'Mensualidad', monto: 25, fecha: mas(60) } },
+          { tipo: 'crear_tarea', etiqueta: 'Crear tarea de visita', motivo: 'Mostrarle el panel de pedidos', parametros: { titulo: 'Visitar Supermigas', vence: mas(3) } },
+          { tipo: 'crear_seguimiento', parametros: { dias: 5 } },
+        ],
+      },
+    })
+    const r = await pub({ titulo, tipo: 'oportunidad', fuente: 'growi', datos: { cliente_id: cli.body.id } })
+    assert.equal(r.body.vinculo.cliente_id, cli.body.id)
+    const f = await esperar(r.body.id)
+    assert.deepEqual(tipos(f), ['crear_tarea', 'crear_seguimiento'], 'propuesta y cobro de mensualidad se descartan')
+    const u = llamadas(titulo)[0].user
+    assert.equal(u.cliente.mensualidad_contratada, true)
+    assert.equal(u.cliente.estado, 'cliente activo')
+    assert.ok(u.cliente.pagos_y_cobros.some((m: any) => /Mensualidad 1\/3/.test(m.concepto) && m.recurrente))
+    // y si la IA SOLO proponía lo ya contratado, no hay botones
+    const t2 = 'Supermigas: otra vez la mensualidad'
+    guion(t2, { reply: { acciones: [{ tipo: 'crear_propuesta', parametros: { oferta_id: ofertaId } }, { tipo: 'agendar_cobro', parametros: { concepto: 'Mensualidad plan', monto: 25, fecha: mas(40) } }] } })
+    const r2 = await pub({ titulo: t2, tipo: 'oportunidad', fuente: 'growi', datos: { cliente_id: cli.body.id } })
+    const f2 = await esperar(r2.body.id)
+    assert.deepEqual([f2.acciones_sugeridas.estado, f2.acciones_sugeridas.data], ['listo', []])
+    sm = { id: r.body.id, cliente: cli.body.id }
+  })
+
+  it('lo que inventa o enreda el modelo se descarta una por una: monto que no consta, tipo fuera del catálogo, parámetros mal, fecha pasada, idea→contenido en una oportunidad, proyecto ajeno', async () => {
+    const cli = await api('/clientes', { body: { nombre: 'Cliente Montos Prueba', fecha_inicial: '2026-09-01', items: [{ concepto: 'Sistema', monto: 150 }] } })
+    const titulo = 'Cliente Montos: ampliar con presupuesto de 80 USD'
+    guion(titulo, {
+      reply: {
+        acciones: [
+          { tipo: 'agendar_cobro', parametros: { concepto: 'Cobro inventado', monto: 777, fecha: mas(7) } },
+          { tipo: 'borrar_cliente', parametros: {} },
+          { tipo: 'crear_tarea', parametros: {} },
+          { tipo: 'crear_seguimiento', parametros: { dias: 99 } },
+          { tipo: 'mover_a_contenido', parametros: {} },
+          { tipo: 'crear_tarea', parametros: { titulo: 'En proyecto ajeno', proyecto_id: NOPE } },
+          { tipo: 'agendar_cobro', parametros: { concepto: 'Instalación vieja', monto: 80, fecha: mas(-1) } },
+          'esto no es una acción',
+          { tipo: 'agendar_cobro', etiqueta: 'Agendar instalación'.padEnd(90, '!'), motivo: 'm'.repeat(400), parametros: { concepto: 'Instalación módulo', monto: 80, fecha: mas(7) } },
+        ],
+      },
+    })
+    const r = await pub({ titulo, tipo: 'oportunidad', fuente: 'growi', datos: { cliente_id: cli.body.id, presupuesto: '80 USD' } })
+    const f = await esperar(r.body.id)
+    assert.equal(f.acciones_sugeridas.estado, 'listo')
+    assert.equal(f.acciones_sugeridas.data.length, 1, JSON.stringify(f.acciones_sugeridas.data))
+    const a = f.acciones_sugeridas.data[0]
+    assert.deepEqual([a.tipo, a.parametros.monto, a.parametros.concepto], ['agendar_cobro', 80, 'Instalación módulo'])
+    assert.ok(a.etiqueta.length <= 40 && a.motivo.length <= 140)
+    assert.match(a.detalle, /\$80/)
+    mo = { id: r.body.id, cliente: cli.body.id, accion: a.id }
+  })
+
+  it('sin acciones válidas: «listo» con la lista vacía (no hay botones); máximo 3 y una por tipo', async () => {
+    const vacia = await pub({ titulo: 'Idea sin nada que hacer', tipo: 'idea', fuente: 'manual' })
+    const fv = await esperar(vacia.body.id)
+    assert.deepEqual([fv.acciones_sugeridas.estado, fv.acciones_sugeridas.data], ['listo', []])
+    const titulo = 'Idea con muchas acciones'
+    guion(titulo, {
+      reply: {
+        acciones: [
+          { tipo: 'crear_tarea', parametros: { titulo: 'Uno' } },
+          { tipo: 'crear_tarea', parametros: { titulo: 'Uno repetido' } },
+          { tipo: 'crear_seguimiento', parametros: { dias: 1 } },
+          { tipo: 'crear_proyecto', parametros: { nombre: 'Proyecto de la idea' } },
+          { tipo: 'mover_a_contenido', parametros: {} },
+        ],
+      },
+    })
+    const r = await pub({ titulo, tipo: 'idea', fuente: 'manual' })
+    assert.deepEqual(tipos(await esperar(r.body.id)), ['crear_tarea', 'crear_seguimiento', 'crear_proyecto'])
+  })
+
+  it('si la IA falla queda «error» con un mensaje claro (sin la llave) y «Sugerir acciones» lo reintenta; una generación colgada se muestra como error', async () => {
+    const t500 = 'Idea con IA caída'
+    guion(t500, { status: 500 })
+    const r = await pub({ titulo: t500, tipo: 'idea', fuente: 'manual' })
+    const f = await esperar(r.body.id)
+    assert.equal(f.acciones_sugeridas.estado, 'error')
+    assert.match(f.acciones_sugeridas.error, /500/)
+    assert.ok(!JSON.stringify(f).includes('llave-falsa'))
+    guion(t500, { reply: { acciones: [{ tipo: 'crear_tarea', parametros: { titulo: 'Reintento' } }] } })
+    const s = await sugerir(r.body.id)
+    assert.equal(s.status, 200, JSON.stringify(s.body))
+    assert.equal(s.body.acciones_sugeridas.estado, 'pendiente')
+    assert.deepEqual(tipos(await esperar(r.body.id)), ['crear_tarea'])
+    // texto que no es JSON
+    const tj = 'Idea con respuesta rara'
+    guion(tj, { raw: 'Claro, aquí tienes unas ideas: …' })
+    const rj = await pub({ titulo: tj, tipo: 'idea', fuente: 'manual' })
+    const fj = await esperar(rj.body.id)
+    assert.deepEqual([fj.acciones_sugeridas.estado, /no era JSON/.test(fj.acciones_sugeridas.error)], ['error', true])
+    // cerca ```json … ``` sí se tolera
+    const tc = 'Idea con cerca de código'
+    guion(tc, { raw: '```json\n{"acciones":[{"tipo":"crear_tarea","parametros":{"titulo":"Desde cerca"}}]}\n```' })
+    assert.deepEqual(tipos(await esperar((await pub({ titulo: tc, tipo: 'idea', fuente: 'manual' })).body.id)), ['crear_tarea'])
+    // llave rechazada
+    const t401 = 'Idea con llave mala'
+    guion(t401, { status: 401 })
+    const f401 = await esperar((await pub({ titulo: t401, tipo: 'idea', fuente: 'manual' })).body.id)
+    assert.match(f401.acciones_sugeridas.error, /rechazó la llave/)
+    // pendiente viejo (el servidor se reinició a medias): se ve como error y se puede volver a pedir
+    await admin.query(`UPDATE feed_items SET actions_status = 'pendiente', actions_at = now() - interval '10 minutes' WHERE id = $1`, [rj.body.id])
+    const colgado = (await api(`/feed/${rj.body.id}`)).body
+    assert.equal(colgado.acciones_sugeridas.estado, 'error')
+    assert.match(colgado.acciones_sugeridas.error, /interrumpió/)
+    // dos toques seguidos no duplican la llamada
+    const t2 = 'Idea con doble toque'
+    guion(t2, { delayMs: 400, reply: { acciones: [{ tipo: 'crear_tarea', parametros: { titulo: 'Una vez' } }] } })
+    const r2 = await pub({ titulo: t2, tipo: 'idea', fuente: 'manual' })
+    await sugerir(r2.body.id)
+    await sugerir(r2.body.id)
+    await esperar(r2.body.id)
+    assert.equal(llamadas(t2).length, 1)
+  })
+
+  it('ejecutar: exige confirmar:true, valida la acción, crea lo real, queda como «hecha» y no se repite (ni por otro socio)', async () => {
+    const { id, cliente } = sm
+    const f = (await api(`/feed/${id}`)).body
+    const tarea = f.acciones_sugeridas.data.find((a: any) => a.tipo === 'crear_tarea')
+    const seg = f.acciones_sugeridas.data.find((a: any) => a.tipo === 'crear_seguimiento')
+    for (const body of [{}, { confirmar: false }, { confirmar: 'si' }]) assert.equal((await ejecutar(id, tarea.id, body)).status, 400, JSON.stringify(body))
+    assert.equal((await ejecutar(id, 'noexiste')).status, 404)
+    assert.equal((await ejecutar(NOPE, tarea.id)).status, 404)
+    assert.equal((await api(`/feed/${id}`)).body.acciones_sugeridas.data.every((a: any) => a.hecha === null), true, 'sin confirmar no se hizo nada')
+    assert.equal((await ejecutar(id, tarea.id, { confirmar: true }, KEY_R_ACC)).status, 403, 'una llave de solo lectura no ejecuta')
+    // dos socios a la vez: una sola tarea
+    const [a, b] = await Promise.all([ejecutar(id, tarea.id), ejecutar(id, tarea.id, { confirmar: true }, KEY_J)])
+    assert.deepEqual([a.status, b.status].sort(), [200, 409], JSON.stringify([a.body, b.body]))
+    const ok = a.status === 200 ? a : b
+    assert.deepEqual([ok.body.ejecutada.tipo, ok.body.creado.tipo], ['crear_tarea', 'tarea'])
+    const tareaDb = await admin.query('SELECT title FROM tasks WHERE id = $1', [ok.body.creado.id])
+    assert.equal(tareaDb.rows[0].title, 'Visitar Supermigas')
+    assert.equal(ok.body.item.estado, 'convertido')
+    assert.equal(ok.body.item.creados.tarea.id, ok.body.creado.id)
+    const hecha = ok.body.item.acciones_sugeridas.data.find((x: any) => x.id === tarea.id).hecha
+    assert.ok(hecha.por && hecha.el && hecha.ref_id === ok.body.creado.id)
+    assert.equal((await ejecutar(id, tarea.id)).status, 409)
+    // la otra acción sigue disponible y también se ejecuta
+    const s = await ejecutar(id, seg.id)
+    assert.equal(s.status, 200, JSON.stringify(s.body))
+    assert.deepEqual([s.body.creado.tipo, s.body.item.acciones_sugeridas.data.filter((x: any) => x.hecha).length], ['seguimiento', 2])
+    // «Deshacer» del aviso: el seguimiento va a la papelera y su botón vuelve a estar disponible; la tarea sigue «hecha»
+    const und = await api(`/feed/${id}/deshacer`, { body: { a: 'seguimiento' } })
+    assert.equal(und.status, 200, JSON.stringify(und.body))
+    const tras = und.body.item.acciones_sugeridas.data
+    assert.equal(tras.find((x: any) => x.id === seg.id).hecha, null)
+    assert.ok(tras.find((x: any) => x.id === tarea.id).hecha)
+    assert.equal((await ejecutar(id, seg.id)).status, 200, 'se puede volver a ejecutar')
+    // quedó en la bitácora de actividad del equipo y el cliente sigue sin propuestas
+    assert.equal((await admin.query('SELECT count(*)::int AS n FROM proposals WHERE client_id = $1', [cliente])).rows[0].n, 0)
+  })
+
+  it('agendar cobro: crea el pago PENDIENTE del cliente con el monto que consta; al regenerar, lo hecho se conserva y no se vuelve a sugerir el mismo cobro', async () => {
+    const { id, cliente, accion } = mo
+    const r = await ejecutar(id, accion)
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.creado.tipo, 'cobro')
+    const pago = (await admin.query('SELECT amount::float AS monto, status, concept, date::text AS fecha FROM payments WHERE id = $1 AND client_id = $2', [r.body.creado.id, cliente])).rows[0]
+    assert.deepEqual([pago.monto, pago.status, pago.concept, pago.fecha], [80, 'pendiente', 'Instalación módulo', mas(7)])
+    const s = await sugerir(id)
+    assert.equal(s.status, 200)
+    const f = await esperar(id)
+    assert.equal(f.acciones_sugeridas.estado, 'listo')
+    assert.equal(f.acciones_sugeridas.data.length, 1)
+    assert.ok(f.acciones_sugeridas.data[0].hecha, 'lo ejecutado se conserva como historial')
+    assert.equal(f.acciones_sugeridas.data[0].id, accion)
+  })
+
+  it('al ejecutar se vuelve a comprobar con el estado de AHORA: si el cliente ya firmó una propuesta o ya paga mensualidad → 409 «Ya no aplica» y el botón queda libre', async () => {
+    const posible = await api('/clientes', { body: { nombre: 'Posible Revalida', estado: 'posible', origen: 'otro' } })
+    const t = 'Posible Revalida: proponerle el plan'
+    guion(t, { reply: { acciones: [{ tipo: 'crear_propuesta', etiqueta: 'Crear propuesta', parametros: { oferta_id: ofertaId } }, { tipo: 'crear_tarea', parametros: { titulo: 'Llamar a Revalida' } }] } })
+    const r = await pub({ titulo: t, tipo: 'oportunidad', fuente: 'growi', datos: { cliente_id: posible.body.id } })
+    const f = await esperar(r.body.id)
+    assert.deepEqual(tipos(f), ['crear_propuesta', 'crear_tarea'])
+    assert.match(f.acciones_sugeridas.data[0].detalle, /propuesta borrador.*Plan Acciones.*\$120 al mes/)
+    // mientras tanto alguien arma la propuesta a mano
+    const manual = await api(`/clientes/${posible.body.id}/propuestas`, { body: { items: [{ tipo: 'mensualidad', oferta_id: ofertaId }] } })
+    assert.equal(manual.status, 201, JSON.stringify(manual.body))
+    const e = await ejecutar(r.body.id, f.acciones_sugeridas.data[0].id)
+    assert.equal(e.status, 409)
+    assert.match(e.body.error.message, /Ya no aplica/)
+    assert.deepEqual(tipos((await api(`/feed/${r.body.id}`)).body), ['crear_tarea'], 'la acción que ya no aplica se quita (no queda un botón que siempre falla) y la otra sigue')
+    assert.equal((await admin.query('SELECT count(*)::int AS n FROM proposals WHERE client_id = $1', [posible.body.id])).rows[0].n, 1)
+
+    // cliente activo al que, entre la sugerencia y el clic, se le cobra mensualidad
+    const act = await api('/clientes', { body: { nombre: 'Activo Revalida', fecha_inicial: '2026-09-01', items: [{ concepto: 'Sistema', monto: 90 }] } })
+    const t2 = 'Activo Revalida: proponerle el plan'
+    guion(t2, { reply: { acciones: [{ tipo: 'crear_propuesta', parametros: { oferta_id: ofertaId } }] } })
+    const r2 = await pub({ titulo: t2, tipo: 'oportunidad', fuente: 'growi', datos: { cliente_id: act.body.id } })
+    const f2 = await esperar(r2.body.id)
+    assert.deepEqual(tipos(f2), ['crear_propuesta'], 'un activo SIN mensualidad sí admite propuesta')
+    await api(`/clientes/${act.body.id}/pagos`, { body: { fecha: mas(10), monto: 120, concepto: 'Mensualidad', repetir_meses: 3 } })
+    const e2 = await ejecutar(r2.body.id, f2.acciones_sugeridas.data[0].id)
+    assert.equal(e2.status, 409)
+    assert.match(e2.body.error.message, /ya tiene la mensualidad/)
+    // al regenerar, la IA ya ve la mensualidad y el botón desaparece
+    guion(t2, { reply: { acciones: [{ tipo: 'crear_propuesta', parametros: { oferta_id: ofertaId } }] } })
+    await sugerir(r2.body.id)
+    assert.deepEqual((await esperar(r2.body.id)).acciones_sugeridas.data, [])
+  })
+
+  it('crear propuesta (posible cliente): crea el borrador con la mensualidad de la oferta, lo enlaza al ítem; una oferta sin mensualidad no se sugiere', async () => {
+    const posible = await api('/clientes', { body: { nombre: 'Posible Propuesta Ok', estado: 'posible', origen: 'otro' } })
+    const t = 'Posible Propuesta Ok: cerrar con el plan'
+    guion(t, { reply: { acciones: [{ tipo: 'crear_propuesta', etiqueta: 'Crear propuesta', motivo: 'Pidió precio', parametros: { oferta_id: ofertaId2 } }] } })
+    const r = await pub({ titulo: t, tipo: 'oportunidad', fuente: 'growi', datos: { cliente_id: posible.body.id } })
+    assert.deepEqual((await esperar(r.body.id)).acciones_sugeridas.data, [], 'la oferta sin mensualidad no sirve de base de una propuesta')
+    guion(t, { reply: { acciones: [{ tipo: 'crear_propuesta', etiqueta: 'Crear propuesta', motivo: 'Pidió precio', parametros: { oferta_id: ofertaId, notas: 'Primer mes sin instalación' } }] } })
+    await sugerir(r.body.id)
+    const f = await esperar(r.body.id)
+    assert.equal(f.acciones_sugeridas.data.length, 1)
+    const e = await ejecutar(r.body.id, f.acciones_sugeridas.data[0].id)
+    assert.equal(e.status, 200, JSON.stringify(e.body))
+    assert.equal(e.body.creado.tipo, 'propuesta')
+    assert.equal(e.body.item.creados.propuesta.id, e.body.creado.id)
+    assert.equal(e.body.item.estado, 'convertido')
+    const p = (await admin.query(`SELECT p.status, p.notes, pi.kind, pi.unit_price::float AS precio, pi.offering_id FROM proposals p JOIN proposal_items pi ON pi.proposal_id = p.id WHERE p.id = $1`, [e.body.creado.id])).rows[0]
+    assert.deepEqual([p.status, p.kind, p.precio, p.offering_id, p.notes], ['borrador', 'mensualidad', 120, ofertaId, 'Primer mes sin instalación'])
+    // regenerar ya no vuelve a sugerir la propuesta
+    guion(t, { reply: { acciones: [{ tipo: 'crear_propuesta', parametros: { oferta_id: ofertaId } }] } })
+    await sugerir(r.body.id)
+    const g = await esperar(r.body.id)
+    assert.equal(g.acciones_sugeridas.data.filter((x: any) => !x.hecha).length, 0)
+  })
+
+  it('posible cliente → cliente y pasar una idea a Contenido ejecutan la conversión real del feed', async () => {
+    const posible = await api('/clientes', { body: { nombre: 'Posible Promover', estado: 'posible', origen: 'otro' } })
+    const t = 'Posible Promover: ya quiere empezar'
+    guion(t, { reply: { acciones: [{ tipo: 'promover_cliente', parametros: {} }, { tipo: 'crear_posible_cliente', parametros: {} }] } })
+    const r = await pub({ titulo: t, tipo: 'oportunidad', fuente: 'growi', datos: { cliente_id: posible.body.id } })
+    const f = await esperar(r.body.id)
+    assert.deepEqual(tipos(f), ['promover_cliente'], 'el ítem ya está vinculado: no se le agrega al pipeline otra vez')
+    const e = await ejecutar(r.body.id, f.acciones_sugeridas.data[0].id)
+    assert.equal(e.status, 200, JSON.stringify(e.body))
+    assert.equal((await api(`/clientes/${posible.body.id}`)).body.estado, 'activo')
+    const idea = 'Idea de contenido para Instagram'
+    guion(idea, { reply: { acciones: [{ tipo: 'mover_a_contenido', etiqueta: 'Pasar a Contenido', parametros: {} }] } })
+    const ri = await pub({ titulo: idea, tipo: 'idea', fuente: 'manual' })
+    const fi = await esperar(ri.body.id)
+    const ei = await ejecutar(ri.body.id, fi.acciones_sugeridas.data[0].id)
+    assert.equal(ei.status, 200, JSON.stringify(ei.body))
+    assert.equal(ei.body.creado.tipo, 'contenido')
+  })
+
+  it('un ítem privado: solo su dueño lo ve, lo regenera y ejecuta; otro socio recibe 404', async () => {
+    const t = 'Idea privada con acciones'
+    guion(t, { reply: { acciones: [{ tipo: 'crear_tarea', parametros: { titulo: 'Privada' } }] } })
+    const r = await pub({ titulo: t, tipo: 'idea', fuente: 'manual', visibilidad: 'privado' })
+    const f = await esperar(r.body.id)
+    assert.equal(f.acciones_sugeridas.data.length, 1)
+    assert.equal((await sugerir(r.body.id, KEY_J)).status, 404)
+    assert.equal((await ejecutar(r.body.id, f.acciones_sugeridas.data[0].id, { confirmar: true }, KEY_J)).status, 404)
+    assert.equal((await ejecutar(r.body.id, f.acciones_sugeridas.data[0].id)).status, 200)
+  })
+
+  it('web (sesión): POST /api/feed/:id/sugerir-acciones y /acciones/:accion/ejecutar; sin sesión 401', async () => {
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    const cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    const t = 'Idea desde la web con acciones'
+    guion(t, { reply: { acciones: [{ tipo: 'crear_tarea', parametros: { titulo: 'Desde la web' } }] } })
+    const r = await pub({ titulo: t, tipo: 'idea', fuente: 'manual' })
+    await esperar(r.body.id)
+    const h = { 'content-type': 'application/json', cookie, 'x-csrf-token': 'x' }
+    const s = await fetch(`${ROOT}/api/feed/${r.body.id}/sugerir-acciones`, { method: 'POST', headers: h, body: '{}' })
+    assert.equal(s.status, 200)
+    assert.equal(((await s.json()) as any).acciones_sugeridas.estado, 'pendiente')
+    const f = await esperar(r.body.id)
+    const sin = await fetch(`${ROOT}/api/feed/${r.body.id}/acciones/${f.acciones_sugeridas.data[0].id}/ejecutar`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirmar: true }) })
+    assert.equal(sin.status, 401)
+    const sinConfirmar = await fetch(`${ROOT}/api/feed/${r.body.id}/acciones/${f.acciones_sugeridas.data[0].id}/ejecutar`, { method: 'POST', headers: h, body: '{}' })
+    assert.equal(sinConfirmar.status, 400)
+    const ok = await fetch(`${ROOT}/api/feed/${r.body.id}/acciones/${f.acciones_sugeridas.data[0].id}/ejecutar`, { method: 'POST', headers: h, body: JSON.stringify({ confirmar: true }) })
+    assert.equal(ok.status, 200)
+    assert.equal(((await ok.json()) as any).creado.tipo, 'tarea')
+  })
+
+  it('MCP: hayai_feed_sugerir_acciones y hayai_feed_ejecutar_accion (sin confirmar es un error)', async () => {
+    const t = 'Idea por MCP con acciones'
+    guion(t, { reply: { acciones: [{ tipo: 'crear_tarea', parametros: { titulo: 'Desde MCP con acciones' } }] } })
+    const p = dato(await mcp('hayai_feed_publicar', { titulo: t, tipo: 'idea', fuente: 'muse-leandro', clave_externa: 'acc-mcp-1' }))
+    assert.equal(p.acciones_sugeridas.estado, 'pendiente', 'publicar por MCP también la genera')
+    const f = await esperar(p.id)
+    assert.equal(f.acciones_sugeridas.data.length, 1)
+    const sin = await mcp('hayai_feed_ejecutar_accion', { id: p.id, accion: f.acciones_sugeridas.data[0].id })
+    assert.ok(sin.result.isError)
+    const otra = dato(await mcp('hayai_feed_sugerir_acciones', { id: p.id }))
+    assert.equal(otra.acciones_sugeridas.estado, 'pendiente')
+    const f2 = await esperar(p.id)
+    const ok = dato(await mcp('hayai_feed_ejecutar_accion', { id: p.id, accion: f2.acciones_sugeridas.data[0].id, confirmar: true }))
+    assert.deepEqual([ok.ejecutada.tipo, ok.creado.tipo], ['crear_tarea', 'tarea'])
+    const ro = await rpc('tools/call', { name: 'hayai_feed_ejecutar_accion', arguments: { id: p.id, accion: 'x', confirmar: true } }, KEY_R_ACC)
+    assert.ok(ro.body.error || ro.body.result?.isError, 'la llave de solo lectura no ve ni usa la herramienta')
+  })
+
+  it('permisos de la API: ejecutar y sugerir exigen escritura; la base impide estados inválidos', async () => {
+    const t = 'Idea para permisos de acciones'
+    const r = await pub({ titulo: t, tipo: 'idea', fuente: 'manual' })
+    await esperar(r.body.id)
+    assert.equal((await sugerir(r.body.id, KEY_R_ACC)).status, 403)
+    await assert.rejects(admin.query(`UPDATE feed_items SET actions_status = 'raro' WHERE id = $1`, [r.body.id]))
+    await assert.rejects(admin.query(`UPDATE feed_items SET actions = '{}'::jsonb WHERE id = $1`, [r.body.id]))
+  })
+
+  it('sin proveedor de IA (sin DEEPSEEK_API_KEY): nada se genera, «Sugerir» responde 503 y el feed dice ia_configurada:false', async () => {
+    const port = 3103
+    const { DEEPSEEK_API_KEY: _quitada, ...sinLlave } = env
+    const srv = spawn(process.execPath, ['--import', 'tsx', 'server/src/index.ts'], { cwd: root, env: { ...sinLlave, PORT: String(port), META_LEADS_ENABLED: 'false', SYSTEMS_CHECK_MS: '0' }, stdio: 'ignore' })
+    try {
+      const base = `http://localhost:${port}/api/v1`
+      for (let i = 0; i < 100; i++) {
+        try {
+          if ((await fetch(`http://localhost:${port}/api/auth/me`)).status === 401) break
+        } catch {
+          /* arrancando */
+        }
+        await dormir(200)
+      }
+      const antes = llmCalls.length
+      const p = await http(`${base}/feed`, { key: KEY, body: { titulo: 'Oportunidad sin proveedor de IA', tipo: 'oportunidad', fuente: 'manual' } })
+      assert.equal(p.status, 201, JSON.stringify(p.body))
+      assert.equal(p.body.acciones_sugeridas.estado, 'sin_generar')
+      const s = await http(`${base}/feed/${p.body.id}/sugerir-acciones`, { key: KEY, body: {} })
+      assert.equal(s.status, 503)
+      assert.match(s.body.error.message, /proveedor de IA/)
+      assert.equal((await http(`${base}/feed`, { key: KEY })).body.meta.ia_configurada, false)
+      await dormir(200)
+      assert.equal(llmCalls.length, antes)
+    } finally {
+      srv.kill()
+    }
   })
 })
 

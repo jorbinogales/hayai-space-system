@@ -19,12 +19,15 @@ import {
   mensajeVentas,
   conceptoDe,
   contactoDe,
+  CONVERSION_DE_ACCION,
   convertFeed,
   conversionDe,
   cortar,
   destinoCobro,
   esClaveMaps,
   esUrlMaps,
+  ejecutarAccion,
+  esAccionable,
   fmtN,
   fuenteLabel,
   guionSinMaps,
@@ -42,6 +45,7 @@ import {
   safeUrl,
   saveFeed,
   setFeedInstagram,
+  sugerirAcciones,
   takeFeedFocus,
   undoFeed,
   urlLabel,
@@ -51,6 +55,7 @@ import {
   yaCreada,
   notifyFeed,
   type AccionId,
+  type AccionSugerida,
   type ConvertBody,
   type CreadoKind,
   type EnlaceContacto,
@@ -183,6 +188,7 @@ const PATH = {
   instagram: 'M7.5 3h9A4.5 4.5 0 0 1 21 7.5v9a4.5 4.5 0 0 1-4.5 4.5h-9A4.5 4.5 0 0 1 3 16.5v-9A4.5 4.5 0 0 1 7.5 3ZM12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6ZM17.2 6.8h.01',
   facebook: 'M14.5 21v-7.5H17l.5-3h-3V8.8c0-.9.3-1.5 1.6-1.5H17.6V4.6c-.3 0-1.2-.1-2.3-.1-2.3 0-3.8 1.4-3.8 3.9v2.1H9v3h2.5V21',
   link: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1-1',
+  spark: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3ZM18.5 15l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z',
   eye: 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12ZM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z',
 } as const
 function Svg({ d, size = 14, fill = false }: { d: string; size?: number; fill?: boolean }) {
@@ -844,7 +850,7 @@ function DescartarForm({ busy, onClose, onSubmit, id }: PanelProps & { id: strin
 
 // ---------- tarjeta ----------
 type Panel = 'ajustar' | 'descartar' | null
-type Busy = 'convertir' | 'revisado' | 'descartar' | 'nuevo' | 'guardar' | null
+type Busy = 'convertir' | 'revisado' | 'descartar' | 'nuevo' | 'guardar' | 'accion' | 'sugerir' | null
 interface Done {
   a: FeedConversion
   nombre?: string
@@ -857,11 +863,16 @@ interface CardProps {
   hit: boolean
   owners: string[]
   me: string
+  /** el servidor tiene un proveedor de IA (habilita «Sugerir acciones») */
+  ia: boolean
   onItem: (it: FeedItem) => void
   onGone: (id: string) => void
 }
 
-const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }: CardProps) {
+/** Lo que sigue siendo útil aunque haya acciones sugeridas: escribirle al contacto, ver el origen o registrar el cobro. Las conversiones fijas las reemplaza la IA. */
+const SIGUEN: AccionId[] = ['contacto', 'origen', 'cobro']
+
+const FeedCard = memo(function FeedCard({ it, hit, owners, me, ia, onItem, onGone }: CardProps) {
   const [panel, setPanel] = useState<Panel>(null)
   const acciones = useMemo(() => accionesDe(it), [it])
   const contacto = useMemo(() => accionPrincipal(contactoDe(it.datos)), [it.datos])
@@ -873,7 +884,9 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
   const [done, setDone] = useState<Done | null>(null)
   const [open, setOpen] = useState(false)
   const [said, setSaid] = useState('')
+  const [confirm, setConfirm] = useState<string | null>(null)
   const lock = useRef(false)
+  const confirmRef = useRef<HTMLDivElement>(null)
   const triggers = useRef<Partial<Record<Exclude<Panel, null>, HTMLButtonElement | null>>>({})
   const doneRef = useRef<HTMLDivElement>(null)
   const noteRef = useRef<HTMLParagraphElement>(null)
@@ -888,6 +901,25 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
   useEffect(() => {
     if (note?.tone === 'ok') noteRef.current?.focus()
   }, [note])
+  useEffect(() => {
+    if (confirm) confirmRef.current?.focus()
+  }, [confirm])
+
+  // acciones sugeridas por la IA: mientras la IA piensa se vuelve a leer el ítem cada 2 s (el servidor da por colgada una petición de más de 3 min)
+  const sug = it.acciones_sugeridas
+  const accionable = esAccionable(it.tipo)
+  const pensando = accionable && sug.estado === 'pendiente'
+  const refetchRef = useRef<() => Promise<void>>(async () => {})
+  useEffect(() => {
+    if (!pensando) return
+    let n = 0
+    const t = window.setInterval(() => {
+      if (document.hidden) return
+      if (++n > 100) return window.clearInterval(t)
+      void refetchRef.current()
+    }, 2000)
+    return () => window.clearInterval(t)
+  }, [pensando, it.id])
 
   const closePanel = (back = true) => {
     const was = panel
@@ -906,6 +938,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
       if (e instanceof ApiError && e.status === 404) onGone(it.id)
     }
   }
+  refetchRef.current = refetch
   /** Una sola petición a la vez por tarjeta (el candado evita el doble toque aunque React aún no haya repintado). */
   const act = async (kind: Exclude<Busy, null>, fn: () => Promise<void>) => {
     if (lock.current) return
@@ -920,6 +953,7 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
       if (e instanceof ApiError && e.status === 409) {
         setNote({ tone: 'warn', text: `${e.message}. Te muestro cómo quedó.` })
         setPanel(null)
+        setConfirm(null)
         await refetch()
       } else if (e instanceof ApiError && e.status === 400 && /esquema_cobro/i.test(e.message)) {
         // promover un cliente potencial con propuesta vigente pide el esquema de cobro: se abre el formulario
@@ -1007,6 +1041,74 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
     })
 
   const isBusy = busy !== null
+
+  // ---- acciones sugeridas ----
+  const pedirAcciones = () =>
+    act('sugerir', async () => {
+      onItem(await sugerirAcciones(it.id))
+      setSaid('Pidiendo acciones a la IA')
+    })
+  const cerrarConfirmacion = (id: string) => {
+    setConfirm(null)
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`#fd-item-${CSS.escape(it.id)} [data-acc="${CSS.escape(id)}"]`)?.focus())
+  }
+  const ejecutarSug = (a: AccionSugerida) =>
+    act('accion', async () => {
+      const r = await ejecutarAccion(it.id, a.id)
+      const det = r.creado?.detalle ?? {}
+      const conv = CONVERSION_DE_ACCION[a.tipo]
+      const nombre = typeof det.nombre === 'string' ? det.nombre : typeof det.titulo === 'string' ? det.titulo : undefined
+      const vence = typeof det.vence === 'string' ? det.vence : undefined
+      setConfirm(null)
+      onItem(r.item)
+      if (conv) {
+        const etapa = typeof det.etapa === 'string' ? (STAGE_LABEL[det.etapa] ?? 'Prospecto captado') : 'Prospecto captado'
+        setDone({ a: conv, nombre, etapa, proyecto: typeof det.proyecto === 'string' ? det.proyecto : undefined, vence })
+        setFlash(conv)
+        window.setTimeout(() => setFlash(null), 1400)
+      }
+      const refresh = () => Promise.allSettled(conv === 'contenido' ? [] : [loadClients(), loadProjects(), loadTasks(), ...(a.tipo === 'crear_propuesta' && it.vinculo.cliente_id ? [loadProposals(it.vinculo.cliente_id)] : [])])
+      void refresh()
+      pushToast({
+        text: `Listo ✓ ${conv ? LISTO[conv] : a.tipo === 'crear_propuesta' ? 'Propuesta creada' : 'Cobro agendado'}`,
+        detail: [nombre ? `«${nombre}»` : null, a.tipo === 'crear_seguimiento' && vence ? `vence el ${fmtDate(vence, true)}` : null].filter(Boolean).join(' · ') || a.etiqueta,
+        // las conversiones del feed se pueden deshacer desde el aviso; la propuesta y el cobro se corrigen desde la ficha del cliente
+        ...(conv
+          ? {
+              undo: async () => {
+                const u = await undoFeed(it, conv)
+                onItem(u.item)
+                await refresh()
+                notifyFeed()
+                void refreshAlerts().catch(() => {})
+                pushToast({ text: 'Deshecho', detail: 'El hallazgo volvió a como estaba.', tone: 'info', ms: 3500 })
+              },
+            }
+          : {}),
+      })
+    })
+  /** Abre lo que creó una acción ya ejecutada. */
+  const abrirHecha = (a: AccionSugerida) => {
+    const kind: CreadoKind | undefined = CONVERSION_DE_ACCION[a.tipo] ?? (a.tipo === 'crear_propuesta' ? 'propuesta' : undefined)
+    if (kind) return openCreated(kind, a.hecha?.ref_id ?? null, it)
+    const cid = it.vinculo.cliente_id
+    if (cid) {
+      requestFicha({ clientId: cid, tab: 'cobros', cobroId: a.hecha?.ref_id ?? null })
+      go({ screen: 'clientes', clientId: cid })
+    }
+  }
+  // con acciones sugeridas (o la IA pensando) los botones fijos de convertir/crear se reemplazan por ellas: la IA ve el estado real del cliente y los fijos no
+  const reemplaza = accionable && (sug.estado === 'listo' || sug.estado === 'pendiente')
+  const fijas = reemplaza
+    ? {
+        principal: acciones.principal && (SIGUEN.includes(acciones.principal) || yaCreada(it, acciones.principal)) ? acciones.principal : null,
+        secundarias: acciones.secundarias.filter((a) => SIGUEN.includes(a) || yaCreada(it, a)),
+      }
+    : acciones
+  // mientras la IA piensa, las sugerencias anteriores no se muestran (se van a reemplazar)
+  const abiertas = pensando ? [] : sug.data.filter((a) => !a.hecha)
+  const hechas = sug.data.filter((a) => a.hecha)
+  const enConfirmacion = abiertas.find((a) => a.id === confirm) ?? null
 
   /** Un botón de la barra. El principal va lleno (una sola por tarjeta); lo que ya se creó dice «✓ Creada» y abre su detalle. */
   const renderAccion = (a: AccionId, primary: boolean): ReactNode => {
@@ -1178,10 +1280,104 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, onItem, onGone }:
           </div>
         )}
 
+        {accionable && (sug.estado !== 'sin_generar' || ia) && (
+          <section className="fd-sug" aria-labelledby={`${pid}-sug-l`} aria-busy={pensando}>
+            <div className="fd-sug-h">
+              <h4 className="fd-lbl" id={`${pid}-sug-l`}>
+                Acciones sugeridas <span className="fd-ia" title="Las propone la IA mirando el estado real del cliente">IA</span>
+              </h4>
+              {ia && (sug.estado === 'listo' || sug.estado === 'error') && (
+                <button type="button" className="fd-link" disabled={isBusy} onClick={() => void pedirAcciones()}>
+                  {busy === 'sugerir' ? 'Pidiendo…' : 'Volver a sugerir'}
+                </button>
+              )}
+            </div>
+            {sug.estado === 'sin_generar' && (
+              <div className="fd-sug-ask">
+                <p className="fd-hint">La IA revisa lo que el cliente ya tiene y propone solo lo que falta.</p>
+                <button type="button" className="fd-btn fd-sm" disabled={isBusy} onClick={() => void pedirAcciones()}>
+                  <Svg d={PATH.spark} size={14} />
+                  {busy === 'sugerir' ? 'Pidiendo…' : 'Sugerir acciones'}
+                </button>
+              </div>
+            )}
+            {sug.estado === 'pendiente' && (
+              <p className="fd-think" role="status">
+                <span className="fd-dots" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                Revisando el estado del cliente y pensando qué sigue…
+              </p>
+            )}
+            {sug.estado === 'error' && (
+              <p className="fd-sug-err" role="status">
+                No se pudieron sugerir acciones.{sug.error ? ` ${sug.error.replace(/\.$/, '')}.` : ''} Usa los botones de abajo
+                {ia ? ' o vuelve a intentarlo.' : '.'}
+              </p>
+            )}
+            {sug.estado === 'listo' && abiertas.length === 0 && hechas.length === 0 && <p className="fd-hint">Nada que sugerir: lo que cabría hacer ya está hecho o contratado.</p>}
+            {(abiertas.length > 0 || hechas.length > 0) && (
+              <ul className="fd-sug-list">
+                {abiertas.map((a, i) => (
+                  <li key={a.id} className="fd-sug-row">
+                    <button
+                      type="button"
+                      data-acc={a.id}
+                      className={`fd-btn ${i === 0 ? 'is-primary' : 'fd-sm'}`}
+                      disabled={isBusy}
+                      aria-expanded={confirm === a.id}
+                      aria-controls={`${pid}-sug-c`}
+                      onClick={() => {
+                        setErr('')
+                        setConfirm((c) => (c === a.id ? null : a.id))
+                      }}
+                    >
+                      {a.etiqueta}
+                    </button>
+                    {a.motivo && <span className="fd-sug-why">{a.motivo}</span>}
+                  </li>
+                ))}
+                {hechas.map((a) => (
+                  <li key={a.id} className="fd-sug-row is-done">
+                    <span className="fd-sug-ok">
+                      <Icon name="check" size={13} />
+                      {a.etiqueta}
+                    </span>
+                    <span className="fd-sug-why">
+                      Hecho por {a.hecha!.por} <time dateTime={a.hecha!.el}>{ago(a.hecha!.el)}</time>
+                    </span>
+                    <button type="button" className="fd-link" onClick={() => abrirHecha(a)}>
+                      Abrir
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {enConfirmacion && (
+              <div ref={confirmRef} id={`${pid}-sug-c`} tabIndex={-1} className="fd-confirm" role="group" aria-labelledby={`${pid}-sug-ct`} onKeyDown={escape(() => cerrarConfirmacion(enConfirmacion.id))}>
+                <p className="fd-confirm-t" id={`${pid}-sug-ct`}>
+                  Confirmar · {enConfirmacion.etiqueta}
+                </p>
+                <p className="fd-confirm-d">{enConfirmacion.detalle}</p>
+                <div className="fd-actions">
+                  <button type="button" className="fd-btn is-dark" disabled={isBusy} onClick={() => void ejecutarSug(enConfirmacion)}>
+                    {busy === 'accion' ? 'Haciéndolo…' : 'Sí, hacerlo'}
+                  </button>
+                  <button type="button" className="fd-btn fd-sm" disabled={isBusy} onClick={() => cerrarConfirmacion(enConfirmacion.id)}>
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
         <div className="fd-bar2" role="group" aria-label={`Acciones: ${it.titulo}`}>
-          {acciones.principal && <div className="fd-main">{renderAccion(acciones.principal, true)}</div>}
+          {fijas.principal && <div className="fd-main">{renderAccion(fijas.principal, true)}</div>}
           <div className="fd-sec">
-            {acciones.secundarias.map((a) => (
+            {fijas.secundarias.map((a) => (
               <span key={a} className="fd-sec-i">
                 {renderAccion(a, false)}
               </span>
@@ -1841,7 +2037,7 @@ export function FeedScreen({ owners }: { owners: string[] }) {
             {shown.length > 0 && (
               <ul className="fd-list">
                 {shown.map((it) => (
-                  <FeedCard key={it.id} it={it} hit={hit === it.id} owners={owners} me={me} onItem={replaceItem} onGone={gone} />
+                  <FeedCard key={it.id} it={it} hit={hit === it.id} owners={owners} me={me} ia={!!meta?.ia_configurada} onItem={replaceItem} onGone={gone} />
                 ))}
               </ul>
             )}

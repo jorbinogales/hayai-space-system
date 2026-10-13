@@ -3,10 +3,10 @@
 //
 //   npm run feed:geocodificar                    -> busca todos los pendientes (1 consulta por segundo: ~1 min por cada 50)
 //   npm run feed:geocodificar -- --ensayo        -> no consulta nada: cuenta lo que haría
-//   npm run feed:geocodificar -- --tipo prospecto --limite 100
+//   npm run feed:geocodificar -- --tipo potencial --limite 100
 //   npm run feed:geocodificar -- --reintentar    -> repite también los que ya dieron «sin resultado» (p. ej. tras corregir direcciones)
 //
-//   npm run feed:geocodificar -- --medir [--proveedor nominatim|mapbox|ambos] [--tipo prospecto] [--limite N] [--json]
+//   npm run feed:geocodificar -- --medir [--proveedor nominatim|mapbox|ambos] [--tipo potencial] [--limite N] [--json]
 //        -> MIDE la cobertura de cada proveedor con las direcciones reales del feed y NO guarda nada (para decidir cuál usar)
 //
 // Usa la misma base de datos y el mismo proveedor que el servidor: DATABASE_URL y GEOCODER = nominatim (por defecto) | mapbox | off

@@ -333,7 +333,7 @@ export default function FeedMap({ query, rev, card, onItem, onGone }: Props) {
 
   // ---- derivados ----
   const pines = data?.pines ?? []
-  // Una idea o una noticia sin dirección no es un pendiente: «Sin ubicación» es para prospectos y oportunidades, o para lo que trae una dirección que no se resolvió.
+  // Una idea o una noticia sin dirección no es un pendiente: «Sin ubicación» es para potenciales y oportunidades, o para lo que trae una dirección que no se resolvió.
   const sin = (data?.sin_ubicacion ?? []).filter((x) => !!x.ubicacion.direccion || ES_LEAD.includes(x.tipo))
   const conDireccion = sin.filter((x) => x.ubicacion.estado !== 'sin_direccion')
   const sinDireccion = sin.filter((x) => x.ubicacion.estado === 'sin_direccion')

@@ -5348,6 +5348,9 @@ describe('Acciones sugeridas por IA (feed)', () => {
     } finally {
       srv.kill()
     }
+  })
+})
+
 describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
   let n = 0
   const rpc = (method: string, params: unknown = {}, key: string | null = KEY) =>
@@ -5376,8 +5379,8 @@ describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
     cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
   })
 
-  it('al publicar un prospecto con "donde" nace pendiente y el servidor lo ubica solo, con User-Agent propio y sin inventar', async () => {
-    const r = await pub({ titulo: 'Charcutería El Mesón', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-a', categoria: 'charcutería', resumen: 'Atienden por WhatsApp pero sin catálogo.', datos: { donde: 'Av. Los Leones, Calle 30 con Carrera 19, Local 4', contacto: { telefono: '0414-1234567' } } })
+  it('al publicar un potencial con "donde" nace pendiente y el servidor lo ubica solo, con User-Agent propio y sin inventar', async () => {
+    const r = await pub({ titulo: 'Charcutería El Mesón', tipo: 'potencial', fuente: 'growi', clave_externa: 'mapa-a', categoria: 'charcutería', resumen: 'Atienden por WhatsApp pero sin catálogo.', datos: { donde: 'Av. Los Leones, Calle 30 con Carrera 19, Local 4', contacto: { telefono: '0414-1234567' } } })
     assert.equal(r.status, 201, JSON.stringify(r.body))
     assert.equal(r.body.ubicacion.estado, 'pendiente', 'la respuesta no espera al proveedor')
     assert.equal(r.body.ubicacion.direccion, 'Av. Los Leones, Calle 30 con Carrera 19, Local 4')
@@ -5393,7 +5396,7 @@ describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
 
   it('volver a publicar lo mismo no repite la consulta (idempotente)', async () => {
     const antes = geoHits.length
-    const r = await pub({ titulo: 'Charcutería El Mesón', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-a', datos: { donde: 'Av. Los Leones, Calle 30 con Carrera 19, Local 4' } })
+    const r = await pub({ titulo: 'Charcutería El Mesón', tipo: 'potencial', fuente: 'growi', clave_externa: 'mapa-a', datos: { donde: 'Av. Los Leones, Calle 30 con Carrera 19, Local 4' } })
     assert.equal(r.status, 200)
     assert.equal(r.body.ubicacion.estado, 'ok')
     await new Promise((r) => setTimeout(r, 400))
@@ -5403,10 +5406,10 @@ describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
   it('una zona (urbanización) queda como aproximada; solo "Barquisimeto" o un resultado fuera de Venezuela NO dan pin', async () => {
     const lote = await pub({
       items: [
-        { titulo: 'Repostería Dulce Luna', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-z', categoria: 'repostería', datos: { donde: 'Urbanización Nueva Segovia, Barquisimeto' } },
-        { titulo: 'Negocio sin calle', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-g', categoria: 'servicios', datos: { donde: 'Barquisimeto' } },
-        { titulo: 'Negocio sin dirección', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-s', categoria: 'servicios', datos: { contacto: { telefono: '0412-0000000' } } },
-        { titulo: 'Resultado en París', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-p', datos: { donde: 'Av. Ciudadmundo 1' } },
+        { titulo: 'Repostería Dulce Luna', tipo: 'potencial', fuente: 'growi', clave_externa: 'mapa-z', categoria: 'repostería', datos: { donde: 'Urbanización Nueva Segovia, Barquisimeto' } },
+        { titulo: 'Negocio sin calle', tipo: 'potencial', fuente: 'growi', clave_externa: 'mapa-g', categoria: 'servicios', datos: { donde: 'Barquisimeto' } },
+        { titulo: 'Negocio sin dirección', tipo: 'potencial', fuente: 'growi', clave_externa: 'mapa-s', categoria: 'servicios', datos: { contacto: { telefono: '0412-0000000' } } },
+        { titulo: 'Resultado en París', tipo: 'potencial', fuente: 'growi', clave_externa: 'mapa-p', datos: { donde: 'Av. Ciudadmundo 1' } },
       ],
     })
     assert.equal(lote.status, 201, JSON.stringify(lote.body))
@@ -5427,7 +5430,7 @@ describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
   })
 
   it('GET /feed/mapa: pines con coordenadas y bandeja «sin ubicación» con el motivo, mismos filtros que la lista', async () => {
-    const m = await api('/feed/mapa?tipo=prospecto&fuente=growi')
+    const m = await api('/feed/mapa?tipo=potencial&fuente=growi')
     assert.equal(m.status, 200, JSON.stringify(m.body))
     const pin = (id: string) => m.body.pines.find((x: any) => x.id === id)
     assert.deepEqual([pin(A).titulo, pin(A).estado, pin(A).telefono, pin(A).categoria, pin(A).ubicacion.lat], ['Charcutería El Mesón', 'nuevo', '0414-1234567', 'charcutería', 10.0701])
@@ -5441,7 +5444,7 @@ describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
     assert.deepEqual(cat.body.pines.map((x: any) => x.id), [Z])
     const q = await api('/feed/mapa?q=meson')
     assert.deepEqual([q.body.pines.map((x: any) => x.id), q.body.sin_ubicacion.length], [[A], 0], 'el buscador ignora acentos y mayúsculas')
-    const sinCat = await api('/feed/mapa?categoria=sin_categoria&tipo=prospecto')
+    const sinCat = await api('/feed/mapa?categoria=sin_categoria&tipo=potencial')
     assert.ok(sinCat.body.sin_ubicacion.every((x: any) => x.categoria === null))
     // lo mismo que la lista: el mapa y GET /feed filtran igual
     const lista = await api('/feed?categoria=repostería&per_page=50')
@@ -5449,20 +5452,20 @@ describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
     assert.deepEqual([lista.body.data[0].ubicacion.estado], ['ok'], 'la lista también trae la ubicación')
     // el estado del pin es el del socio que mira
     await api(`/feed/${A}/estado`, { method: 'PATCH', body: { estado: 'revisado' } })
-    assert.equal((await api('/feed/mapa?tipo=prospecto')).body.pines.find((x: any) => x.id === A).estado, 'revisado')
-    assert.equal((await api('/feed/mapa?tipo=prospecto', { key: KEY_J })).body.pines.find((x: any) => x.id === A).estado, 'nuevo', 'revisar es personal')
+    assert.equal((await api('/feed/mapa?tipo=potencial')).body.pines.find((x: any) => x.id === A).estado, 'revisado')
+    assert.equal((await api('/feed/mapa?tipo=potencial', { key: KEY_J })).body.pines.find((x: any) => x.id === A).estado, 'nuevo', 'revisar es personal')
     assert.deepEqual((await api('/feed/mapa?estado=revisado')).body.pines.map((x: any) => x.id), [A])
     assert.equal((await api('/feed/mapa?estado=raro')).status, 400)
   })
 
   it('la web (sesión) usa el mismo servicio: /api/feed/mapa va antes que /api/feed/:id', async () => {
-    const r = await http(`${ROOT}/api/feed/mapa?tipo=prospecto`, { headers: { cookie } })
+    const r = await http(`${ROOT}/api/feed/mapa?tipo=potencial`, { headers: { cookie } })
     assert.equal(r.status, 200, JSON.stringify(r.body))
     assert.ok(r.body.pines.some((x: any) => x.id === A))
   })
 
   it('un ítem privado no sale en el mapa de otro socio ni se puede mover', async () => {
-    const r = await pub({ titulo: 'Privado en Cabudare', tipo: 'prospecto', fuente: 'manual', visibilidad: 'privado', datos: { donde: 'Av. Intercomunal, Cabudare' } })
+    const r = await pub({ titulo: 'Privado en Cabudare', tipo: 'potencial', fuente: 'manual', visibilidad: 'privado', datos: { donde: 'Av. Intercomunal, Cabudare' } })
     C = r.body.id
     assert.equal((await esperar(C, 'ok')).ubicacion.precision, 'calle')
     assert.ok((await api('/feed/mapa')).body.pines.some((x: any) => x.id === C))
@@ -5482,7 +5485,7 @@ describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
     const ok = await mal({ lat: 10.0555, lng: -69.3333 })
     assert.equal(ok.status, 200, JSON.stringify(ok.body))
     assert.deepEqual([ok.body.ubicacion.estado, ok.body.ubicacion.origen, ok.body.ubicacion.lat, ok.body.ubicacion.lng, ok.body.ubicacion.precision], ['ok', 'manual', 10.0555, -69.3333, 'exacta'])
-    assert.ok((await api('/feed/mapa?tipo=prospecto')).body.pines.some((x: any) => x.id === G))
+    assert.ok((await api('/feed/mapa?tipo=potencial')).body.pines.some((x: any) => x.id === G))
     // el relleno (reintentar incluido) no toca un pin manual
     const antes = geoHits.length
     const rel = await api('/feed/geocodificar', { body: { reintentar: true } })
@@ -5507,13 +5510,13 @@ describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
 
   it('si el proveedor falla queda "error" (no "sin resultado") y el relleno lo reintenta; el relleno es idempotente', async () => {
     geoState.down = true
-    const r = await pub({ titulo: 'Casa de cambio Centro', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mapa-e', categoria: 'finanzas', datos: { donde: 'Av. 20 con calle 30, Centro' } })
+    const r = await pub({ titulo: 'Casa de cambio Centro', tipo: 'potencial', fuente: 'growi', clave_externa: 'mapa-e', categoria: 'finanzas', datos: { donde: 'Av. 20 con calle 30, Centro' } })
     const E = r.body.id
     assert.equal((await esperar(E, 'error')).ubicacion.estado, 'error')
     assert.equal((await ver(E)).datos.geo.intentos, 1)
     assert.ok((await api('/feed/mapa')).body.sin_ubicacion.some((x: any) => x.id === E && x.ubicacion.estado === 'error'))
     geoState.down = false
-    const plan = await api('/feed/geocodificar', { body: { tipo: 'prospecto' } })
+    const plan = await api('/feed/geocodificar', { body: { tipo: 'potencial' } })
     assert.equal(plan.status, 200, JSON.stringify(plan.body))
     assert.ok(plan.body.por_buscar >= 1)
     assert.equal((await esperar(E, 'ok')).ubicacion.lat, 10.0701)
@@ -5532,7 +5535,7 @@ describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
 
   it('el relleno que corre desde la línea de comandos usa la misma lógica (ensayo: cuenta sin consultar)', async () => {
     const antes = geoHits.length
-    const r = spawnSync(process.execPath, ['--import', 'tsx', 'server/src/feed-geocodificar.ts', '--ensayo', '--tipo', 'prospecto'], { cwd: root, env, encoding: 'utf8' })
+    const r = spawnSync(process.execPath, ['--import', 'tsx', 'server/src/feed-geocodificar.ts', '--ensayo', '--tipo', 'potencial'], { cwd: root, env, encoding: 'utf8' })
     assert.equal(r.status, 0, r.stdout + r.stderr)
     assert.match(r.stdout, /con dirección: \d+/)
     assert.match(r.stdout, /Cobertura: [\d.]+%/)
@@ -5544,7 +5547,7 @@ describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
     assert.ok(tools.includes('hayai_feed_mapa'))
     assert.ok(!tools.includes('hayai_feed_ubicacion') && !tools.includes('hayai_feed_geocodificar'))
     const call = async (name: string, args: unknown, key = KEY) => JSON.parse((await rpc('tools/call', { name, arguments: args }, key)).body.result.content[0].text)
-    const m = await call('hayai_feed_mapa', { tipo: 'prospecto' })
+    const m = await call('hayai_feed_mapa', { tipo: 'potencial' })
     assert.ok(m.pines.some((x: any) => x.id === A))
     const u = await call('hayai_feed_ubicacion', { id: Z, lat: 10.0611, lng: -69.3012 })
     assert.deepEqual([u.ubicacion.origen, u.ubicacion.lat], ['manual', 10.0611])
@@ -5738,7 +5741,7 @@ describe('Feed: Mapbox como segundo proveedor (geocodificación y teselas)', () 
 
     it('al publicar, el servidor ubica con Mapbox (origen mapbox), con el token en la consulta y sin que el token aparezca en el ítem', async () => {
       const antes = mbxHits.length
-      const r = await api2('/feed', { body: { titulo: 'Panadería Mapbox', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mbx-1', datos: { donde: 'Av. Rotaria, ZZMapbox 12' } } })
+      const r = await api2('/feed', { body: { titulo: 'Panadería Mapbox', tipo: 'potencial', fuente: 'growi', clave_externa: 'mbx-1', datos: { donde: 'Av. Rotaria, ZZMapbox 12' } } })
       assert.equal(r.status, 201, JSON.stringify(r.body))
       assert.equal(r.body.ubicacion.estado, 'pendiente')
       const it = await esperar2(r.body.id, 'ok')
@@ -5749,12 +5752,12 @@ describe('Feed: Mapbox como segundo proveedor (geocodificación y teselas)', () 
     })
 
     it('zona, ciudad entera (sin pin), error de red y "sin resultado" se comportan igual que con Nominatim', async () => {
-      const z = await api2('/feed', { body: { titulo: 'Zona Mapbox', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mbx-2', datos: { donde: 'Urb. Nueva Segovia, calle 5' } } })
+      const z = await api2('/feed', { body: { titulo: 'Zona Mapbox', tipo: 'potencial', fuente: 'growi', clave_externa: 'mbx-2', datos: { donde: 'Urb. Nueva Segovia, calle 5' } } })
       assert.equal((await esperar2(z.body.id, 'ok')).ubicacion.precision, 'zona')
-      const g = await api2('/feed', { body: { titulo: 'Ciudad Mapbox', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mbx-3', datos: { donde: 'Barquisimeto, solo la ciudad' } } })
+      const g = await api2('/feed', { body: { titulo: 'Ciudad Mapbox', tipo: 'potencial', fuente: 'growi', clave_externa: 'mbx-3', datos: { donde: 'Barquisimeto, solo la ciudad' } } })
       assert.equal((await esperar2(g.body.id, 'sin_resultado')).ubicacion.estado, 'sin_resultado')
       mbxState.status = 503
-      const e = await api2('/feed', { body: { titulo: 'Caído Mapbox', tipo: 'prospecto', fuente: 'growi', clave_externa: 'mbx-4', datos: { donde: 'Av. Rotaria, ZZMapbox 99' } } })
+      const e = await api2('/feed', { body: { titulo: 'Caído Mapbox', tipo: 'potencial', fuente: 'growi', clave_externa: 'mbx-4', datos: { donde: 'Av. Rotaria, ZZMapbox 99' } } })
       assert.equal((await esperar2(e.body.id, 'error')).ubicacion.estado, 'error')
       mbxState.status = 0
       // el relleno reintenta los que fallaron por red (no los "sin resultado"), con el proveedor del servidor
@@ -5779,8 +5782,8 @@ describe('Feed: Mapbox como segundo proveedor (geocodificación y teselas)', () 
     })
 
     it('--medir compara la cobertura de Nominatim y Mapbox con las direcciones reales y no guarda NADA', async () => {
-      const antes = JSON.stringify((await api('/feed?per_page=100&tipo=prospecto')).body.data.map((i: any) => [i.id, i.datos.geo ?? null]))
-      const r = await cli2(['--medir', '--proveedor', 'ambos', '--tipo', 'prospecto'], { ...env2(), NOMINATIM_URL: `http://localhost:${GEO_PORT}`, MAPBOX_URL: `http://localhost:${MBX_PORT}` })
+      const antes = JSON.stringify((await api('/feed?per_page=100&tipo=potencial')).body.data.map((i: any) => [i.id, i.datos.geo ?? null]))
+      const r = await cli2(['--medir', '--proveedor', 'ambos', '--tipo', 'potencial'], { ...env2(), NOMINATIM_URL: `http://localhost:${GEO_PORT}`, MAPBOX_URL: `http://localhost:${MBX_PORT}` })
       assert.equal(r.status, 0, r.stdout + r.stderr)
       assert.match(r.stdout, /Midiendo con nominatim/)
       assert.match(r.stdout, /Midiendo con mapbox/)
@@ -5790,7 +5793,7 @@ describe('Feed: Mapbox como segundo proveedor (geocodificación y teselas)', () 
       assert.match(r.stdout, /Solo nominatim encontró: \d+ · solo mapbox encontró: \d+/)
       assert.match(r.stdout, /no se guardó nada/)
       assert.ok(!(r.stdout + r.stderr).includes(MBX_TOKEN))
-      assert.equal(JSON.stringify((await api('/feed?per_page=100&tipo=prospecto')).body.data.map((i: any) => [i.id, i.datos.geo ?? null])), antes, 'medir no escribe en el feed')
+      assert.equal(JSON.stringify((await api('/feed?per_page=100&tipo=potencial')).body.data.map((i: any) => [i.id, i.datos.geo ?? null])), antes, 'medir no escribe en el feed')
       const sin = await cli2(['--medir', '--proveedor', 'mapbox'], { ...env2(), MAPBOX_PUBLIC_TOKEN: '' })
       assert.equal(sin.status, 2)
       assert.match(sin.stderr, /MAPBOX_PUBLIC_TOKEN/)

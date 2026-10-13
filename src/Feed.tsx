@@ -2074,7 +2074,7 @@ export function FeedScreen({ owners }: { owners: string[] }) {
                   rev={rev}
                   onItem={replaceItem}
                   onGone={gone}
-                  card={(it, h) => <FeedCard key={it.id} it={it} hit={false} owners={owners} me={me} onItem={h.onItem} onGone={h.onGone} />}
+                  card={(it, h) => <FeedCard key={it.id} it={it} hit={false} owners={owners} me={me} ia={!!meta?.ia_configurada} onItem={h.onItem} onGone={h.onGone} />}
                 />
               </Suspense>
             )}

@@ -1,10 +1,10 @@
 // Ubicación de los ítems del feed (para la vista de mapa). La dirección en texto llega en `datos` (`donde`, que es lo que trae Growi, u otras
 // llaves parecidas); las coordenadas se calculan UNA vez y se guardan en `datos.geo`, con su estado, para que nada se repita ni se invente:
-//   { estado: 'ok', lat, lng, precision, origen: 'nominatim' | 'mapbox' | 'manual', consulta, encontrado_como, el }
+//   { estado: 'ok', lat, lng, precision, origen: 'nominatim' | 'mapbox' | 'manual', consulta, encontrado_como, el, respaldo?: { proveedor: 'nominatim', resultado, el } }
 //   { estado: 'sin_resultado' | 'error', consulta, intentos, el, error? }
 // Un ítem con dirección y sin `geo` (o con un `geo` de otra dirección) está «pendiente». Un pin puesto a mano nunca se pisa.
 import { pool, type Db } from './db.ts'
-import { consultasDe, enVenezuela, geocoderOSinConfigurar, GeocoderError, type Precision } from './geocode.ts'
+import { consultasDe, enVenezuela, geocoderOSinConfigurar, geocoderRespaldo, GeocoderError, respaldoNominatim, type GeoResultado, type Geocoder, type Precision } from './geocode.ts'
 
 export type EstadoUbicacion = 'ok' | 'pendiente' | 'sin_resultado' | 'error' | 'sin_direccion'
 export type Ubicacion = {
@@ -139,18 +139,100 @@ export async function geocodificarItem(db: Db, id: string, o: { forzar?: boolean
   const el = new Date().toISOString()
   const negocio = typeof r.title === 'string' ? r.title : null
   try {
-    for (const q of consultasDe(direccion, negocio)) {
-      const hit = await prov.buscar(q)
-      if (hit) {
-        await escribir(db, id, { estado: 'ok', lat: hit.lat, lng: hit.lng, precision: hit.precision, origen: prov.nombre, consulta: direccion, encontrado_como: hit.nombre, busqueda: q, el }, direccion)
+    const consultas = consultasDe(direccion, negocio)
+    const base = { consulta: direccion, el }
+    // 1) El proveedor activo: el primer resultado que da.
+    const primero = await buscarEn(prov, consultas)
+    if (primero && primero.hit.precision !== 'zona') {
+      await escribir(db, id, { estado: 'ok', ...pin(primero, prov.nombre), ...base }, direccion)
+      return 'ok'
+    }
+    // 2) Mapbox dio solo la zona (o nada): Nominatim tiene una segunda oportunidad antes de aceptar la ubicación aproximada.
+    const resp = geocoderRespaldo(prov)
+    if (resp) {
+      let resultado: 'mejoro' | 'encontro' | 'sin_mejora' | 'error' = 'sin_mejora'
+      let aviso: string | undefined
+      try {
+        const otro = await buscarEn(resp, consultas, primero ? esFino : undefined)
+        if (otro) {
+          await escribir(db, id, { estado: 'ok', ...pin(otro, resp.nombre), ...base, respaldo: { proveedor: resp.nombre, resultado: primero ? 'mejoro' : 'encontro', el }, ...(primero ? { antes: { origen: prov.nombre, precision: primero.hit.precision, lat: primero.hit.lat, lng: primero.hit.lng } } : {}) }, direccion)
+          return 'ok'
+        }
+      } catch (e) {
+        if (!(e instanceof GeocoderError)) throw e
+        if (!primero) throw e // sin nada que aceptar, la caída del respaldo es un error de red como cualquier otro: se reintenta
+        resultado = 'error'
+        aviso = e.message.slice(0, 200)
+      }
+      if (primero) {
+        // Nominatim tampoco mejoró (o no respondió): se acepta la zona de Mapbox y se anota para no volver a preguntar en cada relleno.
+        await escribir(db, id, { estado: 'ok', ...pin(primero, prov.nombre), ...base, respaldo: { proveedor: resp.nombre, resultado, el, ...(aviso ? { error: aviso } : {}) } }, direccion)
         return 'ok'
       }
+    } else if (primero) {
+      await escribir(db, id, { estado: 'ok', ...pin(primero, prov.nombre), ...base }, direccion)
+      return 'ok'
     }
     await escribir(db, id, { estado: 'sin_resultado', consulta: direccion, intentos, el }, direccion)
     return 'sin_resultado'
   } catch (e) {
     if (!(e instanceof GeocoderError)) console.error('[geocodificar]', e)
     await escribir(db, id, { estado: 'error', consulta: direccion, intentos, el, error: (e as Error).message.slice(0, 200) }, direccion)
+    return 'error'
+  }
+}
+
+type Encontrado = { hit: GeoResultado; q: string }
+const esFino = (h: GeoResultado) => h.precision === 'exacta' || h.precision === 'calle'
+const pin = (f: Encontrado, origen: string) => ({ lat: f.hit.lat, lng: f.hit.lng, precision: f.hit.precision, origen, encontrado_como: f.hit.nombre, busqueda: f.q })
+/** Prueba las consultas de la más específica a la más general y devuelve el primer resultado (que además cumpla `sirve`, si se pide). Lanza si el proveedor falla. */
+async function buscarEn(prov: Geocoder, consultas: string[], sirve?: (h: GeoResultado) => boolean): Promise<Encontrado | null> {
+  for (const q of consultas) {
+    const hit = await prov.buscar(q)
+    if (hit && (!sirve || sirve(hit))) return { hit, q }
+  }
+  return null
+}
+
+// ---------- segunda oportunidad para lo que quedó en «zona» ----------
+export type ResultadoMejora = 'mejorado' | 'sin_mejora' | 'error' | 'omitido' | 'sin_proveedor'
+
+/** ¿Es un pin de zona que buscó Mapbox (y que Nominatim todavía puede afinar)? Los de Nominatim no: preguntarle de nuevo a quien ya respondió no cambia nada. */
+const esZonaMapbox = (d: Record<string, unknown>) => {
+  const u = ubicacionDe(d)
+  return u.estado === 'ok' && u.origen === 'mapbox' && u.precision === 'zona'
+}
+const yaProbadoConRespaldo = (d: Record<string, unknown>) => {
+  const rs = obj(obj(d.geo)?.respaldo)
+  return !!rs && rs.resultado !== 'error' // «error» = Nominatim no respondió: ese sí se vuelve a intentar
+}
+
+/**
+ * Le da a un ítem que quedó en «zona» (Mapbox) una segunda oportunidad con Nominatim: si encuentra la calle o el local, el pin pasa a ese
+ * (guardando de dónde viene en `antes`); si no, se queda la zona de Mapbox y se anota `respaldo.resultado: sin_mejora` para no repetirlo.
+ * Un fallo de red de Nominatim deja todo como estaba (se reintenta en el siguiente relleno). Nunca toca pines manuales ni de Google Maps.
+ */
+export async function mejorarZonaItem(db: Db, id: string, o: { forzar?: boolean } = {}): Promise<ResultadoMejora> {
+  const resp = respaldoNominatim()
+  if (!resp) return 'sin_proveedor'
+  const r = (await db.query(`SELECT title, data FROM feed_items WHERE id = $1`, [id])).rows[0]
+  if (!r) return 'omitido'
+  const d = (r.data ?? {}) as Record<string, unknown>
+  if (!esZonaMapbox(d) || (!o.forzar && yaProbadoConRespaldo(d))) return 'omitido'
+  const u = ubicacionDe(d)
+  const direccion = u.direccion!
+  const previo = obj(d.geo)!
+  const el = new Date().toISOString()
+  try {
+    const otro = await buscarEn(resp, consultasDe(direccion, typeof r.title === 'string' ? r.title : null), esFino)
+    if (otro) {
+      await escribir(db, id, { estado: 'ok', ...pin(otro, resp.nombre), consulta: direccion, el, respaldo: { proveedor: resp.nombre, resultado: 'mejoro', el }, antes: { origen: 'mapbox', precision: 'zona', lat: u.lat, lng: u.lng } }, direccion)
+      return 'mejorado'
+    }
+    await escribir(db, id, { ...previo, respaldo: { proveedor: resp.nombre, resultado: 'sin_mejora', el } }, direccion)
+    return 'sin_mejora'
+  } catch (e) {
+    if (!(e instanceof GeocoderError)) console.error('[geocodificar]', e)
     return 'error'
   }
 }
@@ -215,6 +297,39 @@ export async function rellenarUbicaciones(o: { tipo?: string; limite?: number; r
     else out.omitidos++
   }
   out.cobertura = out.con_direccion ? Math.round(((out.ya_ubicados + out.ubicados) / out.con_direccion) * 1000) / 10 : null
+  return out
+}
+
+export type RellenoZonas = { revisados: number; zonas_mapbox: number; ya_probados: number; mejorados: number; sin_mejora: number; errores: number; pendientes: number }
+
+/**
+ * Segunda oportunidad para TODOS los ítems que quedaron en «zona» buscados por Mapbox: les pregunta a Nominatim (un ítem a la vez, a lo más 1
+ * consulta por segundo con el servidor público: la cola única del proceso lo garantiza) y los que resuelva a nivel de calle o local pasan a pin
+ * fino. Idempotente: lo ya probado (`respaldo.resultado`) no se repite salvo con `reintentar`. `ensayo` solo cuenta.
+ */
+export async function rellenarZonas(o: { tipo?: string; limite?: number; reintentar?: boolean; ensayo?: boolean; progreso?: (id: string, titulo: string, r: ResultadoMejora) => void } = {}): Promise<RellenoZonas> {
+  const rows = (await pool.query(`SELECT id, title, data FROM feed_items WHERE ($1::text IS NULL OR kind = $1) ORDER BY found_at DESC, id`, [o.tipo ?? null])).rows
+  const out: RellenoZonas = { revisados: rows.length, zonas_mapbox: 0, ya_probados: 0, mejorados: 0, sin_mejora: 0, errores: 0, pendientes: 0 }
+  let hechos = 0
+  for (const r of rows) {
+    const d = (r.data ?? {}) as Record<string, unknown>
+    if (!esZonaMapbox(d)) continue
+    out.zonas_mapbox++
+    if (!o.reintentar && yaProbadoConRespaldo(d)) {
+      out.ya_probados++
+      continue
+    }
+    if (o.ensayo || (o.limite !== undefined && hechos >= o.limite)) {
+      out.pendientes++
+      continue
+    }
+    hechos++
+    const res = await mejorarZonaItem(pool, r.id as string, { forzar: !!o.reintentar })
+    o.progreso?.(r.id as string, r.title as string, res)
+    if (res === 'mejorado') out.mejorados++
+    else if (res === 'sin_mejora') out.sin_mejora++
+    else if (res === 'error') out.errores++
+  }
   return out
 }
 

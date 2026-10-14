@@ -9,12 +9,16 @@
 //   npm run feed:geocodificar -- --medir [--proveedor nominatim|mapbox|ambos] [--tipo potencial] [--limite N] [--json]
 //        -> MIDE la cobertura de cada proveedor con las direcciones reales del feed y NO guarda nada (para decidir cuál usar)
 //
+//   npm run feed:geocodificar -- --mejorar-zona [--ensayo] [--tipo potencial] [--limite N] [--reintentar]
+//        -> SEGUNDA OPORTUNIDAD: los ítems que Mapbox dejó en «zona» (aproximada) se vuelven a buscar con Nominatim (1 consulta por segundo);
+//           los que Nominatim resuelve a nivel de calle o local pasan a pin fino. Lo ya probado no se repite salvo con --reintentar.
+//
 // Usa la misma base de datos y el mismo proveedor que el servidor: DATABASE_URL y GEOCODER = nominatim (por defecto) | mapbox | off
 // (con mapbox, MAPBOX_PUBLIC_TOKEN; GEOCODER_URL / GEOCODER_MIN_MS / GEOCODER_USER_AGENT son opcionales). Funciona igual con cualquiera.
 // En producción: `railway run npm run feed:geocodificar` o POST /api/v1/feed/geocodificar (hace lo mismo en segundo plano).
 import { pool } from './db.ts'
-import { rellenarUbicaciones } from './feedGeo.ts'
-import { crearGeocoder, estadoGeocoder, type Geocoder } from './geocode.ts'
+import { rellenarUbicaciones, rellenarZonas } from './feedGeo.ts'
+import { crearGeocoder, estadoGeocoder, respaldoNominatim, type Geocoder } from './geocode.ts'
 import { medir } from './feedGeoMedir.ts'
 
 const args = process.argv.slice(2)
@@ -59,6 +63,33 @@ if (flag('medir')) {
     for (const d of solo(a, b).slice(0, 10)) console.log(`  solo ${a.proveedor}: ${d.titulo.slice(0, 40)} — ${d.direccion.slice(0, 80)}`)
   }
   console.log('\nMedición: no se guardó nada en el feed.')
+  await pool.end()
+  process.exit(0)
+}
+
+if (flag('mejorar-zona')) {
+  let resp
+  try {
+    resp = respaldoNominatim()
+  } catch (e) {
+    console.error(`El respaldo de Nominatim está mal configurado: ${(e as Error).message}`)
+    process.exit(2)
+  }
+  if (!resp) {
+    console.error('El respaldo de Nominatim está apagado (GEOCODER_RESPALDO=off): no hay con qué mejorar las zonas.')
+    process.exit(2)
+  }
+  console.log(`Respaldo: ${resp.nombre} (máximo 1 consulta por segundo con el servidor público)`)
+  const z = await rellenarZonas({
+    tipo: val('tipo'),
+    limite,
+    reintentar: flag('reintentar'),
+    ensayo: flag('ensayo'),
+    progreso: (id, titulo, res) => console.log(`${res.padEnd(11)} ${titulo.slice(0, 60)}  (${id})`),
+  })
+  console.log(`\nRevisados: ${z.revisados} · en zona (Mapbox): ${z.zonas_mapbox} · ya probados: ${z.ya_probados}`)
+  console.log(`Mejorados a calle o local: ${z.mejorados} · siguen en zona: ${z.sin_mejora} · errores de red: ${z.errores} · por probar: ${z.pendientes}`)
+  if (z.zonas_mapbox === 0) console.log('No hay pines de zona buscados con Mapbox: nada que mejorar (los que busca Nominatim ya son su mejor resultado).')
   await pool.end()
   process.exit(0)
 }

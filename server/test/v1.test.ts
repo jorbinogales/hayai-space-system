@@ -14,7 +14,7 @@ import pg from 'pg'
 import { keyRateLimit } from '../src/v1/apiKey.ts'
 import { elegirFuga, entradaDe, GUION_PAS_MAX, guionPAS, nombreCorto } from '../src/guionPAS.ts'
 import { enlaceWhatsapp, enviarWhatsApp, normalizarTelefono, reiniciarEnviador, whatsappDe } from '../src/whatsapp.ts'
-import { avisosMapa, crearGeocoder, geocoder, GeocoderError, mapbox, precisionMapbox, reiniciarGeocoder, teselas } from '../src/geocode.ts'
+import { avisosMapa, crearGeocoder, crearRespaldoNominatim, geocoder, GeocoderError, mapbox, precisionMapbox, reiniciarGeocoder, teselas } from '../src/geocode.ts'
 import { coordenadasDeGoogleMaps, ubicacionDe } from '../src/feedGeo.ts'
 
 const root = resolve(import.meta.dirname, '../..')
@@ -73,6 +73,8 @@ const geoRespuesta = (q: string): unknown[] => {
   const n = q.toLowerCase()
   const r = (lat: number, lon: number, place_rank: number, display_name: string) => [{ lat: String(lat), lon: String(lon), place_rank, display_name }]
   if (n.includes('calle 30')) return r(10.0701, -69.3201, 30, 'Calle 30, Barquisimeto, Lara, Venezuela')
+  if (/pedro le[oó]n torres/.test(n)) return r(10.0647955, -69.3444763, 26, 'Avenida Pedro León Torres, Barquisimeto, Lara, Venezuela') // el caso real: Nominatim llega a la calle
+  if (n.includes('zzsolonomi')) return r(10.0555, -69.3333, 26, 'Avenida Los Leones, Barquisimeto') // Mapbox no la conoce
   if (n.includes('nueva segovia')) return r(10.0522, -69.3105, 22, 'Urbanización Nueva Segovia, Barquisimeto')
   if (n.includes('cabudare')) return r(10.0333, -69.2667, 26, 'Avenida Intercomunal, Cabudare')
   if (n.includes('en caracas')) return r(10.5, -66.9, 30, 'Caracas') // dentro de Venezuela, pero lejos: el servidor no lo juzga
@@ -101,6 +103,7 @@ const mbxF = (lat: number, lng: number, feature_type: string, o: { accuracy?: st
 })
 const mbxRespuesta = (q: string): unknown[] => {
   const n = q.toLowerCase()
+  if (/pedro le[oó]n torres/.test(n)) return [mbxF(10.0647, -69.357, 'neighborhood', { full: 'Barquisimeto Centro, Lara, Venezuela' })] // Mapbox solo da la zona
   if (n.includes('zzmapbox')) return [mbxF(10.0712, -69.3305, 'address', { accuracy: 'rooftop', confidence: 'exact', full: 'Av. Rotaria 12, Barquisimeto, Lara, Venezuela' })]
   if (n.includes('interpol')) return [mbxF(10.0801, -69.3401, 'address', { accuracy: 'interpolated', confidence: 'high', full: 'Calle 24 con Carrera 17, Barquisimeto' })]
   if (n.includes('nueva segovia')) return [mbxF(10.0522, -69.3105, 'neighborhood', { full: 'Nueva Segovia, Barquisimeto' })]
@@ -5763,7 +5766,7 @@ describe('Feed: Mapbox como segundo proveedor (geocodificación y teselas)', () 
         c.stderr.on('data', (d) => (stderr += d))
         c.on('close', (status) => ok({ status, stdout, stderr }))
       })
-    const env2 = () => ({ ...env, PORT: String(PORT2), GEOCODER: 'mapbox', MAPBOX_PUBLIC_TOKEN: MBX_TOKEN, GEOCODER_URL: `http://localhost:${MBX_PORT}`, GEOCODER_MIN_MS: '20', MAP_TILES: 'mapbox' })
+    const env2 = () => ({ ...env, PORT: String(PORT2), GEOCODER: 'mapbox', MAPBOX_PUBLIC_TOKEN: MBX_TOKEN, GEOCODER_URL: `http://localhost:${MBX_PORT}`, NOMINATIM_URL: `http://localhost:${GEO_PORT}`, GEOCODER_MIN_MS: '20', MAP_TILES: 'mapbox' })
 
     before(async () => {
       server2 = spawn(process.execPath, ['--import', 'tsx', 'server/src/index.ts'], { cwd: root, env: env2(), stdio: 'ignore' })
@@ -5809,6 +5812,145 @@ describe('Feed: Mapbox como segundo proveedor (geocodificación y teselas)', () 
       assert.equal(rel.body.proveedor, 'mapbox')
       assert.ok(rel.body.por_buscar >= 1)
       assert.equal((await esperar2(e.body.id, 'ok')).ubicacion.origen, 'mapbox')
+    })
+
+    it('respaldo: si Mapbox solo da la zona, Nominatim tiene una segunda oportunidad y gana si llega a la calle (el caso de la Av. Pedro León Torres)', async () => {
+      const mb0 = mbxHits.length
+      const g0 = geoHits.length
+      const r = await api2('/feed', { body: { titulo: 'Ferretería Pedro León', tipo: 'potencial', fuente: 'growi', clave_externa: 'resp-1', datos: { donde: 'Av. Pedro León Torres, Barquisimeto, Lara' } } })
+      assert.equal(r.status, 201, JSON.stringify(r.body))
+      const it = await esperar2(r.body.id, 'ok')
+      assert.deepEqual([it.ubicacion.lat, it.ubicacion.lng, it.ubicacion.precision, it.ubicacion.origen], [10.0647955, -69.3444763, 'calle', 'nominatim'], 'pin de calle de Nominatim, no el centro de la ciudad de Mapbox')
+      assert.ok(mbxHits.length > mb0, 'Mapbox se preguntó primero')
+      assert.ok(geoHits.length > g0, 'y Nominatim después')
+      assert.equal(it.datos.geo.respaldo.resultado, 'mejoro')
+      assert.deepEqual([it.datos.geo.antes.origen, it.datos.geo.antes.precision], ['mapbox', 'zona'], 'queda anotado de dónde venía')
+      assert.ok(geoHits.slice(g0).every((h) => /^HAYAI-/.test(h.ua ?? '')), 'con el User-Agent de la aplicación')
+    })
+
+    it('respaldo: si Mapbox no encuentra nada, Nominatim lo intenta; si Nominatim tampoco mejora la zona, se queda la de Mapbox (anotado, sin repetir)', async () => {
+      const a = await api2('/feed', { body: { titulo: 'Solo Nominatim', tipo: 'potencial', fuente: 'growi', clave_externa: 'resp-2', datos: { donde: 'Av. Los Leones, ZZSoloNomi 7' } } })
+      const ia = await esperar2(a.body.id, 'ok')
+      assert.deepEqual([ia.ubicacion.precision, ia.ubicacion.origen, ia.datos.geo.respaldo.resultado], ['calle', 'nominatim', 'encontro'])
+      assert.equal(ia.datos.geo.antes, undefined, 'no había nada que mejorar')
+      // Nueva Segovia: Mapbox da zona y Nominatim también zona → no es mejor, se conserva Mapbox
+      const b = await api2('/feed', { body: { titulo: 'Zona en ambos', tipo: 'potencial', fuente: 'growi', clave_externa: 'resp-3', datos: { donde: 'Urb. Nueva Segovia, calle 9' } } })
+      const ib = await esperar2(b.body.id, 'ok')
+      assert.deepEqual([ib.ubicacion.precision, ib.ubicacion.origen, ib.datos.geo.respaldo.resultado], ['zona', 'mapbox', 'sin_mejora'])
+      // la ciudad entera sigue sin pin: ni Mapbox ni Nominatim la aceptan
+      const c = await api2('/feed', { body: { titulo: 'Ciudad a secas', tipo: 'potencial', fuente: 'growi', clave_externa: 'resp-4', datos: { donde: 'Barquisimeto, solo la ciudad' } } })
+      assert.equal((await esperar2(c.body.id, 'sin_resultado')).ubicacion.estado, 'sin_resultado')
+    })
+
+    it('respaldo: si Nominatim se cae, la zona de Mapbox se acepta (nunca se pierde un pin por el respaldo) y si Mapbox no daba nada es un error reintentable', async () => {
+      geoState.down = true
+      try {
+        const a = await api2('/feed', { body: { titulo: 'Zona sin respaldo', tipo: 'potencial', fuente: 'growi', clave_externa: 'resp-5', datos: { donde: 'Urb. Nueva Segovia, calle 11' } } })
+        const ia = await esperar2(a.body.id, 'ok')
+        assert.deepEqual([ia.ubicacion.precision, ia.ubicacion.origen, ia.datos.geo.respaldo.resultado], ['zona', 'mapbox', 'error'])
+        const b = await api2('/feed', { body: { titulo: 'Nada y respaldo caído', tipo: 'potencial', fuente: 'growi', clave_externa: 'resp-6', datos: { donde: 'Av. Los Leones, ZZSoloNomi 8' } } })
+        assert.equal((await esperar2(b.body.id, 'error')).ubicacion.estado, 'error')
+        geoState.down = false
+        // el relleno repite los errores de red
+        await api2('/feed/geocodificar', { body: {} })
+        assert.equal((await esperar2(b.body.id, 'ok')).ubicacion.origen, 'nominatim')
+      } finally {
+        geoState.down = false
+      }
+    })
+
+    it('GEOCODER_RESPALDO: Nominatim es el respaldo (con SU url, no la de Mapbox); off lo apaga; Nominatim como proveedor principal no tiene respaldo', () => {
+      assert.equal(crearRespaldoNominatim({ GEOCODER: 'mapbox', MAPBOX_PUBLIC_TOKEN: MBX_TOKEN })?.nombre, 'nominatim')
+      assert.equal(crearRespaldoNominatim({ GEOCODER: 'mapbox', MAPBOX_PUBLIC_TOKEN: MBX_TOKEN, GEOCODER_RESPALDO: 'off' }), null)
+      assert.equal(crearRespaldoNominatim({ GEOCODER: 'mapbox', MAPBOX_PUBLIC_TOKEN: MBX_TOKEN, GEOCODER_RESPALDO: ' OFF ' }), null)
+    })
+
+    it('respaldo: con el servidor público de Nominatim, nunca más de 1 consulta por segundo (aunque GEOCODER_MIN_MS sea 20) y siempre a SU url, no a la de Mapbox', async () => {
+      const fetchReal = globalThis.fetch
+      const visto: { host: string; t: number }[] = []
+      globalThis.fetch = (async (u: URL | string) => {
+        visto.push({ host: new URL(String(u)).host, t: Date.now() })
+        return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } })
+      }) as typeof fetch
+      try {
+        const resp = crearRespaldoNominatim({ GEOCODER: 'mapbox', MAPBOX_PUBLIC_TOKEN: MBX_TOKEN, GEOCODER_URL: `http://localhost:${MBX_PORT}`, GEOCODER_MIN_MS: '20' })!
+        await Promise.all([resp.buscar('a una'), resp.buscar('a dos'), resp.buscar('a tres')])
+      } finally {
+        globalThis.fetch = fetchReal
+      }
+      assert.equal(visto.length, 3)
+      assert.ok(visto.every((v) => v.host === 'nominatim.openstreetmap.org'), `consultó ${visto.map((v) => v.host)}`)
+      for (let i = 1; i < visto.length; i++) assert.ok(visto[i].t - visto[i - 1].t >= 990, `entre la consulta ${i} y la ${i + 1} pasaron ${visto[i].t - visto[i - 1].t} ms`)
+    })
+
+    it('--mejorar-zona: da la segunda oportunidad a los que ya estaban en zona (Mapbox), respeta lo ya probado, a Nominatim a lo más 1 consulta/s en el servidor público y no toca nada más', async () => {
+      // Se siembra el estado de antes del cambio: zona de Mapbox sin anotación de respaldo (hay que escribirlo en la base: la API no deja fijar datos.geo)
+      const mk = async (clave: string, donde: string) => {
+        const r = await api('/feed', { body: { titulo: `Zona vieja ${clave}`, tipo: 'proyecto', fuente: 'growi', clave_externa: clave, datos: { donde } } })
+        assert.equal(r.status, 201, JSON.stringify(r.body))
+        return r.body.id as string
+      }
+      const fija = async (id: string, _donde: string, geo: Record<string, unknown>) => admin.query(`UPDATE feed_items SET data = jsonb_set(data, '{geo}', $2::jsonb) WHERE id = $1`, [id, JSON.stringify(geo)])
+      const D1 = 'Av. Pedro León Torres, Barquisimeto, Lara'
+      const D2 = 'Urb. Nueva Segovia, calle 21'
+      const zona = (donde: string, extra: Record<string, unknown> = {}) => ({ estado: 'ok', lat: 10.0647, lng: -69.357, precision: 'zona', origen: 'mapbox', consulta: donde, encontrado_como: 'Barquisimeto Centro', busqueda: donde, el: '2026-10-01T00:00:00.000Z', ...extra })
+      const a = await mk('mz-1', D1)
+      const b = await mk('mz-2', D2)
+      const c = await mk('mz-3', D1 + ' ') // ya probado antes: no se repite
+      const d = await mk('mz-4', 'Calle 30 con carrera 5') // pin de zona pero de Nominatim: no es su caso
+      const e = await mk('mz-5', 'Av. Pedro León Torres, otro tramo') // pin manual
+      for (const id of [a, b, c, d, e]) for (let i = 0; i < 80 && (await api(`/feed/${id}`)).body.ubicacion.estado === 'pendiente'; i++) await new Promise((r) => setTimeout(r, 100)) // que termine el geocodificado en segundo plano de la publicación
+      await fija(a, D1, zona(D1))
+      await fija(b, D2, zona(D2))
+      await admin.query(`UPDATE feed_items SET data = jsonb_set(data, '{geo}', $2::jsonb) WHERE id = $1`, [c, JSON.stringify(zona(D1 + ' ', { respaldo: { proveedor: 'nominatim', resultado: 'sin_mejora', el: '2026-10-02T00:00:00.000Z' } }))])
+      await admin.query(`UPDATE feed_items SET data = jsonb_set(data, '{geo}', $2::jsonb) WHERE id = $1`, [d, JSON.stringify(zona('Calle 30 con carrera 5', { origen: 'nominatim' }))])
+      await admin.query(`UPDATE feed_items SET data = jsonb_set(data, '{geo}', $2::jsonb) WHERE id = $1`, [e, JSON.stringify({ estado: 'ok', lat: 10.01, lng: -69.3, precision: 'exacta', origen: 'manual', consulta: 'Av. Pedro León Torres, otro tramo', el: '2026-10-01T00:00:00.000Z' })])
+      const estadoAntes = async (id: string) => JSON.stringify((await admin.query(`SELECT data->'geo' AS g FROM feed_items WHERE id = $1`, [id])).rows[0].g)
+      const [dAntes, eAntes, cAntes] = [await estadoAntes(d), await estadoAntes(e), await estadoAntes(c)]
+
+      // ensayo: cuenta y no consulta
+      const g0 = geoHits.length
+      const ens = await cli2(['--mejorar-zona', '--ensayo', '--tipo', 'proyecto'], env2())
+      assert.equal(ens.status, 0, ens.stdout + ens.stderr)
+      assert.match(ens.stdout, /en zona \(Mapbox\): 3 · ya probados: 1/)
+      assert.match(ens.stdout, /por probar: 2/)
+      assert.equal(geoHits.length, g0, 'el ensayo no consulta nada')
+
+      const m0 = mbxHits.length
+      const g1 = geoHits.length
+      const r = await cli2(['--mejorar-zona', '--tipo', 'proyecto'], env2())
+      assert.equal(r.status, 0, r.stdout + r.stderr)
+      assert.match(r.stdout, /Respaldo: nominatim/)
+      assert.match(r.stdout, /Mejorados a calle o local: 1 · siguen en zona: 1 · errores de red: 0 · por probar: 0/)
+      assert.equal(mbxHits.length, m0, 'el relleno de zonas no le pregunta nada a Mapbox')
+      assert.ok(geoHits.length > g1)
+      const A = (await api(`/feed/${a}`)).body
+      assert.deepEqual([A.ubicacion.lat, A.ubicacion.lng, A.ubicacion.precision, A.ubicacion.origen], [10.0647955, -69.3444763, 'calle', 'nominatim'])
+      assert.deepEqual([A.datos.geo.antes.origen, A.datos.geo.antes.precision, A.datos.geo.respaldo.resultado], ['mapbox', 'zona', 'mejoro'])
+      const B = (await api(`/feed/${b}`)).body
+      assert.deepEqual([B.ubicacion.precision, B.ubicacion.origen, B.datos.geo.respaldo.resultado], ['zona', 'mapbox', 'sin_mejora'], 'Nominatim solo dio otra zona: se queda la de Mapbox')
+      assert.equal(await estadoAntes(d), dAntes, 'una zona de Nominatim no se toca')
+      assert.equal(await estadoAntes(e), eAntes, 'un pin manual no se toca nunca')
+      assert.equal(await estadoAntes(c), cAntes, 'lo ya probado no se repite')
+
+      // idempotente: la segunda corrida no consulta
+      const g2 = geoHits.length
+      const otra = await cli2(['--mejorar-zona', '--tipo', 'proyecto'], env2())
+      assert.match(otra.stdout, /en zona \(Mapbox\): 2 · ya probados: 2/)
+      assert.match(otra.stdout, /Mejorados a calle o local: 0 · siguen en zona: 0/)
+      assert.equal(geoHits.length, g2)
+      // --reintentar vuelve a preguntar también por los ya probados: el de la Pedro León Torres (c) ahora sí se afina, el de Nueva Segovia sigue en zona
+      const rei = await cli2(['--mejorar-zona', '--reintentar', '--tipo', 'proyecto'], env2())
+      assert.match(rei.stdout, /Mejorados a calle o local: 1 · siguen en zona: 1/)
+      assert.equal((await api(`/feed/${c}`)).body.ubicacion.precision, 'calle')
+      // el ritmo: las consultas de una corrida salen separadas por el mínimo de la cola
+      const ts = geoHits.slice(g1).map((h) => h.t)
+      for (let i = 1; i < ts.length; i++) assert.ok(ts[i] - ts[i - 1] >= 15, 'Nominatim no recibe ráfagas')
+      assert.ok(!(r.stdout + r.stderr).includes(MBX_TOKEN))
+      // sin respaldo configurado: lo dice y sale con error
+      const off = await cli2(['--mejorar-zona'], { ...env2(), GEOCODER_RESPALDO: 'off' })
+      assert.equal(off.status, 2)
+      assert.match(off.stderr, /GEOCODER_RESPALDO=off/)
     })
 
     it('GET /api/feed/mapa/teselas dice qué teselas pintar: Mapbox aquí, OpenStreetMap en el servidor sin MAP_TILES; pide sesión', async () => {

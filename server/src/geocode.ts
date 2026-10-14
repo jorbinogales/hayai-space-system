@@ -225,6 +225,22 @@ export function geocoder(): Geocoder | null {
   }
 }
 
+// ---------- respaldo: Nominatim cuando Mapbox solo da la zona (o nada) ----------
+/** Nominatim como segunda oportunidad. Siempre es Nominatim (nunca Mapbox: sus términos exigen la geocodificación «permanente» para guardar
+ * resultados, y un respaldo no debe depender de un plan). Su servidor es NOMINATIM_URL, NO GEOCODER_URL (que en modo mapbox es el de Mapbox).
+ * GEOCODER_RESPALDO=off lo apaga. Comparte la cola única del proceso, así que el 1 consulta/s del servidor público se respeta siempre. */
+export function crearRespaldoNominatim(env: NodeJS.ProcessEnv = process.env): Geocoder | null {
+  if (/^(off|none|no|0|false)$/i.test(env.GEOCODER_RESPALDO?.trim() ?? '')) return null
+  return crearGeocoder({ ...env, GEOCODER: 'nominatim', GEOCODER_URL: undefined })
+}
+let respaldo: Geocoder | null | undefined
+export function respaldoNominatim(): Geocoder | null {
+  if (respaldo !== undefined) return respaldo
+  return (respaldo = crearRespaldoNominatim())
+}
+/** El respaldo que corresponde a un proveedor: solo Mapbox lo tiene (Nominatim ya es el último recurso). */
+export const geocoderRespaldo = (prov: Geocoder): Geocoder | null => (prov.nombre === 'mapbox' ? respaldoNominatim() : null)
+
 let avisado = ''
 /** Como `geocoder()`, pero con una configuración inválida devuelve null (y lo dice una vez en el log): publicar o abrir el mapa nunca falla por esto. */
 export function geocoderOSinConfigurar(): Geocoder | null {
@@ -249,6 +265,7 @@ export function estadoGeocoder(o: { estricto?: boolean } = {}): { proveedor: Pro
 /** Solo para pruebas: vuelve a leer el entorno. */
 export const reiniciarGeocoder = () => {
   activo = undefined
+  respaldo = undefined
   avisado = ''
 }
 

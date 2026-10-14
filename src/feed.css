@@ -527,6 +527,23 @@
 .fdm-pin b { position: absolute; rotate: 45deg; color: #fff; font: 700 12px / 1 var(--sans); font-variant-numeric: tabular-nums; }
 .fdm-pin b ~ i, .fdm-pin:has(b) i { display: none; }
 @media (hover: hover) { .fdm-pin-wrap:hover .fdm-pin:not(.is-sel) { scale: 1.12; } }
+/* pines del abanico (varios en el mismo punto): un poco más chicos, unidos por una línea al punto real */
+.fdm-pin.is-chico { left: 2px; top: 2px; width: 22px; height: 22px; border-width: 2.5px; }
+.fdm-pin.is-chico.is-sel { scale: 1.2; }
+.fdm-spider-pata { stroke: var(--night); stroke-width: 1.5; stroke-opacity: 0.55; fill: none; }
+.fdm-spider-centro { stroke: #fff; stroke-width: 2; fill: var(--night); fill-opacity: 0.8; }
+
+/* zona aproximada (solo se sabe el sector): círculo sombreado con borde punteado y la cuenta al centro, nunca una gota */
+.fdm-zona-area { stroke: var(--night); stroke-width: 1.5; stroke-dasharray: 6 5; stroke-opacity: 0.55; fill: var(--night); fill-opacity: 0.1; transition: fill-opacity var(--t-hover) var(--ease); }
+.fdm-zona-area.is-sel { stroke-opacity: 0.85; fill-opacity: 0.18; }
+@media (hover: hover) { .fdm-zona-area:hover { fill-opacity: 0.16; } }
+.fdm-map.is-placing .fdm-zona-area { pointer-events: none; } /* mientras se coloca un pin, el clic dentro del círculo es para el mapa */
+.fdm-zona { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; border-radius: 50%; background: rgba(255, 250, 242, 0.94); border: 2px dashed var(--night); box-shadow: 0 3px 8px rgba(22, 17, 11, 0.3); color: var(--night); line-height: 1; transition: scale var(--t-hover) var(--ease); }
+.fdm-zona b { font: 700 14px / 1 var(--sans); font-variant-numeric: tabular-nums; }
+.fdm-zona small { margin-top: 1px; font: 600 9px / 1 var(--sans); letter-spacing: 0.02em; color: var(--ink-2); }
+.fdm-zona.is-sel { border-style: solid; box-shadow: 0 0 0 3px rgba(22, 17, 11, 0.85), 0 6px 14px rgba(22, 17, 11, 0.4); }
+.fdm-pin-wrap:focus-visible .fdm-zona { outline: 3px solid var(--night); outline-offset: 3px; }
+@media (hover: hover) { .fdm-pin-wrap:hover .fdm-zona:not(.is-sel) { scale: 1.08; } }
 
 /* panel del pin elegido: la misma tarjeta de la lista */
 /* pantalla ancha: el panel flota sobre el mapa, a la derecha, con su propio scroll (el mapa conserva todo el ancho) */
@@ -539,6 +556,8 @@
 .fdm-sel-head { display: flex; align-items: center; justify-content: space-between; gap: var(--fd-s2); }
 .fdm-sel-head p { margin: 0; font-size: 0.74rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
 .fdm-group { list-style: none; display: flex; flex-wrap: wrap; gap: var(--fd-s2); margin: 0; padding: 0; }
+.fdm-group.is-largo { max-height: 232px; overflow: auto; overscroll-behavior: contain; padding: 2px; }
+.fdm-zona-nota { margin: 0; font-size: 0.82rem; line-height: 1.4; color: var(--ink-2); }
 .fdm-card { grid-template-columns: minmax(0, 1fr); }
 .fdm-ubic { display: grid; gap: var(--fd-s2); padding: var(--fd-s3); border-radius: var(--fd-r-field); background: rgba(255, 255, 255, 0.7); box-shadow: inset 0 0 0 1px var(--fd-line); }
 .fdm-ubic-line { display: flex; align-items: flex-start; gap: var(--fd-s2); margin: 0; font-size: 0.86rem; line-height: 1.35; overflow-wrap: anywhere; }
@@ -581,7 +600,7 @@
   .fdm-map .leaflet-bar a { width: 44px; height: 44px; line-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .fdm-pin { transition: none; }
+  .fdm-pin, .fdm-zona, .fdm-zona-area { transition: none; }
 }
 
 /* «Guion» en el detalle de la tarjeta (v1.8): una fila con el estado y el botón «Ver guión»; el texto vive en el modal */

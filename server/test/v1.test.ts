@@ -15,6 +15,7 @@ import { keyRateLimit } from '../src/v1/apiKey.ts'
 import { elegirFuga, entradaDe, GUION_PAS_MAX, guionPAS, nombreCorto } from '../src/guionPAS.ts'
 import { enlaceWhatsapp, enviarWhatsApp, normalizarTelefono, reiniciarEnviador, whatsappDe } from '../src/whatsapp.ts'
 import { avisosMapa, crearGeocoder, geocoder, GeocoderError, mapbox, precisionMapbox, reiniciarGeocoder, teselas } from '../src/geocode.ts'
+import { coordenadasDeGoogleMaps, ubicacionDe } from '../src/feedGeo.ts'
 
 const root = resolve(import.meta.dirname, '../..')
 const PG_PORT = 54331
@@ -5554,6 +5555,45 @@ describe('Feed: mapa y ubicación (geocodificación con Nominatim)', () => {
     assert.ok(m.pines.some((x: any) => x.id === A))
     const u = await call('hayai_feed_ubicacion', { id: Z, lat: 10.0611, lng: -69.3012 })
     assert.deepEqual([u.ubicacion.origen, u.ubicacion.lat], ['manual', 10.0611])
+  })
+})
+
+describe('Feed: coordenadas desde el enlace de Google Maps (datos.google_maps.url)', () => {
+  it('lee !3d!4d (el lugar), q= / ll= (exacta) y @lat,lng (centro de la cámara: calle); un enlace corto o ajeno no da nada', () => {
+    const lugar = 'https://www.google.com/maps/place/Panader%C3%ADa+Tulip%C3%A1n/@10.0690000,-69.3300000,17z/data=!3m1!4b1!4m6!3m5!1s0x8e8767:0x1!8m2!3d10.0681234!4d-69.3212345!16s'
+    assert.deepEqual(coordenadasDeGoogleMaps(lugar), { lat: 10.0681234, lng: -69.3212345, precision: 'exacta' }, 'el punto del lugar manda sobre el centro de la cámara')
+    assert.deepEqual(coordenadasDeGoogleMaps('https://maps.google.com/?q=10.0701,-69.3201'), { lat: 10.0701, lng: -69.3201, precision: 'exacta' })
+    assert.deepEqual(coordenadasDeGoogleMaps('https://www.google.com/maps/search/?api=1&query=10.05%2C-69.29'), { lat: 10.05, lng: -69.29, precision: 'exacta' })
+    assert.deepEqual(coordenadasDeGoogleMaps('https://www.google.co.ve/maps/@10.0655,-69.3322,15z'), { lat: 10.0655, lng: -69.3322, precision: 'calle' })
+    assert.equal(coordenadasDeGoogleMaps('https://maps.app.goo.gl/AbCdEf123'), null, 'el enlace corto hay que abrirlo: aquí no se adivina')
+    assert.equal(coordenadasDeGoogleMaps('https://www.google.com/maps/place/Algo'), null)
+    assert.equal(coordenadasDeGoogleMaps('https://ejemplo.com/maps/@10.06,-69.33,15z'), null, 'solo enlaces de Google Maps')
+    assert.equal(coordenadasDeGoogleMaps('https://www.google.com/maps/@40.4168,-3.7038,15z'), null, 'fuera de Venezuela no vale')
+  })
+
+  it('las coordenadas de Google Maps mandan sobre el geocodificador, pero nunca sobre un pin puesto a mano', () => {
+    const url = 'https://www.google.com/maps/place/X/data=!3d10.0681!4d-69.3212'
+    const zona = { estado: 'ok', lat: 10.077437, lng: -69.322229, precision: 'zona', origen: 'mapbox', consulta: 'Av. Venezuela, Barquisimeto' }
+    const u = ubicacionDe({ donde: 'Av. Venezuela, Barquisimeto', geo: zona, google_maps: { url, resenas: 30 } })
+    assert.deepEqual([u.estado, u.lat, u.lng, u.precision, u.origen], ['ok', 10.0681, -69.3212, 'exacta', 'google_maps'])
+    const manual = ubicacionDe({ donde: 'Av. Venezuela', geo: { estado: 'ok', lat: 10.05, lng: -69.3, origen: 'manual', precision: 'exacta' }, google_maps: { url } })
+    assert.equal(manual.origen, 'manual')
+    const sinUrl = ubicacionDe({ donde: 'Av. Venezuela, Barquisimeto', geo: zona, google_maps: { resenas: 30 } })
+    assert.deepEqual([sinUrl.precision, sinUrl.origen], ['zona', 'mapbox'], 'sin enlace todo sigue igual')
+  })
+
+  it('al publicar con google_maps.url el ítem nace ubicado y no se le pregunta al geocodificador', async () => {
+    const antes = geoHits.length
+    const r = await api('/feed', { body: { titulo: 'Heladería Polar Gmaps', tipo: 'potencial', fuente: 'growi', clave_externa: 'mapa-gmaps', datos: { donde: 'Av. Lara, C.C. Babilon, Barquisimeto', google_maps: { url: 'https://www.google.com/maps/place/Polar/@10.07,-69.29,17z/data=!3d10.0712!4d-69.2934', calificacion: 4.5 } } } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.deepEqual([r.body.ubicacion.estado, r.body.ubicacion.lat, r.body.ubicacion.lng, r.body.ubicacion.precision, r.body.ubicacion.origen], ['ok', 10.0712, -69.2934, 'exacta', 'google_maps'])
+    const mapa = await api('/feed/mapa?q=Polar%20Gmaps')
+    assert.equal(mapa.status, 200)
+    const pin = mapa.body.pines.find((x: any) => x.id === r.body.id)
+    assert.ok(pin, 'sale como pin en el mapa')
+    assert.equal(pin.ubicacion.origen, 'google_maps')
+    await new Promise((res) => setTimeout(res, 300))
+    assert.ok(!geoHits.slice(antes).some((x) => /Babilon/i.test(x.q)), 'no se gasta una consulta en algo que ya trae coordenadas')
   })
 })
 

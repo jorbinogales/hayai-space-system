@@ -1,6 +1,8 @@
 // Vista de mapa del Feed: los hallazgos con dirección como pines sobre OpenStreetMap o Mapbox (Leaflet; OpenStreetMap por defecto, sin llave ni facturación).
 // Los filtros y el buscador son los de la lista (los pone FeedScreen). Tocar un pin abre la MISMA tarjeta de la lista (WhatsApp, convertir,
 // descartar, seguimiento…); lo que no tiene pin va a la bandeja «Sin ubicación», donde se corrige la dirección o se fija el pin a mano.
+// Lo ubicado solo por sector (precision «zona») no es un pin: es un círculo sombreado con la cuenta, y al tocarlo se listan los negocios.
+// Varios pines precisos en el mismo punto se abren en abanico al tocarlos (solo el dibujo se separa: las coordenadas no cambian).
 // Se carga aparte (React.lazy): Leaflet solo se descarga cuando alguien abre el mapa.
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -34,6 +36,8 @@ const ZOOM = 12
 // definió en el build, manda sobre todo; sin respuesta, OpenStreetMap.
 /** Los pines a menos de esto (km) de Barquisimeto encuadran el mapa; uno lejano no aleja a todos los demás. */
 const RADIO_KM = 60
+/** Radio (m) del círculo de una zona aproximada: dice «por aquí», no «aquí». */
+const ZONA_M = 800
 const POLL_MS = 4000
 const POLL_MAX = 12
 
@@ -46,27 +50,59 @@ const km = (a: [number, number], b: [number, number]) => {
   return 12742 * Math.asin(Math.sqrt(h))
 }
 
+const esZona = (p: MapaItem) => p.ubicacion.precision === 'zona'
+const grupoDe = (p: MapaItem) => `${esZona(p) ? 'z' : 'p'}:${llave(p)}`
+
 interface Grupo {
   key: string
   lat: number
   lng: number
   items: MapaItem[]
   estado: FeedEstado
+  /** ubicados solo por sector: un círculo, no un pin */
   zona: boolean
 }
-/** Varios hallazgos con las mismas coordenadas (un centro comercial, una urbanización) son UN pin con su cuenta: no se inventan desplazamientos. */
+/**
+ * Varios hallazgos con las mismas coordenadas (un centro comercial, el centro de un sector) son UN grupo con su cuenta. Lo aproximado y
+ * lo preciso no se mezclan aunque caigan en el mismo punto: uno es un círculo y el otro un pin.
+ */
 function agrupar(pines: MapaItem[]): Grupo[] {
   const m = new Map<string, Grupo>()
   for (const p of pines) {
-    const k = llave(p)
-    const g = m.get(k) ?? { key: k, lat: p.ubicacion.lat!, lng: p.ubicacion.lng!, items: [], estado: p.estado, zona: false }
+    const k = grupoDe(p)
+    const g = m.get(k) ?? { key: k, lat: p.ubicacion.lat!, lng: p.ubicacion.lng!, items: [], estado: p.estado, zona: esZona(p) }
     g.items.push(p)
     if (PRIORIDAD.indexOf(p.estado) < PRIORIDAD.indexOf(g.estado)) g.estado = p.estado
-    if (p.ubicacion.precision === 'zona') g.zona = true
     m.set(k, g)
   }
   return [...m.values()]
 }
+
+/**
+ * Dónde se dibuja cada pin de un grupo abierto, en píxeles alrededor del punto real: en círculo si son pocos, en espiral si son muchos
+ * (como el «spiderfy» de Leaflet.markercluster).
+ */
+function abanico(n: number): [number, number][] {
+  if (n <= 9) {
+    const r = Math.max(42, (34 * n) / (2 * Math.PI))
+    return Array.from({ length: n }, (_, i) => {
+      const a = -Math.PI / 2 + (i * 2 * Math.PI) / n
+      return [r * Math.cos(a), r * Math.sin(a)]
+    })
+  }
+  const out: [number, number][] = []
+  let largo = 26
+  let a = 0
+  for (let i = 0; i < n; i++) {
+    a += 30 / largo + i * 0.0005
+    out.push([largo * Math.cos(a), largo * Math.sin(a)])
+    largo += (2 * Math.PI * 5.5) / a
+  }
+  return out
+}
+
+const pinHtml = (estado: FeedEstado, o: { sel?: boolean; n?: number; chico?: boolean } = {}) =>
+  `<span class="fdm-pin is-${estado}${o.sel ? ' is-sel' : ''}${o.chico ? ' is-chico' : ''}"><i></i>${o.n ? `<b>${o.n}</b>` : ''}</span>`
 
 type CardFn = (it: FeedItem, h: { onItem: (it: FeedItem) => void; onGone: (id: string) => void }) => ReactNode
 interface Props {
@@ -89,6 +125,7 @@ export default function FeedMap({ query, rev, card, onItem, onGone }: Props) {
   const [placing, setPlacing] = useState<{ id: string; titulo: string } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [said, setSaid] = useState('')
+  const [abierto, setAbierto] = useState<string | null>(null) // grupo preciso abierto en abanico
 
   const boxRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
@@ -149,12 +186,18 @@ export default function FeedMap({ query, rev, card, onItem, onGone }: Props) {
     map.scrollWheelZoom.disable()
     map.on('click focus', () => map.scrollWheelZoom.enable())
     el.addEventListener('mouseleave', () => map.scrollWheelZoom.disable())
+    // Leaflet enfoca el mapa al primer clic y el navegador desplaza la pantalla para mostrarlo entero: el pin se movía bajo el dedo y el clic
+    // se perdía. Se enfoca antes, sin desplazar (Leaflet ve el mapa ya enfocado y no lo repite).
+    el.addEventListener('pointerdown', () => document.activeElement !== el && el.focus({ preventScroll: true }), true)
     layerRef.current = L.layerGroup().addTo(map)
     mapRef.current = map
     map.on('click', (e: L.LeafletMouseEvent) => {
       const p = placingRef.current
       if (p) void fijarRef.current(p.id, e.latlng.lat, e.latlng.lng)
+      else setAbierto(null)
     })
+    // el abanico se mide en píxeles: al cambiar el zoom se cierra (como en Leaflet.markercluster)
+    map.on('zoomstart', () => setAbierto(null))
     const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(() => map.invalidateSize()) : null
     ro?.observe(el)
     return () => {
@@ -184,30 +227,17 @@ export default function FeedMap({ query, rev, card, onItem, onGone }: Props) {
 
   const grupos = useMemo(() => agrupar(data?.pines ?? []), [data])
   const activePin = useMemo(() => data?.pines.find((p) => p.id === active) ?? null, [data, active])
-  const selKey = activePin ? llave(activePin) : null
+  const selKey = activePin ? grupoDe(activePin) : null
+  // un filtro o una recarga que deja el grupo abierto con menos de dos pines lo cierra
+  const abiertoG = useMemo(() => grupos.find((g) => g.key === abierto && !g.zona && g.items.length > 1) ?? null, [grupos, abierto])
 
-  // ---- pines ----
+  // ---- pines y zonas ----
   useEffect(() => {
     const layer = layerRef.current
     const map = mapRef.current
     if (!layer || !map) return
     layer.clearLayers()
-    for (const g of grupos) {
-      const sel = g.key === selKey
-      const uno = g.items.length === 1
-      const nombre = uno ? g.items[0].titulo : `${g.items.length} hallazgos aquí`
-      const icon = L.divIcon({
-        className: 'fdm-pin-wrap',
-        html: `<span class="fdm-pin is-${g.estado}${g.zona ? ' is-zona' : ''}${sel ? ' is-sel' : ''}"><i></i>${uno ? '' : `<b>${g.items.length}</b>`}</span>`,
-        iconSize: [34, 42],
-        iconAnchor: [17, 37],
-      })
-      const m = L.marker([g.lat, g.lng], { icon, title: nombre, keyboard: true, riseOnHover: true, zIndexOffset: sel ? 1000 : 0 })
-      const abrir = () => {
-        if (placingRef.current) return
-        pick(g.items.map((x) => x.id))
-      }
-      m.on('click', abrir)
+    const teclado = (m: L.Marker, abrir: () => void) =>
       // con teclado: Enter o espacio sobre el pin enfocado (Leaflet no convierte la tecla en clic)
       m.on('keydown', (e) => {
         const k = (e as L.LeafletKeyboardEvent).originalEvent
@@ -216,9 +246,56 @@ export default function FeedMap({ query, rev, card, onItem, onGone }: Props) {
           abrir()
         }
       })
+    // las zonas primero: quedan debajo de los pines precisos
+    for (const g of [...grupos].sort((a, b) => Number(b.zona) - Number(a.zona))) {
+      const sel = g.key === selKey
+      const n = g.items.length
+      const abrir = () => {
+        if (placingRef.current) return
+        pick(g.items.map((x) => x.id))
+        setAbierto(!g.zona && n > 1 ? g.key : null)
+      }
+      if (g.zona) {
+        const nombre = n === 1 ? `${g.items[0].titulo}, ubicación aproximada` : `${n} hallazgos con ubicación aproximada en este sector`
+        // bubblingMouseEvents: false para que el clic no llegue al mapa (que cerraría el abanico o pondría un pin)
+        L.circle([g.lat, g.lng], { radius: ZONA_M, className: `fdm-zona-area${sel ? ' is-sel' : ''}`, bubblingMouseEvents: false }).on('click', abrir).addTo(layer)
+        const icon = L.divIcon({ className: 'fdm-pin-wrap', html: `<span class="fdm-zona${sel ? ' is-sel' : ''}"><b>${n}</b><small>aprox.</small></span>`, iconSize: [44, 44], iconAnchor: [22, 22] })
+        const m = L.marker([g.lat, g.lng], { icon, title: nombre, keyboard: true, riseOnHover: true, zIndexOffset: sel ? 900 : -100 })
+        m.on('click', abrir)
+        teclado(m, abrir)
+        m.addTo(layer)
+        m.getElement()?.setAttribute('aria-label', nombre)
+        continue
+      }
+      if (abiertoG?.key === g.key) {
+        // abanico: cada hallazgo con su pin, unido por una línea al punto real
+        const c = map.latLngToLayerPoint([g.lat, g.lng])
+        L.circleMarker([g.lat, g.lng], { radius: 4, className: 'fdm-spider-centro', interactive: false }).addTo(layer)
+        abanico(n).forEach(([dx, dy], i) => {
+          const it = g.items[i]
+          const ll = map.layerPointToLatLng(c.add([dx, dy]))
+          L.polyline([[g.lat, g.lng], ll], { className: 'fdm-spider-pata', interactive: false }).addTo(layer)
+          const yo = it.id === active
+          const icon = L.divIcon({ className: 'fdm-pin-wrap', html: pinHtml(it.estado, { sel: yo, chico: true }), iconSize: [28, 34], iconAnchor: [14, 30] })
+          const m = L.marker(ll, { icon, title: it.titulo, keyboard: true, riseOnHover: true, zIndexOffset: yo ? 2000 : 1500 })
+          const elegir = () => {
+            if (placingRef.current) return
+            setActive(it.id)
+          }
+          m.on('click', elegir)
+          teclado(m, elegir)
+          m.addTo(layer)
+          m.getElement()?.setAttribute('aria-label', `${it.titulo}, ${FEED_ESTADO_LABEL[it.estado].toLowerCase()}`)
+        })
+        continue
+      }
+      const nombre = n === 1 ? g.items[0].titulo : `${n} hallazgos en este punto`
+      const icon = L.divIcon({ className: 'fdm-pin-wrap', html: pinHtml(g.estado, { sel, n: n > 1 ? n : undefined }), iconSize: [34, 42], iconAnchor: [17, 37] })
+      const m = L.marker([g.lat, g.lng], { icon, title: nombre, keyboard: true, riseOnHover: true, zIndexOffset: sel ? 1000 : 0 })
+      m.on('click', abrir)
+      teclado(m, abrir)
       m.addTo(layer)
-      const label = `${nombre}, ${g.items.length === 1 ? FEED_ESTADO_LABEL[g.estado].toLowerCase() : 'varios'}`
-      m.getElement()?.setAttribute('aria-label', label)
+      m.getElement()?.setAttribute('aria-label', `${nombre}, ${n === 1 ? FEED_ESTADO_LABEL[g.estado].toLowerCase() : 'varios: se abren en abanico'}`)
     }
     if (fit.current && data) {
       fit.current = false
@@ -227,7 +304,7 @@ export default function FeedMap({ query, rev, card, onItem, onGone }: Props) {
       else map.setView(CENTRO, ZOOM)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [grupos, selKey, data])
+  }, [grupos, selKey, data, abiertoG, active])
 
   // en pantalla ancha el panel flota sobre el mapa (a la derecha): el pin elegido se acerca al centro de lo que queda a la vista
   useEffect(() => {
@@ -257,6 +334,7 @@ export default function FeedMap({ query, rev, card, onItem, onGone }: Props) {
     if (typeof matchMedia === 'function' && matchMedia('(max-width: 900px)').matches) requestAnimationFrame(() => panelRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
   }, [])
   const cerrar = () => {
+    setAbierto(null)
     setGrupoSel([])
     setActive(null)
     setFull(null)
@@ -342,12 +420,13 @@ export default function FeedMap({ query, rev, card, onItem, onGone }: Props) {
     for (const p of pines) c[p.estado]++
     return c
   }, [pines])
-  const aprox = pines.some((p) => p.ubicacion.precision === 'zona')
+  const nZona = pines.filter(esZona).length
+  const grupoZona = !!activePin && esZona(activePin)
 
   return (
     <div className="fdm" aria-busy={loading && !data}>
       <p className="fd-results" role="status" aria-live="polite">
-        {!data ? 'Cargando el mapa…' : `${fmtN(pines.length)} con pin · ${fmtN(sin.length)} sin ubicación${data.truncado ? ` · se muestran los primeros ${fmtN(pines.length + sin.length)} de ${fmtN(data.total)}: afina con los filtros` : ''}`}
+        {!data ? 'Cargando el mapa…' : `${fmtN(pines.length - nZona)} con pin${nZona ? ` · ${fmtN(nZona)} en zona aproximada` : ''} · ${fmtN(sin.length)} sin ubicación${data.truncado ? ` · se muestran los primeros ${fmtN(pines.length + sin.length)} de ${fmtN(data.total)}: afina con los filtros` : ''}`}
       </p>
 
       {error && (
@@ -368,10 +447,10 @@ export default function FeedMap({ query, rev, card, onItem, onGone }: Props) {
             {e.label} <em>{fmtN(cuentas[e.estado])}</em>
           </li>
         ))}
-        {aprox && (
+        {nZona > 0 && (
           <li>
             <span className="fdm-dot is-zona" aria-hidden="true" />
-            Aproximado (sector)
+            Zona aproximada (solo el sector) <em>{fmtN(nZona)}</em>
           </li>
         )}
       </ul>
@@ -403,13 +482,16 @@ export default function FeedMap({ query, rev, card, onItem, onGone }: Props) {
           ) : (
             <div className="fdm-sel">
               <div className="fdm-sel-head">
-                <p>{grupoSel.length > 1 ? `${grupoSel.length} hallazgos en este punto` : 'Hallazgo en el mapa'}</p>
+                <p>{grupoSel.length > 1 ? (grupoZona ? `${grupoSel.length} hallazgos en esta zona (aproximada)` : `${grupoSel.length} hallazgos en este punto`) : 'Hallazgo en el mapa'}</p>
                 <button type="button" className="fd-btn is-ghost" onClick={cerrar} aria-label="Cerrar el detalle">
                   <Icon name="close" size={14} /> Cerrar
                 </button>
               </div>
+              {grupoSel.length > 1 && grupoZona && (
+                <p className="fdm-zona-nota">Solo se sabe el sector, no el local: corrige la dirección o fija el pin de cada uno para ubicarlo bien.</p>
+              )}
               {grupoSel.length > 1 && (
-                <ul className="fdm-group">
+                <ul className={`fdm-group${grupoSel.length > 12 ? ' is-largo' : ''}`}>
                   {grupoSel.map((id) => {
                     const p = pines.find((x) => x.id === id)
                     return (
@@ -513,7 +595,7 @@ function UbicacionBar({ it, busy, onMove, onSave }: { it: FeedItem; busy: boolea
         <Icon name="pin" size={15} />
         <span>
           {u.direccion ?? 'Sin dirección'}
-          {u.estado === 'ok' && u.precision && <small>{u.origen === 'manual' ? 'Pin fijado a mano' : PRECISION_LABEL[u.precision]}</small>}
+          {u.estado === 'ok' && u.precision && <small>{u.origen === 'manual' ? 'Pin fijado a mano' : u.origen === 'google_maps' ? 'Ubicación tomada de su ficha de Google Maps' : PRECISION_LABEL[u.precision]}</small>}
           {u.estado !== 'ok' && <small>{MOTIVO_SIN_PIN[u.estado]}</small>}
         </span>
       </p>

@@ -71,8 +71,9 @@ export interface Ubicacion {
   lng: number | null
   /** exacta | calle | zona (aproximada: centro de la urbanización o del barrio) */
   precision: 'exacta' | 'calle' | 'zona' | null
-  /** nominatim | mapbox: se buscó la dirección con ese proveedor · manual: alguien puso el pin · datos: ya venía con coordenadas */
-  origen: 'nominatim' | 'mapbox' | 'manual' | 'datos' | null
+  /** nominatim | mapbox: se buscó la dirección con ese proveedor · manual: alguien puso el pin · datos: ya venía con coordenadas ·
+   *  google_maps: salen del enlace de su ficha de Google Maps */
+  origen: 'nominatim' | 'mapbox' | 'manual' | 'datos' | 'google_maps' | null
 }
 
 export interface FeedItem {

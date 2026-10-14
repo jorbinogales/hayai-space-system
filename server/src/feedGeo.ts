@@ -15,8 +15,9 @@ export type Ubicacion = {
   lng: number | null
   /** exacta | calle | zona (aproximada: centro de la urbanización o el barrio). Solo con estado ok. */
   precision: Precision | null
-  /** nominatim | mapbox: se buscó la dirección con ese proveedor · manual: alguien puso el pin · datos: ya venía con coordenadas. */
-  origen: 'nominatim' | 'mapbox' | 'manual' | 'datos' | null
+  /** nominatim | mapbox: se buscó la dirección con ese proveedor · manual: alguien puso el pin · datos: ya venía con coordenadas ·
+   *  google_maps: salen del enlace de la ficha de Google Maps (`datos.google_maps.url`). */
+  origen: 'nominatim' | 'mapbox' | 'manual' | 'datos' | 'google_maps' | null
 }
 
 const obj = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null)
@@ -24,7 +25,7 @@ const s = (v: unknown) => (typeof v === 'string' && v.trim() ? v.replace(/\s+/g,
 const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v)) ? Number(v) : null)
 
 /** Las llaves de `datos` que usan la dirección, el teléfono y la ubicación: el mapa solo trae esas (no el guion ni las fugas). */
-export const CLAVES_UBICACION = ['donde', 'direccion', 'dirección', 'ubicacion', 'lugar', 'negocio', 'contacto', 'telefono', 'phone', 'whatsapp', 'geo', 'lat', 'lng', 'latitud', 'longitud'] as const
+export const CLAVES_UBICACION = ['donde', 'direccion', 'dirección', 'ubicacion', 'lugar', 'negocio', 'contacto', 'telefono', 'phone', 'whatsapp', 'geo', 'lat', 'lng', 'latitud', 'longitud', 'google_maps'] as const
 
 /** La dirección del negocio: `datos.donde` (Growi) y, si no, las llaves de uso común, también dentro de `negocio` y `contacto`. */
 export function direccionDe(d: Record<string, unknown>): string | null {
@@ -42,6 +43,39 @@ export function telefonoDe(d: Record<string, unknown>): string | null {
   return s(c.telefono) ?? s(c.phone) ?? s(c.whatsapp) ?? s(d.telefono) ?? s(d.phone) ?? s(d.whatsapp)
 }
 
+/**
+ * Las coordenadas que trae un enlace de Google Maps, sin pedir nada a nadie. En orden de confianza:
+ *   `!3d<lat>!4d<lng>` (el punto del lugar en un enlace /maps/place/…) y `q=` / `query=` / `ll=` / `destination=` con «lat,lng»: exacta;
+ *   `@<lat>,<lng>,<zoom>z` es el centro de la cámara (suele caer encima del local, pero no siempre): calle.
+ * Un enlace corto (maps.app.goo.gl) no trae coordenadas: hay que abrirlo para saberlas, y eso no se hace aquí. null si no hay nada utilizable.
+ */
+export function coordenadasDeGoogleMaps(url: string): { lat: number; lng: number; precision: Precision } | null {
+  let t = url.trim()
+  if (!/^https?:\/\/([\w-]+\.)*google\.[a-z.]+\/maps|^https?:\/\/maps\.google\.[a-z.]+\//i.test(t)) return null
+  try {
+    t = decodeURIComponent(t)
+  } catch {
+    // un % suelto: se lee tal cual
+  }
+  const par = (a: string, b: string, precision: Precision) => {
+    const lat = Number(a)
+    const lng = Number(b)
+    return Number.isFinite(lat) && Number.isFinite(lng) && enVenezuela(lat, lng) ? { lat, lng, precision } : null
+  }
+  const NUM = '(-?\\d{1,2}(?:\\.\\d+)?)'
+  const lugar = [...t.matchAll(new RegExp(`!3d${NUM}!4d${NUM}`, 'g'))].at(-1) // si hay varios, el último es el del lugar
+  if (lugar) return par(lugar[1], lugar[2], 'exacta')
+  const q = t.match(new RegExp(`[?&](?:q|query|ll|destination|center)=(?:loc:)?${NUM}\\s*,\\s*${NUM}`))
+  if (q) return par(q[1], q[2], 'exacta')
+  const cam = t.match(new RegExp(`@${NUM},${NUM}(?:,|$)`))
+  if (cam) return par(cam[1], cam[2], 'calle')
+  return null
+}
+const urlGoogleMaps = (d: Record<string, unknown>) => {
+  const g = obj(d.google_maps)
+  return g ? (s(g.url) ?? s(g.link) ?? s(g.enlace)) : s(d.google_maps)
+}
+
 const norma = (v: string) => v.replace(/\s+/g, ' ').trim().toLowerCase()
 
 /** Estado de la ubicación de un ítem a partir de su `datos`. Función pura: la usan el listado, el mapa y el relleno. */
@@ -51,13 +85,16 @@ export function ubicacionDe(d: Record<string, unknown>): Ubicacion {
   const g = obj(d.geo)
   const glat = g ? n(g.lat) : null
   const glng = g ? n(g.lng) : null
-  if (g?.estado === 'ok' && glat !== null && glng !== null && enVenezuela(glat, glng)) {
-    const manual = g.origen === 'manual'
-    // Un pin buscado por texto es de ESA dirección: si la dirección cambió por otra vía, vuelve a estar pendiente.
-    if (manual || !direccion || (typeof g.consulta === 'string' && norma(g.consulta) === norma(direccion))) {
-      const p = g.precision
-      return { ...base, estado: 'ok', lat: glat, lng: glng, precision: p === 'exacta' || p === 'calle' || p === 'zona' ? p : manual ? 'exacta' : 'zona', origen: manual ? 'manual' : g.origen === 'mapbox' ? 'mapbox' : 'nominatim' }
-    }
+  const geoOk = g?.estado === 'ok' && glat !== null && glng !== null && enVenezuela(glat, glng)
+  if (geoOk && g.origen === 'manual') return { ...base, estado: 'ok', lat: glat, lng: glng, precision: g.precision === 'calle' || g.precision === 'zona' ? g.precision : 'exacta', origen: 'manual' }
+  // La ficha de Google Maps sabe dónde queda el local mejor que cualquier geocodificador con una dirección de aquí: manda sobre él (no sobre un pin manual).
+  const gm = urlGoogleMaps(d)
+  const deMaps = gm ? coordenadasDeGoogleMaps(gm) : null
+  if (deMaps) return { ...base, estado: 'ok', ...deMaps, origen: 'google_maps' }
+  // Un pin buscado por texto es de ESA dirección: si la dirección cambió por otra vía, vuelve a estar pendiente.
+  if (geoOk && (!direccion || (typeof g.consulta === 'string' && norma(g.consulta) === norma(direccion)))) {
+    const p = g.precision
+    return { ...base, estado: 'ok', lat: glat, lng: glng, precision: p === 'exacta' || p === 'calle' || p === 'zona' ? p : 'zona', origen: g.origen === 'mapbox' ? 'mapbox' : 'nominatim' }
   }
   // Coordenadas que ya traía el ítem (si el que publica las manda, se respetan).
   const dlat = n(d.lat) ?? n(d.latitud)
@@ -94,7 +131,7 @@ export async function geocodificarItem(db: Db, id: string, o: { forzar?: boolean
   if (!r) return 'omitido'
   const d = (r.data ?? {}) as Record<string, unknown>
   const u = ubicacionDe(d)
-  if (u.origen === 'manual' || u.origen === 'datos' || !u.direccion) return 'omitido'
+  if (u.origen === 'manual' || u.origen === 'datos' || u.origen === 'google_maps' || !u.direccion) return 'omitido'
   if (u.estado === 'ok' && !o.forzar) return 'omitido'
   const direccion = u.direccion
   const previo = obj(d.geo)

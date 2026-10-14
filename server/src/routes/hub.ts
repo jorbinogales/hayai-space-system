@@ -4,6 +4,7 @@ import { exec } from '../services/common.ts'
 import { comprobanteArchivo, comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
 import { pagoActualizar } from '../services/clientes.ts'
 import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
+import { briefActualizar, briefVer } from '../services/brief.ts'
 import { feedGuionEditar, feedGuionRestablecer, feedGuionVer } from '../services/feedGuion.ts'
 import { feedEjecutarAccion, feedSugerirAcciones } from '../services/feedAcciones.ts'
 import { teselas } from '../geocode.ts'
@@ -27,6 +28,9 @@ hubRouter.get('/version', async (req, res) => void res.json(await exec(versionVe
 hubRouter.get('/versions', async (req, res) => void res.json(await exec(versionesListar, req.user!, query(req))))
 hubRouter.post('/versions', async (req, res) => void res.status(201).json(await exec(versionPublicar, req.user!, body(req))))
 hubRouter.get('/hub', async (req, res) => void res.json(await exec(hubVer, req.user!, {})))
+// Brief del día: GET lo sirve (o lo redacta si aún no hay el de hoy); POST lo vuelve a redactar («Actualizar»).
+hubRouter.get('/hub/brief', async (req, res) => void res.json(await exec(briefVer, req.user!, {})))
+hubRouter.post('/hub/brief', async (req, res) => void res.json(await exec(briefActualizar, req.user!, {})))
 hubRouter.get('/team', async (req, res) => void res.json(await exec(equipoVer, req.user!, {})))
 hubRouter.patch('/team/:socio', async (req, res) => void res.json(await exec(equipoActualizar, req.user!, { ...body(req), socio: req.params.socio })))
 hubRouter.get('/agreements', async (req, res) => void res.json(await exec(acuerdosListar, req.user!, query(req))))

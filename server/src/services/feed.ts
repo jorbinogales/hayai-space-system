@@ -196,7 +196,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
  * Le pone a cada ítem su vínculo con un cliente y lo ya creado. El vínculo sale, en este orden, de: lo convertido desde el ítem; `datos.cliente_id`;
- * `datos.cliente` (nombre que coincide con UN solo cliente no archivado). Lo creado que ya no existe (papelera) no cuenta.
+ * `datos.cliente` (nombre que coincide con UN solo cliente no archivado; si ninguno coincide entero, vale la parte antes de « - »: «Supermigas»
+ * encuentra a «Supermigas - Yamilka»). Lo creado que ya no existe (papelera) no cuenta.
  */
 export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
   if (!items.length) return items
@@ -218,7 +219,8 @@ export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
   const nombres = [...new Set(items.flatMap((i) => nombreDatos(i) ?? []).map(plano))]
   const cl = (
     await db.query(
-      `SELECT id, name, is_prospect, archived_at FROM clients WHERE id = ANY($1::uuid[]) OR (archived_at IS NULL AND fold(name) = ANY(SELECT fold(x) FROM unnest($2::text[]) x))`,
+      `SELECT id, name, is_prospect, archived_at FROM clients WHERE id = ANY($1::uuid[])
+         OR (archived_at IS NULL AND (fold(name) = ANY(SELECT fold(x) FROM unnest($2::text[]) x) OR fold(btrim(split_part(name, ' - ', 1))) = ANY(SELECT fold(x) FROM unnest($2::text[]) x)))`,
       [ids, nombres],
     )
   ).rows
@@ -232,7 +234,10 @@ export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
     let origen: Vinculado['origen'] = c ? 'conversion' : null
     if (!c && idDatos(it)) (c = porId.get(idDatos(it)!)), (origen = c ? 'datos' : null)
     if (!c && nombreDatos(it)) {
-      const hit = cl.filter((x) => !x.archived_at && plano(x.name as string) === plano(nombreDatos(it)!))
+      const n = plano(nombreDatos(it)!)
+      const activos = cl.filter((x) => !x.archived_at)
+      const entero = activos.filter((x) => plano(x.name as string) === n)
+      const hit = entero.length ? entero : activos.filter((x) => plano((x.name as string).split(' - ')[0]) === n)
       if (hit.length === 1) (c = hit[0]), (origen = 'nombre')
     }
     const vinculo: Vinculado = c ? { estado: c.is_prospect ? 'posible_cliente' : 'cliente', cliente_id: c.id as string, cliente: c.name as string, origen } : { estado: 'sin_vinculo', cliente_id: null, cliente: null, origen: null }

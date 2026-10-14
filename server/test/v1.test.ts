@@ -227,7 +227,8 @@ before(async () => {
       const b = JSON.parse(raw || '{}')
       const user = JSON.parse(b.messages?.[1]?.content ?? '{}')
       llmCalls.push({ auth: req.headers.authorization, model: b.model, system: b.messages?.[0]?.content ?? '', user })
-      const g = llmGuion.get(user.item?.titulo) ?? { reply: { acciones: [] } }
+      // las acciones sugeridas se guionan por el título del ítem; el brief del día, por «brief:<socio>»
+      const g = llmGuion.get(user.item?.titulo ?? (user.socio ? `brief:${user.socio.nombre}` : undefined)) ?? { reply: { acciones: [] } }
       if (g.delayMs) await new Promise((r) => setTimeout(r, g.delayMs))
       if (g.status && g.status !== 200) return void res.writeHead(g.status).end('{}')
       const content = g.raw ?? JSON.stringify(g.reply)
@@ -3649,7 +3650,7 @@ describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la ta
     bcvPayload.principal = oficial(873.87, caracas())
     const r = await api('/version')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.equal(r.body.version, '1.8.0')
+    assert.equal(r.body.version, '1.8.1')
     assert.equal(r.body.hoy, caracas())
     assert.deepEqual({ ...r.body.bcv, actualizada_el: '<t>' }, { moneda: 'USD', tasa: 873.87, fecha: caracas(), es_de_hoy: true, fuente: `localhost:${BCV_PORT}`, actualizada_el: '<t>' })
     const hits = bcvHits.principal
@@ -3705,7 +3706,7 @@ describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la ta
 
   it('MCP y web: la misma respuesta; sin llave o sin sesión 401', async () => {
     const m = data(await mcp('hayai_version_ver', {}))
-    assert.equal(m.version, '1.8.0')
+    assert.equal(m.version, '1.8.1')
     assert.equal(m.bcv.tasa, 890)
     assert.equal((await http(`${ROOT}/api/v1/version`)).status, 401)
     const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
@@ -3721,11 +3722,16 @@ describe('Historial de versiones (changelog)', () => {
   const hoy = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
   const publicar = (b: Record<string, unknown>, key = KEY) => api('/versiones', { key, body: b })
 
-  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6, 1.6.7, 1.7.0, 1.7.5 y 1.8.0 vienen publicadas; la más nueva primero y marcada como actual', async () => {
+  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6, 1.6.7, 1.7.0, 1.7.5, 1.8.0 y 1.8.1 vienen publicadas; la más nueva primero y marcada como actual', async () => {
     const r = await api('/versiones')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.8.0', true], ['1.7.5', false], ['1.7.0', false], ['1.6.7', false], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
-    const [v18, v175, v17, v167, v166, , v16, v15, v10] = r.body.data
+    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.8.1', true], ['1.8.0', false], ['1.7.5', false], ['1.7.0', false], ['1.6.7', false], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
+    const [v181, v18, v175, v17, v167, v166, , v16, v15, v10] = r.body.data
+    assert.deepEqual([v181.titulo, v181.resumen, v181.autor, v181.fecha, v181.cambios.length], ['Copiloto invisible', 'Correcciones de bugs y fixes.', 'Equipo HAYAI', '2026-10-14', 4])
+    const notas181 = [v181.titulo, v181.resumen, ...v181.cambios].join(' ')
+    assert.match(notas181, /reconocimiento automático de opciones/)
+    assert.match(notas181, /brief matutino personalizado en el Hub|brief matutino personalizado/i)
+    assert.doesNotMatch(notas181, /deepseek|api key|llave|DEEPSEEK/i, 'las notas no nombran al proveedor ni la llave')
     assert.deepEqual([v18.titulo, v18.autor, v18.fecha, v18.cambios.length], ['Mapa y Mensaje', 'Equipo HAYAI', '2026-10-12', 8])
     assert.deepEqual([v175.titulo, v175.autor, v175.fecha, v175.cambios.length], ['Central de marketing', 'Equipo HAYAI', '2026-10-08', 12])
     assert.deepEqual([v167.titulo, v167.autor, v167.fecha, v167.cambios.length], ['Órbita fina III', 'Equipo HAYAI', '2026-10-08', 4])
@@ -3741,15 +3747,15 @@ describe('Historial de versiones (changelog)', () => {
 
   it('POST /versiones: el autor es el dueño de la llave, la fecha por defecto es hoy, pasa a ser la actual y avisa al equipo', async () => {
     const base = (await api('/actividad?per_page=1', { key: KEY_J })).body.meta.ultimo_id as number
-    const r = await publicar({ version: '1.8.1', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
+    const r = await publicar({ version: '1.8.2', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
     assert.equal(r.status, 201, JSON.stringify(r.body))
-    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.8.1', 'Leandro', hoy(), true, 2])
-    assert.equal((await api('/version')).body.version, '1.8.1')
-    assert.equal((await api('/versiones')).body.data[0].version, '1.8.1')
+    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.8.2', 'Leandro', hoy(), true, 2])
+    assert.equal((await api('/version')).body.version, '1.8.2')
+    assert.equal((await api('/versiones')).body.data[0].version, '1.8.2')
     assert.equal((await api('/versiones')).body.data.filter((v: any) => v.actual).length, 1)
     const ev = ((await api(`/actividad?desde_id=${base}&orden=asc`, { key: KEY_J })).body.data as any[]).filter((e) => e.tipo === 'version_nueva')
     assert.equal(ev.length, 1)
-    assert.equal(ev[0].texto, 'Nueva actualización v1.8.1 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
+    assert.equal(ev[0].texto, 'Nueva actualización v1.8.2 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
     assert.equal(ev[0].propia, false)
     // y le llega a TODOS, también a quien la publicó (su pestaña abierta también debe enterarse)
     const mio = ((await api(`/actividad?desde_id=${base}&orden=asc`)).body.data as any[]).find((e) => e.tipo === 'version_nueva')
@@ -3761,7 +3767,7 @@ describe('Historial de versiones (changelog)', () => {
 
   it('el orden es numérico (1.10.0 va después de 1.9.0) y la versión nueva siempre debe ser mayor que la actual', async () => {
     assert.equal((await publicar({ version: '1.10.0', cambios: ['x'] })).status, 201)
-    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.8.1', '1.8.0', '1.7.5', '1.7.0', '1.6.7', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
+    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.8.2', '1.8.1', '1.8.0', '1.7.5', '1.7.0', '1.6.7', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
     assert.equal((await api('/version')).body.version, '1.10.0')
     for (const v of ['1.10.0', '1.9.5', '1.4.0', '0.9.0']) {
       const r = await publicar({ version: v, cambios: ['x'] })
@@ -5026,7 +5032,8 @@ describe('Acciones sugeridas por IA (feed)', () => {
           { tipo: 'crear_propuesta', etiqueta: 'Crear propuesta', parametros: { oferta_id: ofertaId } },
           { tipo: 'agendar_cobro', etiqueta: 'Agendar mensualidad', parametros: { concepto: 'Mensualidad', monto: 25, fecha: mas(60) } },
           { tipo: 'crear_tarea', etiqueta: 'Crear tarea de visita', motivo: 'Mostrarle el panel de pedidos', parametros: { titulo: 'Visitar Supermigas', vence: mas(3) } },
-          { tipo: 'crear_seguimiento', parametros: { dias: 5 } },
+          // con título propio: sin título heredaría el del ítem («venderle la mensualidad») y desde 1.8.1 también se descarta
+          { tipo: 'crear_seguimiento', parametros: { dias: 5, titulo: 'Llamar a Yamilka para ver cómo va el sistema' } },
         ],
       },
     })
@@ -5280,6 +5287,54 @@ describe('Acciones sugeridas por IA (feed)', () => {
     assert.equal((await ejecutar(r.body.id, f.acciones_sugeridas.data[0].id)).status, 200)
   })
 
+  it('1.8.1 congruencia: la mensualidad que solo consta por escrito en el proyecto cuenta, y «Supermiga» encuentra a «Supermiga - Yamilka»', async () => {
+    const cl = await api('/clientes', { body: { nombre: 'Panadería Supermiga - Yamilka' } })
+    assert.equal(cl.status, 201, JSON.stringify(cl.body))
+    const pr = await api('/proyectos', { body: { nombre: 'Mostrador Supermiga', cliente_id: cl.body.id, estado: 'entregado', descripcion: 'Sistema instalado el 6 oct. Esquema: $75 + $75 instalación + mensualidad. Responsable: Elis.' } })
+    assert.equal(pr.status, 201, JSON.stringify(pr.body))
+    const titulo = 'Upsell Supermiga: ofrecer soporte mensual a Yamilka'
+    guion(titulo, {
+      reply: {
+        acciones: [
+          { tipo: 'crear_propuesta', parametros: { oferta_id: ofertaId } },
+          { tipo: 'crear_seguimiento', etiqueta: 'Proponer plan de soporte', parametros: { dias: 3, titulo: 'Ofrecer plan de soporte mensual a Yamilka' } },
+          { tipo: 'crear_tarea', etiqueta: 'Ofrecer mantenimiento', parametros: { titulo: 'Proponer el plan de mantenimiento mensual' } },
+          { tipo: 'agendar_cobro', parametros: { concepto: 'Mensualidad soporte', monto: 120, fecha: mas(5) } },
+        ],
+      },
+    })
+    const r = await pub({ titulo, tipo: 'oportunidad', fuente: 'growi', resumen: 'Es el momento de ofrecerle un plan de soporte mensual.', datos: { cliente: 'Panadería Supermiga' } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    const f = await esperar(r.body.id)
+    assert.deepEqual([f.vinculo.estado, f.vinculo.cliente_id, f.vinculo.origen], ['cliente', cl.body.id, 'nombre'], 'el nombre antes de « - » basta para vincular')
+    assert.equal(f.acciones_sugeridas.estado, 'listo')
+    assert.deepEqual(tipos(f), [], 'nada que le venda lo que ya tiene: sin botones')
+    const c = llamadas(titulo).at(-1)!
+    assert.equal(c.user.cliente.mensualidad_contratada, true, 'la IA recibe que ya tiene la mensualidad')
+    assert.match(c.system, /soporte, mantenimiento o un plan mensual/)
+
+    // lo que sí aplica pasa: llevarle el lector, y confirmar el pago de SU mensualidad (cobrarla no es vendérsela)
+    const t2 = 'Supermiga: lector de código de barras'
+    guion(t2, {
+      reply: {
+        acciones: [
+          { tipo: 'crear_tarea', etiqueta: 'Llevar el lector', parametros: { titulo: 'Llevar el lector de código de barras a Yamilka' } },
+          { tipo: 'crear_seguimiento', etiqueta: 'Confirmar el pago', parametros: { dias: 2, titulo: 'Confirmar el pago de la mensualidad de noviembre' } },
+        ],
+      },
+    })
+    const r2 = await pub({ titulo: t2, tipo: 'oportunidad', fuente: 'growi', datos: { cliente_id: cl.body.id } })
+    assert.deepEqual(tipos(await esperar(r2.body.id)), ['crear_tarea', 'crear_seguimiento'])
+
+    // una frase que NIEGA la mensualidad no cuenta: a ese cliente sí se le puede proponer
+    const cl2 = await api('/clientes', { body: { nombre: 'Heladería Sin Plan' } })
+    await api('/proyectos', { body: { nombre: 'Kiosko Sin Plan', cliente_id: cl2.body.id, descripcion: 'Solo instalación; aún no paga mensualidad.' } })
+    const t3 = 'Heladería Sin Plan: proponerle el plan'
+    guion(t3, { reply: { acciones: [{ tipo: 'crear_propuesta', parametros: { oferta_id: ofertaId } }] } })
+    const r3 = await pub({ titulo: t3, tipo: 'oportunidad', fuente: 'growi', datos: { cliente_id: cl2.body.id } })
+    assert.deepEqual(tipos(await esperar(r3.body.id)), ['crear_propuesta'])
+  })
+
   it('web (sesión): POST /api/feed/:id/sugerir-acciones y /acciones/:accion/ejecutar; sin sesión 401', async () => {
     const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
     const cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
@@ -5355,6 +5410,99 @@ describe('Acciones sugeridas por IA (feed)', () => {
     } finally {
       srv.kill()
     }
+  })
+})
+
+describe('Brief del día en el Hub (1.8.1)', () => {
+  const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+  const mas = (d: number) => new Date(Date.parse(`${hoy}T00:00:00Z`) + d * 86_400_000).toISOString().slice(0, 10)
+  const cookies: Record<string, string> = {}
+  const login = async (name: string, pin: string) => {
+    const r = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, pin }) })
+    assert.equal(r.status, 200, `login ${name}`)
+    return r.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+  }
+  const web = (who: string, path: string, o: { method?: string; body?: unknown } = {}) => http(`${ROOT}/api${path}`, { headers: { cookie: cookies[who] }, ...o })
+  const brief = (who: string) => llmCalls.filter((c) => c.user.socio?.nombre === who)
+  let mio = ''
+
+  before(async () => {
+    cookies.Jorbi = await login('Jorbi', '482913')
+    cookies.Elis = await login('Elis', '713904')
+    // un cliente de Jorbi (su proyecto) con un cobro HOY, y uno de otro (de Leandro) en 2 días
+    const a = await api('/clientes', { body: { nombre: 'Brief Ferretería Jorbi' } })
+    mio = a.body.id
+    const p = await api('/proyectos', { body: { nombre: 'POS Ferretería Brief', cliente_id: mio, responsable: 'Jorbi', estado: 'activo' } })
+    assert.equal(p.status, 201, JSON.stringify(p.body))
+    assert.equal((await api(`/clientes/${mio}/pagos`, { body: { fecha: hoy, monto: 75, concepto: 'Segunda parte instalación', estado: 'pendiente' } })).status, 201)
+    const b = await api('/clientes', { body: { nombre: 'Brief Óptica Ajena' } })
+    await api('/proyectos', { body: { nombre: 'Web Óptica Brief', cliente_id: b.body.id, responsable: 'Leandro', estado: 'activo' } })
+    assert.equal((await api(`/clientes/${b.body.id}/pagos`, { body: { fecha: mas(2), monto: 40.5, concepto: 'Mensualidad', estado: 'pendiente' } })).status, 201)
+    const t = await api('/tareas', { body: { titulo: 'Visita de capacitación en la ferretería', proyecto_id: p.body.id, vence: mas(1), responsable: 'Jorbi' } })
+    assert.equal(t.status, 201, JSON.stringify(t.body))
+  })
+
+  it('sin sesión 401; con sesión lo redacta la IA con los datos reales, lo de Jorbi marcado «tuyo» y su rol en el prompt', async () => {
+    assert.equal((await http(`${ROOT}/api/hub/brief`)).status, 401)
+    llmGuion.set('brief:Jorbi', {
+      reply: {
+        titular: 'Jorbi, hoy cobras $75 a la ferretería',
+        parrafo: 'Un cobro hoy y una visita mañana.',
+        puntos: [
+          { texto: 'Cobra los $75 de la Ferretería hoy.', tipo: 'cobro', tuyo: true },
+          { texto: 'Mañana: visita de capacitación.', tipo: 'visita', tuyo: true },
+          { texto: 'Esto no es un tipo válido', tipo: 'chisme', tuyo: false },
+        ],
+      },
+    })
+    const antes = brief('Jorbi').length
+    const r = await web('Jorbi', '/hub/brief')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual([r.body.fecha, r.body.para, r.body.ia, r.body.titular], [hoy, 'Jorbi', true, 'Jorbi, hoy cobras $75 a la ferretería'])
+    assert.deepEqual(r.body.puntos.map((p: any) => p.tipo), ['cobro', 'visita'], 'un tipo fuera del catálogo se descarta')
+    assert.ok(r.body.cifras.cobros_hoy.n >= 1 && r.body.cifras.cobros_hoy.monto >= 75, 'las cifras las pone el servidor')
+    assert.ok(r.body.cifras.cobros_3_dias.n >= 1)
+    assert.ok(!JSON.stringify(r.body).includes('modelo-falso'), 'no se expone el proveedor ni el modelo')
+    const c = brief('Jorbi')
+    assert.equal(c.length, antes + 1)
+    const u = c.at(-1)!.user
+    assert.equal(u.socio.nombre, 'Jorbi')
+    assert.ok('rol' in u.socio && 'responsabilidades' in u.socio)
+    assert.ok(u.cobros.hoy.some((x: any) => x.cliente === 'Brief Ferretería Jorbi' && x.monto === 75 && x.tuyo === true))
+    assert.ok(u.cobros.proximos.some((x: any) => x.cliente === 'Brief Óptica Ajena' && x.monto === 40.5 && x.tuyo === false), 'lo de otro socio va, pero no como suyo')
+    assert.ok(u.visitas.some((v: any) => /capacitación/.test(v.que) && v.fecha === mas(1) && v.tuyo === true))
+    assert.ok(u.mis_proyectos.some((p: any) => p.nombre === 'POS Ferretería Brief'))
+    assert.match(c.at(-1)!.system, /Lo del socio primero/)
+  })
+
+  it('se guarda uno por socio y día: abrir otra vez no vuelve a redactar; «Actualizar» (POST) sí', async () => {
+    const antes = brief('Jorbi').length
+    const a = await web('Jorbi', '/hub/brief')
+    const b = await web('Jorbi', '/hub/brief')
+    assert.equal(a.body.generado_el, b.body.generado_el)
+    assert.equal(brief('Jorbi').length, antes, 'del guardado, sin llamar a la IA')
+    const { rows } = await admin.query(`SELECT count(*)::int AS n, max(model) AS model FROM briefs b JOIN users u ON u.id = b.user_id WHERE u.name = 'Jorbi' AND b.day = $1`, [hoy])
+    assert.deepEqual([rows[0].n, rows[0].model], [1, 'modelo-falso'])
+    llmGuion.set('brief:Jorbi', { reply: { titular: 'Jorbi, brief actualizado', parrafo: '', puntos: [] } })
+    const n = await web('Jorbi', '/hub/brief', { method: 'POST', body: {} })
+    assert.equal(n.status, 200, JSON.stringify(n.body))
+    assert.equal(n.body.titular, 'Jorbi, brief actualizado')
+    assert.notEqual(n.body.generado_el, a.body.generado_el)
+    assert.equal(brief('Jorbi').length, antes + 1)
+    assert.equal((await web('Jorbi', '/hub/brief')).body.titular, 'Jorbi, brief actualizado', 'el actualizado reemplaza al del día')
+  })
+
+  it('cada socio el suyo; si la IA falla, plantilla con las mismas cifras (ia:false) y el Hub no se queda sin brief', async () => {
+    llmGuion.set('brief:Elis', { status: 500 })
+    const r = await web('Elis', '/hub/brief')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual([r.body.para, r.body.ia], ['Elis', false])
+    assert.match(r.body.titular, /^Elis, /)
+    assert.ok(r.body.puntos.some((p: any) => p.tipo === 'cobro' && /Brief Ferretería Jorbi/.test(p.texto) && /\$75/.test(p.texto)))
+    assert.ok(r.body.puntos.every((p: any) => p.texto.length > 5))
+    const j = (await web('Jorbi', '/hub/brief')).body
+    assert.deepEqual(r.body.cifras.cobros_hoy, j.cifras.cobros_hoy, 'las cifras son las mismas para todos')
+    assert.ok(!r.body.puntos.find((p: any) => /ferretería/i.test(p.texto))?.tuyo, 'el cobro del cliente de Jorbi no es «tuyo» para Elis')
   })
 })
 

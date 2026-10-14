@@ -166,6 +166,47 @@ button.core-mark:focus-visible { outline: 2px solid #ffd27a; outline-offset: 0.1
 .hb-stat.is-dark small, .hb-stat.is-dark > span { color: rgba(244, 235, 221, 0.68); }
 .hb-stat.is-dark strong { color: #ffd27a; }
 
+/* ---------- brief del día (debajo del Feed) ---------- */
+.hb-brief { display: grid; gap: 14px; padding: 20px 22px; border-radius: 22px; background: rgba(255, 255, 255, 0.66); box-shadow: inset 0 0 0 1px rgba(22, 17, 11, 0.08); min-width: 0; }
+.hb-brief-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.hb-brief-head h2 { margin: 0; font-size: 0.7rem; letter-spacing: 0.2em; text-transform: uppercase; font-weight: 600; color: var(--ink-2); }
+.hb-brief-date { margin: 4px 0 0; font-size: 0.82rem; color: var(--ink-2); }
+.hb-brief-date::first-letter { text-transform: uppercase; }
+.hb-brief-spin { display: inline-grid; animation: hbSpin 0.9s linear infinite; }
+@keyframes hbSpin { to { rotate: 360deg; } }
+.hb-brief-wait { display: grid; gap: 10px; }
+.hb-brief-wait p { margin: 0; font-size: 0.88rem; color: var(--ink-2); }
+.hb-brief-body { display: grid; gap: 14px; min-width: 0; transition: opacity var(--t-hover) var(--ease); }
+.hb-brief-body.is-stale { opacity: 0.55; }
+.hb-brief-title { margin: 0; font: 650 clamp(1.15rem, 1vw + 0.85rem, 1.45rem) / 1.25 var(--display); letter-spacing: -0.01em; color: var(--ink); text-wrap: balance; }
+.hb-brief-lede { margin: -6px 0 0; max-width: 72ch; font-size: 0.92rem; line-height: 1.55; color: var(--ink-2); text-wrap: pretty; }
+.hb-brief-stats { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px; margin: 0; padding: 0; }
+.hb-brief-stats li { display: grid; gap: 2px; padding: 10px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.7); box-shadow: inset 0 0 0 1px rgba(22, 17, 11, 0.07); min-width: 0; }
+.hb-brief-stats small { font-size: 0.64rem; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600; color: var(--ink-2); }
+.hb-brief-stats strong { font: 700 1.5rem / 1.05 var(--display); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.hb-brief-stats span { font-size: 0.78rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.hb-brief-stats li.is-hot { background: var(--night); box-shadow: none; }
+.hb-brief-stats li.is-hot small, .hb-brief-stats li.is-hot span { color: rgba(244, 235, 221, 0.72); }
+.hb-brief-stats li.is-hot strong { color: #ffd27a; }
+.hb-brief-stats li.is-late strong { color: #be3b1f; }
+.hb-brief-list { list-style: none; display: grid; gap: 8px; margin: 0; padding: 0; }
+.hb-brief-list li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 10px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.5); }
+.hb-brief-list li.is-mine { background: rgba(239, 157, 37, 0.14); box-shadow: inset 3px 0 0 var(--amber); }
+.hb-brief-list p { margin: 0; font-size: 0.9rem; line-height: 1.45; color: var(--ink); overflow-wrap: anywhere; text-wrap: pretty; }
+.hb-brief-ico { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: rgba(22, 17, 11, 0.07); color: var(--ink-2); }
+.hb-brief-list li.is-mine .hb-brief-ico { background: var(--amber); color: var(--night); }
+.hb-brief-mine { align-self: center; padding: 3px 8px; border-radius: 999px; background: var(--night); color: #ffd27a; font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+.hb-brief-foot { margin: 0; font-size: 0.74rem; color: var(--ink-2); }
+@media (max-width: 640px) {
+  .hb-brief { padding: 16px; }
+  .hb-brief-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hb-brief-list li { grid-template-columns: auto minmax(0, 1fr); }
+  .hb-brief-mine { grid-column: 2; justify-self: start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hb-brief-spin { animation: none; }
+}
+
 /* ---------- astronautas ---------- */
 .hb-team { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
 .hb-astro { display: grid; align-content: start; gap: 12px; padding: 18px; border-radius: 18px; background: rgba(255, 255, 255, 0.66); box-shadow: inset 0 0 0 1px rgba(22, 17, 11, 0.08); min-width: 0; }

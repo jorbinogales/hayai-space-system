@@ -55,7 +55,8 @@ interface ClienteCtx {
   nombre: string
   estado: 'activo' | 'posible'
   etapa: string | null
-  /** activo con una mensualidad ya contratada: propuesta aceptada con mensualidad o cobros recurrentes de mensualidad */
+  /** activo con una mensualidad ya contratada: propuesta aceptada con mensualidad, cobros recurrentes de mensualidad o constancia escrita
+   *  (descripción de sus proyectos, notas o bitácora: «Esquema: instalación + mensualidad») */
   mensualidad_contratada: boolean
   movimientos: Movimiento[]
   proyectos: { id: string; nombre: string; estado: string }[]
@@ -85,19 +86,40 @@ interface Ctx {
 }
 
 const RECURRENTE = /mensualidad|mensual\b|suscripci[oó]n/i
+/** Lo que se vende cada mes (para reconocer una venta de algo recurrente en el texto de una tarea, un seguimiento o un proyecto). */
+const COSA_RECURRENTE = /mensualidad|suscripci[oó]n|(soporte|mantenimiento|plan|servicio)\s+(\w+\s+){0,2}mensual|plan\s+de\s+(soporte|mantenimiento)/i
+const VENDER = /\b(ofrec\w*|vend\w*|propon\w*|propuesta|cotiz\w*|upsell|ofert\w*|plantea\w*|present\w*)\b/i
+/** «Ofrecerle el plan de soporte mensual», «Proponer mensualidad»: vender algo recurrente (cobrar la mensualidad de octubre NO lo es). */
+export const vendeRecurrente = (t: string) => COSA_RECURRENTE.test(t) && VENDER.test(t)
+/**
+ * La mensualidad no siempre consta como dato (hay clientes que se cargaron antes de las propuestas): también vale lo escrito en la descripción de
+ * sus proyectos, sus notas o su bitácora, frase por frase, salvo que la frase la niegue («sin mensualidad», «aún no paga mensualidad»).
+ */
+export function constaMensualidad(textos: (string | null | undefined)[]): boolean {
+  for (const t of textos)
+    for (const frase of (t ?? '').split(/[.;\n]+/))
+      if (/mensualidad|(soporte|mantenimiento|plan)\s+(\w+\s+){0,2}mensual/i.test(frase) && !/\b(sin|no|nunca|a[uú]n no|todav[ií]a no|falta)\b[^.]{0,30}(mensualidad|mensual)/i.test(frase)) return true
+  return false
+}
 
 async function clienteCtx(clienteId: string): Promise<ClienteCtx> {
   const c = await clienteDetalle(clienteId)
-  const [aceptada, tareas] = await Promise.all([
+  const [aceptada, tareas, escrito] = await Promise.all([
     pool.query(
       `SELECT pi.kind, pi.concept, pi.offering_id FROM proposals p JOIN proposal_items pi ON pi.proposal_id = p.id WHERE p.client_id = $1 AND p.status = 'aceptada'`,
       [clienteId],
     ),
     pool.query(`SELECT t.title FROM tasks t JOIN projects p ON p.id = t.project_id WHERE p.client_id = $1 AND NOT t.done ORDER BY t.created_at DESC LIMIT 40`, [clienteId]),
+    pool.query(
+      `SELECT description AS t FROM projects WHERE client_id = $1 AND archived_at IS NULL
+       UNION ALL SELECT notes FROM clients WHERE id = $1
+       UNION ALL (SELECT summary FROM interactions WHERE client_id = $1 ORDER BY occurred_at DESC LIMIT 30)`,
+      [clienteId],
+    ),
   ])
   const movimientos: Movimiento[] = c.movimientos.map((m) => ({ fecha: m.fecha, concepto: m.concepto, monto: Number(m.monto), estado: m.estado, tipo: m.tipo, recurrente: RECURRENTE.test(m.concepto) || !!m.serie }))
   const activo = c.estado === 'activo'
-  const mensualidad = activo && (aceptada.rows.some((r) => r.kind === 'mensualidad') || movimientos.some((m) => m.recurrente))
+  const mensualidad = activo && (aceptada.rows.some((r) => r.kind === 'mensualidad') || movimientos.some((m) => m.recurrente) || constaMensualidad(escrito.rows.map((r) => r.t as string | null)))
   const vig = c.propuesta_vigente as { estado?: string; items?: { concepto?: string }[] } | null
   return {
     id: c.id,
@@ -168,11 +190,13 @@ export function motivoInvalida(tipo: TipoAccion, p: Record<string, unknown>, x: 
     case 'mover_a_contenido':
       return f.tipo === 'idea' ? null : 'solo las ideas pasan a Contenido'
     case 'crear_proyecto': {
+      if (cl?.mensualidad_contratada && vendeRecurrente(`${p.nombre ?? ''} ${p.descripcion ?? ''}`)) return 'el cliente ya tiene la mensualidad contratada'
       const n = plano(String(p.nombre ?? ''))
       if (cl?.proyectos.some((q) => casi(plano(q.nombre), n))) return 'el cliente ya tiene un proyecto con ese nombre'
       return null
     }
     case 'crear_tarea': {
+      if (cl?.mensualidad_contratada && vendeRecurrente(String(p.titulo ?? ''))) return 'el cliente ya tiene la mensualidad contratada'
       if (typeof p.vence === 'string' && p.vence < x.hoy) return 'la fecha de vencimiento ya pasó'
       if (typeof p.proyecto_id === 'string' && !cl?.proyectos_abiertos.some((q) => q.id === p.proyecto_id)) return 'el proyecto no es un proyecto abierto del cliente'
       const n = plano(String(p.titulo ?? ''))
@@ -180,7 +204,8 @@ export function motivoInvalida(tipo: TipoAccion, p: Record<string, unknown>, x: 
       return null
     }
     case 'crear_seguimiento':
-      return null
+      // el título por defecto es el del ítem: «Seguimiento: Upsell: ofrecer soporte mensual» también es vender lo que ya tiene
+      return cl?.mensualidad_contratada && vendeRecurrente(String(p.titulo ?? f.titulo)) ? 'el cliente ya tiene la mensualidad contratada' : null
     case 'crear_propuesta': {
       // Una propuesta lleva SIEMPRE una mensualidad base: a quien ya la tiene contratada no se le vuelve a vender.
       if (!cl) return 'la propuesta es para un cliente y el ítem no está vinculado a ninguno'
@@ -261,7 +286,7 @@ Operaciones disponibles (tipo → parametros):
 - mover_a_contenido → {}  (solo para ideas de marketing)
 
 Reglas, en orden de importancia:
-1. CONGRUENCIA: nunca sugieras algo que el cliente ya tiene. Revisa su estado real: si cliente.mensualidad_contratada es true, NO propongas propuesta ni cobro de mensualidad; si ya tiene la oferta contratada, una propuesta vigente, el proyecto, la tarea o un cobro igual ese mes, no lo repitas; si el ítem ya creó algo (creados), no lo repitas. Si el contenido del ítem sugiere vender algo que el cliente ya tiene, ignora esa parte.
+1. CONGRUENCIA: nunca sugieras algo que el cliente ya tiene. Revisa su estado real: si cliente.mensualidad_contratada es true, NO propongas propuesta ni cobro de mensualidad, ni tareas, seguimientos o proyectos para ofrecerle soporte, mantenimiento o un plan mensual; si ya tiene la oferta contratada, una propuesta vigente, el proyecto, la tarea o un cobro igual ese mes, no lo repitas; si el ítem ya creó algo (creados), no lo repitas. Si el contenido del ítem sugiere vender algo que el cliente ya tiene, ignora esa parte.
 2. NO inventes datos: los montos solo pueden salir del ítem, de los pagos del cliente o de los precios de las ofertas; los ids, de las listas que recibes. Si no consta un monto, no propongas cobro. Las fechas son AAAA-MM-DD y no pueden ser anteriores a "hoy".
 3. Solo acciones útiles y específicas para ESTE hallazgo y ESTE cliente. Si ninguna aplica, devuelve {"acciones":[]}: es mejor no mostrar botones que mostrar uno incorrecto.
 4. "etiqueta": texto del botón en español, imperativo, máximo 40 caracteres (p. ej. "Crear tarea de visita"). "motivo": una frase de máximo 140 caracteres que explica por qué.

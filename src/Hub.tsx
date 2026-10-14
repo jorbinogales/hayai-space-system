@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { NavTarget } from './App'
 import { api } from './api'
 import { Blobvatar } from './blob'
+import { BriefCard } from './Brief'
 import { FeedEntry, FeedScreen } from './Feed'
 import { useFeedView } from './feedData'
 import { loadHub, useLoaded, type Acuerdo, type AcuerdoEstado, type Astronauta, type HubData, type Sistema } from './hubData'
@@ -668,6 +669,8 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
           {ready ? <Pulse d={d} /> : <div className="hb-pulse" aria-hidden="true">{[0, 1, 2, 3].map((i) => <article key={i} className="hb-stat is-skel"><i /><i /><i /></article>)}</div>}
 
           <FeedEntry seed={d?.feed} />
+
+          <BriefCard />
 
           <div className="hb-grid is-7-5">
             <Block id="team" title="Los astronautas" ready={ready} aside={d && <span className="hb-aside">{plural(d.astronautas.length, 'socio', 'socios')}</span>}>

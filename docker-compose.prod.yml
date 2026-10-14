@@ -45,6 +45,9 @@ services:
       MAPBOX_PUBLIC_TOKEN: ${MAPBOX_PUBLIC_TOKEN:-}
       MAPBOX_PERMANENT: ${MAPBOX_PERMANENT:-false}
       MAPBOX_STYLE: ${MAPBOX_STYLE:-mapbox/streets-v12}
+      # IA del servidor (acciones sugeridas del Feed y brief del día del Hub). La llave va SOLO en el .env del VPS (llega desde GitHub Secrets
+      # con el deploy): nunca al repo. Sin ella todo funciona igual: no hay acciones sugeridas y el brief se redacta con plantilla.
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
     depends_on:
       db:
         condition: service_healthy

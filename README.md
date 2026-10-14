@@ -52,6 +52,10 @@ El token de Mapbox sale de **GitHub Secrets** y llega al `.env` del VPS por el d
 - **Otra variable de esta lista** (`GEOCODER`, `MAP_TILES`…) por el mismo camino: agrégala al `env:` y a la lista del `for` del workflow, y créala en *Settings → Secrets and variables*.
 - **Restringe el token** en la cuenta de Mapbox a `https://space.hayai.com.ve`: con `MAP_TILES=mapbox` viaja al navegador dentro de la URL de teselas (por eso tiene que ser público). Una prueba falla si aparece un valor `pk.…`/`sk.…` en el código, el compose o el workflow.
 
+### IA del servidor en producción: `DEEPSEEK_API_KEY`
+
+Las acciones sugeridas del Feed y el brief del día del Hub usan `DEEPSEEK_API_KEY`. Viaja por **la misma vía que el token de Mapbox**: secret `DEEPSEEK_API_KEY` en *Settings → Secrets and variables → Actions* → `env:` y lista del `for` del paso «Desplegar» de `deploy.yml` → stdin → `deploy/apply-env.sh` → `.env` del VPS → `DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}` del servicio `app` en `docker-compose.prod.yml`. Para comprobar que llegó (sin imprimirla), mira el log de `app` al arrancar: `[ia] DEEPSEEK_API_KEY definida…` o `[ia] DEEPSEEK_API_KEY no está definida…`. Sin ella no se rompe nada: no hay acciones sugeridas y el brief se redacta con plantilla.
+
 ## API REST v1 y servidor MCP (integraciones, p. ej. Growi)
 
 Tres cosas nuevas, todas autenticadas con el header `X-API-Key` (no usan la cookie de la web):
@@ -162,6 +166,8 @@ Comportamiento: la firma se valida sobre el cuerpo crudo (401 si falla); es **id
 - **Acuerdos de la reunión semanal**: `GET`/`POST /acuerdos`, `PATCH /acuerdos/:id` (`texto`, `fecha_reunion`, `responsable`, `vence`, `estado`: `abierto`, `cumplido`, `descartado`). Crear uno avisa al equipo (`acuerdo_nuevo`).
 - **Embudo de Marketing**: `GET /marketing/embudo?dias=90` (MCP `hayai_marketing_embudo`): potenciales y valor mensual (total y ponderado) por etapa abierta, cierres y tasa de cierre del periodo, cohorte por origen (qué terminó pasando con lo que entró) y el estado de los leads de Meta Ads. Desde la 1.7.5 trae además el desglose completo por estado (`descartados`, `directos`) y `meta_ads { conectado, total }`; ver «Central de marketing». **Analytics** de visitas (GA4, Cloudflare Web Analytics) NO existe todavía: queda como «Pendiente de conexión».
 - **Decisión 3 (versión de la propuesta)**: al presentar o ganar, la entrada de etapa de la bitácora guarda `propuesta_version` (y `propuesta_id` en `meta`) y su resumen dice «(propuesta v2)». La propuesta de cada cliente es la *vigente* en ese momento.
+
+- **Brief del día (v1.8.1, migración 032)**: `GET /api/hub/brief` (web) devuelve el brief de hoy del socio de la sesión: `{ fecha, para, titular, parrafo, puntos[{ texto, tipo: cobro|visita|ayer|pipeline|tarea|proyecto, tuyo }], cifras{ cobros_hoy, cobros_3_dias, cobros_vencidos, visitas, movimientos_ayer, estancados }, ia, generado_el }`. Junta los cobros pendientes que vencen hoy y en los próximos 3 días (y los vencidos), las visitas agendadas de los próximos 7 días (tareas con «visita», próxima acción del cliente, potenciales en «Visita agendada», proyectos «Por visitar» con fecha y visitas en la bitácora), lo que se movió ayer (actividad del equipo), los potenciales sin cambiar de etapa en más de 14 días, y las tareas y proyectos del socio. Marca `tuyo` lo de sus proyectos, sus tareas y los clientes de sus proyectos, y la IA lo redacta para su rol, lo suyo primero. Las **cifras las calcula el servidor**, no el modelo. Se guarda uno por socio y día (`briefs`, fecha de Caracas); `POST /api/hub/brief` lo vuelve a redactar («Actualizar»). Sin IA, o si falla, se redacta con plantilla a partir de los mismos datos (`ia: false`; si la IA vuelve, se reintenta a los 20 min). Un vigilante lo prepara cada mañana desde `BRIEF_HORA` (6, hora de Caracas) cada `BRIEF_CHECK_MS` (10 min; `0` lo apaga; apagado en pruebas).
 
 ### Detalle del cobro y comprobante
 

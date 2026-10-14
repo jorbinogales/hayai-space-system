@@ -34,12 +34,13 @@ jobs:
           META_PAGE_TOKEN: ${{ secrets.META_PAGE_TOKEN }}
           RECEIVER_DOCUMENTS: ${{ secrets.RECEIVER_DOCUMENTS }}
           MAPBOX_PUBLIC_TOKEN: ${{ secrets.MAPBOX_PUBLIC_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DOMAIN: ${{ vars.DOMAIN }}
           META_LEADS_ENABLED: ${{ vars.META_LEADS_ENABLED }}
           META_LEADS_OWNER: ${{ vars.META_LEADS_OWNER }}
           SYSTEMS_CHECK_MS: ${{ vars.SYSTEMS_CHECK_MS }}
         run: |
-          for k in POSTGRES_PASSWORD META_APP_SECRET META_VERIFY_TOKEN META_PAGE_TOKEN RECEIVER_DOCUMENTS MAPBOX_PUBLIC_TOKEN DOMAIN META_LEADS_ENABLED META_LEADS_OWNER SYSTEMS_CHECK_MS; do
+          for k in POSTGRES_PASSWORD META_APP_SECRET META_VERIFY_TOKEN META_PAGE_TOKEN RECEIVER_DOCUMENTS MAPBOX_PUBLIC_TOKEN DEEPSEEK_API_KEY DOMAIN META_LEADS_ENABLED META_LEADS_OWNER SYSTEMS_CHECK_MS; do
             v="${!k}"
             if [ -n "$v" ]; then printf '%s=%s\n' "$k" "$v"; fi
           done | ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" deploy

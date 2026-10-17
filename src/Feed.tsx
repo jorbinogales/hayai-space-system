@@ -85,6 +85,7 @@ import './feed.css'
 const PER_PAGE = 20
 /** El mapa (y Leaflet) se descarga solo cuando alguien lo abre. */
 const FeedMap = lazy(() => import('./FeedMap'))
+const Competidores = lazy(() => import('./Competidores')) // el radar de competidores (v1.8.2)
 type Vista = 'lista' | 'mapa'
 const VISTA_KEY = 'hayai:feed:vista'
 /** La última vista que eligió este navegador (lista o mapa). Sin almacenamiento disponible, siempre lista. */
@@ -1681,6 +1682,7 @@ export function FeedScreen({ owners }: { owners: string[] }) {
   const [error, setError] = useState('')
   const [moreErr, setMoreErr] = useState('')
   const [proposing, setProposing] = useState(false)
+  const [radar, setRadar] = useState(false) // «Competidores»: el feed sigue montado debajo (filtros y posición intactos), solo se oculta
   const [hit, setHit] = useState<string | null>(null)
   const [lost, setLost] = useState(false)
   const [loadedMsg, setLoadedMsg] = useState('')
@@ -1702,6 +1704,7 @@ export function FeedScreen({ owners }: { owners: string[] }) {
   const heading = useRef<HTMLHeadingElement>(null)
   const filtersEl = useRef<HTMLDivElement>(null)
   const proposeBtn = useRef<HTMLButtonElement>(null)
+  const radarBtn = useRef<HTMLButtonElement>(null)
 
   /** Pide la primera página (con 'refresh', también las que ya estaban cargadas) sin vaciar lo que se ve. */
   const fetchFirst = useCallback((mode: 'filters' | 'refresh') => {
@@ -1940,7 +1943,7 @@ export function FeedScreen({ owners }: { owners: string[] }) {
       </div>
       <div className="hb-scroll">
         <div className="hb-wrap">
-          <header className="hb-head fd-phead">
+          <header className="hb-head fd-phead" hidden={radar}>
             <div>
               <p className="hb-eyebrow">Planeta HAYAI · Feed</p>
               <h1 id="hb-feed" ref={heading} tabIndex={-1}>
@@ -1962,13 +1965,27 @@ export function FeedScreen({ owners }: { owners: string[] }) {
                   </>
                 )}
               </p>
+              <button type="button" ref={radarBtn} className="fd-btn" onClick={() => setRadar(true)}>
+                <Icon name="chart" size={14} /> Competidores
+              </button>
               <button type="button" ref={proposeBtn} className="fd-btn is-dark" aria-expanded={proposing} aria-controls="fd-propose" onClick={() => setProposing((p) => !p)}>
                 <Icon name="plus" size={14} /> Proponer algo
               </button>
             </div>
           </header>
 
-          <section className="hb-block fd-block" aria-labelledby="hb-feed" aria-busy={firstLoad}>
+          {radar && (
+            <Suspense fallback={<p className="fd-loading"><span className="fd-spin" aria-hidden="true" /> Cargando los competidores…</p>}>
+              <Competidores
+                onClose={() => {
+                  setRadar(false)
+                  requestAnimationFrame(() => radarBtn.current?.focus({ preventScroll: true }))
+                }}
+              />
+            </Suspense>
+          )}
+
+          <section className="hb-block fd-block" aria-labelledby="hb-feed" aria-busy={firstLoad} hidden={radar}>
             <div className={`fd-bar${fetching && !firstLoad ? ' is-on' : ''}`} aria-hidden="true" />
 
             {proposing && (

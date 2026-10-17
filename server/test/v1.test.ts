@@ -3650,7 +3650,7 @@ describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la ta
     bcvPayload.principal = oficial(873.87, caracas())
     const r = await api('/version')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.equal(r.body.version, '1.8.1')
+    assert.equal(r.body.version, '1.8.2')
     assert.equal(r.body.hoy, caracas())
     assert.deepEqual({ ...r.body.bcv, actualizada_el: '<t>' }, { moneda: 'USD', tasa: 873.87, fecha: caracas(), es_de_hoy: true, fuente: `localhost:${BCV_PORT}`, actualizada_el: '<t>' })
     const hits = bcvHits.principal
@@ -3706,7 +3706,7 @@ describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la ta
 
   it('MCP y web: la misma respuesta; sin llave o sin sesión 401', async () => {
     const m = data(await mcp('hayai_version_ver', {}))
-    assert.equal(m.version, '1.8.1')
+    assert.equal(m.version, '1.8.2')
     assert.equal(m.bcv.tasa, 890)
     assert.equal((await http(`${ROOT}/api/v1/version`)).status, 401)
     const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
@@ -3722,11 +3722,13 @@ describe('Historial de versiones (changelog)', () => {
   const hoy = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
   const publicar = (b: Record<string, unknown>, key = KEY) => api('/versiones', { key, body: b })
 
-  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6, 1.6.7, 1.7.0, 1.7.5, 1.8.0 y 1.8.1 vienen publicadas; la más nueva primero y marcada como actual', async () => {
+  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6, 1.6.7, 1.7.0, 1.7.5, 1.8.0, 1.8.1 y 1.8.2 vienen publicadas; la más nueva primero y marcada como actual', async () => {
     const r = await api('/versiones')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.8.1', true], ['1.8.0', false], ['1.7.5', false], ['1.7.0', false], ['1.6.7', false], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
-    const [v181, v18, v175, v17, v167, v166, , v16, v15, v10] = r.body.data
+    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.8.2', true], ['1.8.1', false], ['1.8.0', false], ['1.7.5', false], ['1.7.0', false], ['1.6.7', false], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
+    const [v182, v181, v18, v175, v17, v167, v166, , v16, v15, v10] = r.body.data
+    assert.deepEqual([v182.titulo, v182.autor, v182.fecha, v182.cambios.length], ['Radar de competidores', 'Equipo HAYAI', '2026-10-17', 4])
+    assert.match([v182.titulo, v182.resumen, ...v182.cambios].join(' '), /Competidores/)
     assert.deepEqual([v181.titulo, v181.resumen, v181.autor, v181.fecha, v181.cambios.length], ['Copiloto invisible', 'Correcciones de bugs y fixes.', 'Equipo HAYAI', '2026-10-14', 4])
     const notas181 = [v181.titulo, v181.resumen, ...v181.cambios].join(' ')
     assert.match(notas181, /reconocimiento automático de opciones/)
@@ -3747,15 +3749,15 @@ describe('Historial de versiones (changelog)', () => {
 
   it('POST /versiones: el autor es el dueño de la llave, la fecha por defecto es hoy, pasa a ser la actual y avisa al equipo', async () => {
     const base = (await api('/actividad?per_page=1', { key: KEY_J })).body.meta.ultimo_id as number
-    const r = await publicar({ version: '1.8.2', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
+    const r = await publicar({ version: '1.8.3', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
     assert.equal(r.status, 201, JSON.stringify(r.body))
-    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.8.2', 'Leandro', hoy(), true, 2])
-    assert.equal((await api('/version')).body.version, '1.8.2')
-    assert.equal((await api('/versiones')).body.data[0].version, '1.8.2')
+    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.8.3', 'Leandro', hoy(), true, 2])
+    assert.equal((await api('/version')).body.version, '1.8.3')
+    assert.equal((await api('/versiones')).body.data[0].version, '1.8.3')
     assert.equal((await api('/versiones')).body.data.filter((v: any) => v.actual).length, 1)
     const ev = ((await api(`/actividad?desde_id=${base}&orden=asc`, { key: KEY_J })).body.data as any[]).filter((e) => e.tipo === 'version_nueva')
     assert.equal(ev.length, 1)
-    assert.equal(ev[0].texto, 'Nueva actualización v1.8.2 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
+    assert.equal(ev[0].texto, 'Nueva actualización v1.8.3 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
     assert.equal(ev[0].propia, false)
     // y le llega a TODOS, también a quien la publicó (su pestaña abierta también debe enterarse)
     const mio = ((await api(`/actividad?desde_id=${base}&orden=asc`)).body.data as any[]).find((e) => e.tipo === 'version_nueva')
@@ -3767,7 +3769,7 @@ describe('Historial de versiones (changelog)', () => {
 
   it('el orden es numérico (1.10.0 va después de 1.9.0) y la versión nueva siempre debe ser mayor que la actual', async () => {
     assert.equal((await publicar({ version: '1.10.0', cambios: ['x'] })).status, 201)
-    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.8.2', '1.8.1', '1.8.0', '1.7.5', '1.7.0', '1.6.7', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
+    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.8.3', '1.8.2', '1.8.1', '1.8.0', '1.7.5', '1.7.0', '1.6.7', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
     assert.equal((await api('/version')).body.version, '1.10.0')
     for (const v of ['1.10.0', '1.9.5', '1.4.0', '0.9.0']) {
       const r = await publicar({ version: v, cambios: ['x'] })
@@ -6458,6 +6460,143 @@ describe('Feed: guión versionado, envío por WhatsApp y copy PAS+BAB', () => {
       assert.equal(r.body.versiones.find((v: any) => v.nro === 0).contenido, VIEJO)
       assert.deepEqual(r.body.versiones.map((v: any) => v.nro), [3, 2, 1, 0])
     })
+  })
+})
+
+describe('Radar de competidores (Feed, v1.8.2)', () => {
+  const rc = (path = '', o: Opts = {}) => api(`/competidores${path}`, o)
+  const NOMBRES = ['Clarito', 'SiraPOS', 'Axi Vende', 'IoniaDev', 'VE-Commerce', 'IUNCI', 'Invu POS', 'Premium-soft', 'Treinta', 'Caracas Development', 'Clickvation', 'Saint']
+  let BORRA = ''
+  let creado = ''
+  before(() => {
+    BORRA = newKey('Jorbi', 'radar-borra', 'read,write,delete')
+  })
+
+  it('GET /competidores: vienen sembrados los 12 de la investigación, en su orden, con todos los campos y las 3 oportunidades fijas', async () => {
+    const r = await rc()
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual(r.body.data.map((c: any) => c.nombre), NOMBRES)
+    assert.equal(r.body.meta.total, 12)
+    assert.deepEqual(r.body.meta.por_grupo, { saas_venezolano: 5, gratis_offline: 1, software_factory: 3, restaurant_tech: 3 })
+    assert.deepEqual(r.body.grupos.map((g: any) => [g.grupo, g.etiqueta, g.total]), [['saas_venezolano', 'SaaS venezolano', 5], ['gratis_offline', 'Gratis y offline', 1], ['software_factory', 'Software factory', 3], ['restaurant_tech', 'Tecnología para restaurantes', 3]])
+    const clarito = r.body.data[0]
+    assert.deepEqual(
+      [clarito.web, clarito.grupo, clarito.precio, clarito.a_quien],
+      ['clarito.app', 'saas_venezolano', '$10/mes mercados · $15/mes restaurantes · 7 días gratis', 'Abastos, bodegas y restaurantes pequeños'],
+    )
+    for (const c of r.full.data) {
+      for (const k of ['que_vende', 'precio', 'mensaje', 'a_quien', 'fortaleza', 'debilidad']) assert.ok(typeof c[k] === 'string' && c[k].length > 3, `${c.nombre}.${k}`)
+      assert.match(c.id, /^[0-9a-f-]{36}$/)
+      assert.ok(c.actualizado_el && c.creado_el)
+    }
+    assert.equal(r.body.data.find((c: any) => c.nombre === 'Saint').web, null, 'Saint no tiene web en la investigación')
+    assert.deepEqual(r.body.oportunidades.map((o: any) => o.titulo), ['Te lo instalo yo', 'Verticales que el SaaS genérico no cubre', 'Encuadre de precio'])
+    assert.match(r.body.oportunidades[0].texto, /hoy mismo queda funcionando en tu negocio/)
+    assert.match(r.body.oportunidades[2].texto, /\$250/)
+  })
+
+  it('la semilla es idempotente: volver a correr la migración no duplica nada', async () => {
+    const sql = readFileSync(resolve(root, 'server/db/migrations/035_competidores.sql'), 'utf8')
+    const inserta = sql.slice(sql.indexOf('INSERT INTO competidores'))
+    await admin.query(inserta)
+    assert.equal((await rc()).body.meta.total, 12)
+    assert.equal((await admin.query('SELECT count(*)::int AS n FROM competidores')).rows[0].n, 12)
+  })
+
+  it('filtros: q busca por nombre (sin importar mayúsculas), grupo filtra, y se combinan; un q con comodines no se cuela', async () => {
+    assert.deepEqual((await rc('?q=sira')).body.data.map((c: any) => c.nombre), ['SiraPOS'])
+    assert.deepEqual((await rc('?q=%20CARACAS%20')).body.data.map((c: any) => c.nombre), ['Caracas Development'])
+    assert.deepEqual((await rc('?grupo=restaurant_tech')).body.data.map((c: any) => c.nombre), ['Invu POS', 'Premium-soft', 'Treinta'])
+    assert.deepEqual((await rc('?grupo=software_factory&q=click')).body.data.map((c: any) => c.nombre), ['Clickvation'])
+    assert.equal((await rc('?q=%25')).body.data.length, 0, '«%» se busca como texto, no como comodín')
+    assert.equal((await rc('?q=zzz')).body.meta.total, 0)
+    assert.equal((await rc('?grupo=otro')).status, 400)
+    const pag = await rc('?per_page=5&page=3')
+    assert.deepEqual([pag.body.data.length, pag.body.meta.total], [2, 12])
+  })
+
+  it('POST /competidores: crea la ficha (201), va al final y vuelve en la lista; trata el texto vacío como «sin dato»', async () => {
+    const r = await rc('', { body: { nombre: '  Rival de Prueba  ', grupo: 'saas_venezolano', web: 'rival.com.ve', precio: '$5/mes', fortaleza: '', notas: 'Visto en una vitrina' } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.deepEqual([r.body.nombre, r.body.grupo, r.body.grupo_etiqueta, r.body.web, r.body.precio, r.body.fortaleza, r.body.que_vende], ['Rival de Prueba', 'saas_venezolano', 'SaaS venezolano', 'rival.com.ve', '$5/mes', null, null])
+    creado = r.body.id
+    const l = (await rc()).body
+    assert.equal(l.meta.total, 13)
+    assert.equal(l.data.at(-1).nombre, 'Rival de Prueba')
+    assert.equal(l.meta.por_grupo.saas_venezolano, 6)
+  })
+
+  it('POST valida: nombre y grupo obligatorios, grupo conocido, sin campos de más, largos máximos; un nombre repetido (aunque cambien mayúsculas) da 409', async () => {
+    for (const b of [{}, { nombre: 'X' }, { grupo: 'saas_venezolano' }, { nombre: '   ', grupo: 'saas_venezolano' }, { nombre: 'X', grupo: 'inventado' }, { nombre: 'X', grupo: 'saas_venezolano', colorcito: 1 }, { nombre: 'x'.repeat(121), grupo: 'saas_venezolano' }, { nombre: 'X', grupo: 'saas_venezolano', notas: 'y'.repeat(4001) }, { nombre: 'X', grupo: 'saas_venezolano', web: 5 }])
+      assert.equal((await rc('', { body: b })).status, 400, JSON.stringify(b).slice(0, 70))
+    const dup = await rc('', { body: { nombre: '  clarito ', grupo: 'gratis_offline' } })
+    assert.equal(dup.status, 409)
+    assert.match(dup.body.error.message, /ya hay un competidor con ese nombre/i)
+    assert.equal((await rc()).body.meta.total, 13)
+  })
+
+  it('PATCH: cambia solo lo que se manda; null o vacío borra el dato; renombrar a un nombre ajeno da 409; sin campos o con id raro, error', async () => {
+    const r = await rc(`/${creado}`, { method: 'PATCH', body: { nombre: 'Rival Renombrado', grupo: 'software_factory', precio: null, mensaje: '«Mejor que nadie»' } })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual([r.body.nombre, r.body.grupo, r.body.precio, r.body.mensaje, r.body.web, r.body.notas], ['Rival Renombrado', 'software_factory', null, '«Mejor que nadie»', 'rival.com.ve', 'Visto en una vitrina'])
+    const vacio = await rc(`/${creado}`, { method: 'PATCH', body: { notas: '' } })
+    assert.equal(vacio.body.notas, null)
+    assert.ok(vacio.full.actualizado_el >= r.full.actualizado_el)
+    assert.equal((await rc(`/${creado}`, { method: 'PATCH', body: { nombre: 'SIRAPOS' } })).status, 409)
+    assert.equal((await rc(`/${creado}`, { method: 'PATCH', body: {} })).status, 400)
+    assert.equal((await rc(`/${creado}`, { method: 'PATCH', body: { grupo: 'nada' } })).status, 400)
+    assert.equal((await rc(`/${creado}`, { method: 'PATCH', body: { nombre: '' } })).status, 400)
+    assert.equal((await rc('/00000000-0000-4000-8000-000000000000', { method: 'PATCH', body: { notas: 'x' } })).status, 404)
+    assert.equal((await rc('/no-es-un-id', { method: 'PATCH', body: { notas: 'x' } })).status, 400)
+    assert.equal((await rc()).body.data.find((c: any) => c.id === creado).nombre, 'Rival Renombrado', 'lo rechazado no cambió nada')
+    assert.equal((await rc()).body.data.find((c: any) => c.nombre === 'SiraPOS').nombre, 'SiraPOS')
+  })
+
+  it('permisos: leer con cualquier llave; escribir exige write; borrar exige delete (y sin él no se borra nada); sin llave, 401', async () => {
+    const ro = newKey('Elis', 'radar-lectura', 'read')
+    assert.equal((await rc('', { key: ro })).status, 200)
+    assert.equal((await rc('', { key: ro, body: { nombre: 'Intruso', grupo: 'saas_venezolano' } })).status, 403)
+    assert.equal((await rc(`/${creado}`, { key: ro, method: 'PATCH', body: { notas: 'x' } })).status, 403)
+    const sinBorrar = await rc(`/${creado}`, { method: 'DELETE' })
+    assert.equal(sinBorrar.status, 403)
+    assert.equal(sinBorrar.body.error.required_scope, 'delete')
+    assert.equal((await rc()).body.meta.total, 13)
+    assert.equal((await http(`${ROOT}/api/v1/competidores`)).status, 401)
+  })
+
+  it('DELETE: elimina la ficha (y solo esa); borrarla otra vez da 404', async () => {
+    const r = await rc(`/${creado}`, { key: BORRA, method: 'DELETE' })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual([r.body.eliminado, r.body.id, r.body.nombre], [true, creado, 'Rival Renombrado'])
+    assert.equal((await rc(`/${creado}`, { key: BORRA, method: 'DELETE' })).status, 404)
+    const l = (await rc()).body
+    assert.deepEqual(l.data.map((c: any) => c.nombre), NOMBRES)
+    assert.equal(l.meta.total, 12)
+  })
+
+  it('no se cruza con Marketing: /marketing/competidores (SEO) sigue siendo otra lista', async () => {
+    const mk = await api('/marketing/competidores')
+    assert.equal(mk.status, 200, JSON.stringify(mk.body))
+    assert.ok(!JSON.stringify(mk.body).includes('Clarito'))
+  })
+
+  it('web (sesión + CSRF): la misma lista y el mismo alta/edición/borrado en /api/competidores; sin sesión, 401', async () => {
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    const cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    const w = (path: string, init: RequestInit = {}) => fetch(`${ROOT}/api/competidores${path}`, { ...init, headers: { cookie, 'x-csrf-token': 'x', 'content-type': 'application/json' } })
+    assert.equal((await fetch(`${ROOT}/api/competidores`)).status, 401)
+    const lista = (await (await w('')).json()) as any
+    assert.equal(lista.data.length, 12)
+    assert.equal(lista.oportunidades.length, 3)
+    const alta = await w('', { method: 'POST', body: JSON.stringify({ nombre: 'Desde la web', grupo: 'gratis_offline', debilidad: 'Todo' }) })
+    assert.equal(alta.status, 201)
+    const f = (await alta.json()) as any
+    const ed = await w(`/${f.id}`, { method: 'PATCH', body: JSON.stringify({ fortaleza: 'Nada' }) })
+    assert.equal(ed.status, 200)
+    assert.equal(((await ed.json()) as any).fortaleza, 'Nada')
+    const del = await w(`/${f.id}`, { method: 'DELETE' })
+    assert.equal(del.status, 200)
+    assert.equal(((await (await w('')).json()) as any).data.length, 12)
   })
 })
 

@@ -15,6 +15,7 @@ import { chatBorrar, chatContadores, chatEditar, chatListar, chatMarcarLeido, ch
 import { feedGuionEditar, feedGuionRestablecer, feedGuionVer } from '../services/feedGuion.ts'
 import { feedEjecutarAccion, feedSugerirAcciones } from '../services/feedAcciones.ts'
 import { feedBorrar, feedContacto, feedConvertir, feedDeshacer, feedGeocodificar, feedGuardar, feedListar, feedMapa, feedMarcar, feedPublicar, feedUbicacion, feedVer } from '../services/feed.ts'
+import { radarActualizar, radarCrear, radarEliminar, radarListar } from '../services/radar.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
 import { gastoActualizar, gastoRegistrar, gastosListar, gastoVer } from '../services/gastos.ts'
@@ -220,6 +221,12 @@ route('post', '/chat', chatPublicar, (o) => (o.creado ? 201 : 200))
 route('post', '/chat/leido', chatMarcarLeido) // mueve el "leído hasta" de ESTE socio (el dueño de la llave)
 route('patch', '/chat/:id', chatEditar) // solo el autor; If-Match / actualizado_el
 route('delete', '/chat/:id', chatBorrar) // autor o ADMIN; a la papelera
+
+// Radar de competidores (v1.8.2): fichas comerciales de a quién le compite HAYAI + las 3 oportunidades fijas. (No es /marketing/competidores, que es SEO.)
+route('get', '/competidores', radarListar)
+route('post', '/competidores', radarCrear, 201)
+route('patch', '/competidores/:id', radarActualizar)
+route('delete', '/competidores/:id', radarEliminar)
 
 route('get', '/pipeline', pipelineResumen)
 route('get', '/pipeline/etapas', pipelineEtapas)

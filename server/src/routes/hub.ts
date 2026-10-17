@@ -9,6 +9,7 @@ import { feedGuionEditar, feedGuionRestablecer, feedGuionVer } from '../services
 import { feedEjecutarAccion, feedSugerirAcciones } from '../services/feedAcciones.ts'
 import { teselas } from '../geocode.ts'
 import { feedBorrar, feedContacto, feedConvertir, feedDeshacer, feedGeocodificar, feedGuardar, feedListar, feedMapa, feedMarcar, feedPublicar, feedUbicacion, feedVer } from '../services/feed.ts'
+import { radarActualizar, radarCrear, radarEliminar, radarListar } from '../services/radar.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 
 import { MK_RUTAS } from '../services/marketingRutas.ts'
@@ -69,6 +70,12 @@ hubRouter.get('/cobros/:id/comprobante/archivo', async (req, res) => {
 hubRouter.get('/receptores', async (req, res) => void res.json(await exec(receptoresListar, req.user!, {})))
 hubRouter.post('/receptores', async (req, res) => void res.json(await exec(receptorGuardar, req.user!, body(req))))
 hubRouter.delete('/receptores/:id', async (req, res) => void res.json(await exec(receptorEliminar, req.user!, { id: req.params.id })))
+
+// Radar de competidores (botón «Competidores» del Feed).
+hubRouter.get('/competidores', async (req, res) => void res.json(await exec(radarListar, req.user!, query(req))))
+hubRouter.post('/competidores', async (req, res) => void res.status(201).json(await exec(radarCrear, req.user!, body(req))))
+hubRouter.patch('/competidores/:id', async (req, res) => void res.json(await exec(radarActualizar, req.user!, { ...body(req), id: req.params.id })))
+hubRouter.delete('/competidores/:id', async (req, res) => void res.json(await exec(radarEliminar, req.user!, { id: req.params.id })))
 
 // Feed de oportunidades (lo que encontraron las máquinas y los agentes). La web publica con fuente "manual" o la que mande la pantalla.
 hubRouter.get('/feed', async (req, res) => void res.json(await exec(feedListar, req.user!, query(req))))

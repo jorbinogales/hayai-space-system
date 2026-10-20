@@ -6,7 +6,7 @@ import { fx, reduced } from './warp'
 // Un solo mundo 3D para toda la app: Home, Clientes y Proyectos son vistas del MISMO canvas y la MISMA escena.
 // Viajar a una pantalla es mover el planeta elegido de su orbita a su sitio en esa pantalla (y al reves); nada se desmonta ni se recarga.
 
-const TEXTURES = [1, 2, 3, 4].map((n) => `/planets/planeta${n}.png`)
+const TEXTURES = [1, 2, 3, 4].map((n) => `/planets/planeta${n}.webp`)
 /** 'marketing' es una pantalla plana (sin viaje 3D): su planeta se ve en el Home y abre el planeta Marketing. */
 export type PlanetKey = 'clientes' | 'marketing' | 'proyectos' | 'tareas' | 'finanzas'
 /** Lo que se puede resaltar con el cursor en el Home: un planeta o el núcleo HAYAI (que abre el Hub). */

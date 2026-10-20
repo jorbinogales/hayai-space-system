@@ -56,7 +56,7 @@ async function decodePlanet(url: string): Promise<THREE.CanvasTexture> {
 
 /** Prepara las texturas de planetas en segundo plano (durante la pantalla de acceso) para que las pantallas abran sin tirones. */
 export function preloadPlanets() {
-  ;[1, 2, 3, 4].forEach((n) => void loadPlanetTexture(`/planets/planeta${n}.png`).catch(() => {}))
+  ;[1, 2, 3, 4].forEach((n) => void loadPlanetTexture(`/planets/planeta${n}.webp`).catch(() => {}))
 }
 
 const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()))

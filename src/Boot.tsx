@@ -44,21 +44,21 @@ export default function Boot({ onDone }: { onDone: (s: Session) => void }) {
 
   // la entrada: franjas que se deslizan y dejan ver la interfaz con un fundido
   useEffect(() => {
-    const t = window.setTimeout(() => setCurtain(false), reduced() ? 60 : 1500)
+    const t = window.setTimeout(() => setCurtain(false), reduced() ? 60 : 600)
     return () => clearTimeout(t)
   }, [])
 
   // arranque de sistemas
   useEffect(() => {
     if (phase !== 'boot') return
-    const total = reduced() ? 900 : 3400
+    const total = reduced() ? 500 : 1400
     const t0 = performance.now()
     const id = window.setInterval(() => {
       const p = Math.min(100, ((performance.now() - t0) / total) * 100)
       setProgress(p)
       if (p >= 100) {
         clearInterval(id)
-        window.setTimeout(() => setPhase('name'), 350)
+        window.setTimeout(() => setPhase('name'), 200)
       }
     }, 40)
     return () => clearInterval(id)
@@ -75,8 +75,8 @@ export default function Boot({ onDone }: { onDone: (s: Session) => void }) {
     }
     setBusy(false)
     setPhase('granted')
-    window.setTimeout(() => setLeaving(true), reduced() ? 300 : 1100)
-    window.setTimeout(() => onDone(s), reduced() ? 400 : 1600)
+    window.setTimeout(() => setLeaving(true), reduced() ? 200 : 450)
+    window.setTimeout(() => onDone(s), reduced() ? 300 : 750)
   }
 
   const fail = (msg: string, back?: Phase) => {

@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { resolve, sep } from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { requirePinChanged, requireSession } from './auth.ts'
 import { authRouter } from './routes/auth.ts'
@@ -91,8 +91,22 @@ export function createApp() {
   // Producción: sirve el build del frontend (../dist) con fallback a index.html.
   const dist = resolve(import.meta.dirname, '../../dist')
   if (existsSync(resolve(dist, 'index.html'))) {
-    app.use(express.static(dist))
-    app.use((req, res, next) => (req.method === 'GET' ? res.sendFile(resolve(dist, 'index.html')) : next()))
+    app.use(
+      express.static(dist, {
+        // Activos con hash en el nombre (assets/) y texturas: cache largo, casi nunca cambian bajo el mismo nombre.
+        // index.html sin cache: cada despliegue debe verse al momento.
+        setHeaders(res, filePath) {
+          if (filePath.endsWith('index.html')) res.setHeader('Cache-Control', 'no-cache')
+          else if (filePath.includes(`${sep}assets${sep}`)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+          else if (filePath.includes(`${sep}planets${sep}`)) res.setHeader('Cache-Control', 'public, max-age=2592000')
+        },
+      })
+    )
+    app.use((req, res, next) => {
+      if (req.method !== 'GET') return next()
+      res.setHeader('Cache-Control', 'no-cache')
+      return res.sendFile(resolve(dist, 'index.html'))
+    })
   }
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 /**
  * Carga interna: con la sesion iniciada, cubre la espera mientras el mundo 3D pinta su primer frame.
@@ -14,11 +14,18 @@ export default function IntroSplash({ done }: { done: boolean }) {
   const [gone, setGone] = useState(false)
   const [reduced] = useState(() => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
 
+  // Tiempo minimo en pantalla (2,2 s): si el mundo carga muy rapido, sin esto la carga es un
+  // parpadeo que no se aprecia y se siente brusco; con el minimo se saborea el planeta y sale suave.
+  const born = useRef(Date.now())
   useEffect(() => {
     if (!done) return
-    setOut(true)
-    const t = window.setTimeout(() => setGone(true), 700)
-    return () => window.clearTimeout(t)
+    const wait = Math.max(0, 2200 - (Date.now() - born.current))
+    const t1 = window.setTimeout(() => setOut(true), wait)
+    const t2 = window.setTimeout(() => setGone(true), wait + 700)
+    return () => {
+      window.clearTimeout(t1)
+      window.clearTimeout(t2)
+    }
   }, [done])
 
   useEffect(() => {

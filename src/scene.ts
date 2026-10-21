@@ -28,10 +28,31 @@ const TAN = Math.tan((FOV / 2) * (Math.PI / 180))
 /** PNG de disco 2D -> textura equirectangular: recorte cuadrado inscrito + espejo (2:1, costura continua). */
 const texCache = new Map<string, Promise<THREE.CanvasTexture>>()
 function loadPlanetTexture(url: string): Promise<THREE.CanvasTexture> {
-  // cacheada de por vida: al viajar Home -> Clientes el planeta aparece sin esperar a decodificar el PNG
+  // cacheada de por vida: al viajar Home -> Clientes el planeta aparece sin esperar a decodificar la imagen.
+  // Si la carga falla NO se cachea el rechazo: una promesa rechazada guardada "envenenaba" la sesion
+  // (ningun reintento podia cargar la textura y el mundo quedaba sin construir hasta recargar la pagina).
   let p = texCache.get(url)
-  if (!p) texCache.set(url, (p = decodePlanet(url)))
+  if (!p) {
+    p = decodePlanet(url)
+    texCache.set(url, p)
+    p.catch(() => {
+      if (texCache.get(url) === p) texCache.delete(url)
+    })
+  }
   return p
+}
+
+/** Textura plana de respaldo: si una imagen no carga ni al reintento, el mundo se construye igual, con ese planeta solido. */
+function fallbackTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas')
+  c.width = 4
+  c.height = 4
+  const g = c.getContext('2d')!
+  g.fillStyle = '#8a5a20'
+  g.fillRect(0, 0, 4, 4)
+  const tex = new THREE.CanvasTexture(c)
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
 }
 async function decodePlanet(url: string): Promise<THREE.CanvasTexture> {
   const img = new Image()
@@ -156,7 +177,11 @@ export function mountScene(
   ro.observe(el)
   measure()
 
-  Promise.all(textureUrls.map(loadPlanetTexture)).then(async (textures) => {
+  // Nunca dejar el mundo sin construir: cada textura se reintenta una vez y, si aun asi falla,
+  // entra la de respaldo. Antes este Promise.all no tenia red de seguridad: un solo fallo de red al
+  // cargar una textura dejaba la app en el fondo vacio, con las tarjetas del Home sin posicion.
+  const loadSafe = (u: string) => loadPlanetTexture(u).catch(() => loadPlanetTexture(u)).catch(() => fallbackTexture())
+  Promise.all(textureUrls.map(loadSafe)).then(async (textures) => {
     if (disposed) return
     live = build(ctx, textures)
     measure()

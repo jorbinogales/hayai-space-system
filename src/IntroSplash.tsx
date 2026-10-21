@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 /**
  * Carga interna: con la sesion iniciada, cubre la espera mientras el mundo 3D pinta su primer frame.
  * El antiguo #splash de index.html hacia tambien este papel y se fue con el; esta version vive dentro
- * de la app y usa el video del planeta con orbitas generado por Elis (public/splash-planeta.webm/.mp4,
+ * de la app y usa el video del planeta con orbitas generado por Elis (public/splash-planeta.webm?v=2/.mp4,
  * con su poster .webp para que se vea al instante). El planeta va a PANTALLA COMPLETA (object-fit: cover);
  * la marca y la barra van en HTML encima, nitidas y sin depender del arte.
  * Red de seguridad: a los 9 s se oculta si o si — una carga nunca debe atrapar al usuario.
@@ -58,11 +58,11 @@ export default function IntroSplash({ done }: { done: boolean }) {
         @media (prefers-reduced-motion: reduce) { .intro-bar i { animation: none; } }
       `}</style>
       {reduced ? (
-        <img className="intro-media" src="/splash-planeta-poster.webp" alt="" />
+        <img className="intro-media" src="/splash-planeta-poster.webp?v=2" alt="" />
       ) : (
-        <video className="intro-media" autoPlay muted loop playsInline poster="/splash-planeta-poster.webp" aria-hidden="true">
-          <source src="/splash-planeta.webm" type="video/webm" />
-          <source src="/splash-planeta.mp4" type="video/mp4" />
+        <video className="intro-media" autoPlay muted loop playsInline poster="/splash-planeta-poster.webp?v=2" aria-hidden="true">
+          <source src="/splash-planeta.webm?v=2" type="video/webm" />
+          <source src="/splash-planeta.mp4?v=2" type="video/mp4" />
         </video>
       )}
       <div className="intro-vignette" aria-hidden="true" />

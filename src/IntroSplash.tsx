@@ -3,13 +3,16 @@ import { useEffect, useState } from 'react'
 /**
  * Carga interna: con la sesion iniciada, cubre la espera mientras el mundo 3D pinta su primer frame.
  * El antiguo #splash de index.html hacia tambien este papel y se fue con el; esta version vive dentro
- * de la app y usa la imagen del planeta con orbitas generada por Elis (public/splash-planeta.webp).
- * La marca y la barra van en HTML encima de la imagen: nitidas y sin depender del arte.
+ * de la app y usa el video del planeta con orbitas generado por Elis (public/splash-planeta.webm/.mp4,
+ * con su poster .webp para que se vea al instante y de fondo desenfocado).
+ * La marca y la barra van en HTML encima del video: nitidas y sin depender del arte.
  * Red de seguridad: a los 9 s se oculta si o si — una carga nunca debe atrapar al usuario.
+ * Con prefers-reduced-motion no hay video: solo el poster quieto.
  */
 export default function IntroSplash({ done }: { done: boolean }) {
   const [out, setOut] = useState(false)
   const [gone, setGone] = useState(false)
+  const [reduced] = useState(() => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
 
   useEffect(() => {
     if (!done) return
@@ -34,11 +37,10 @@ export default function IntroSplash({ done }: { done: boolean }) {
         .intro { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; overflow: hidden;
           background: #100c07; transition: opacity .65s ease, visibility .65s ease; }
         .intro.is-out { opacity: 0; visibility: hidden; pointer-events: none; }
-        .intro-bg { position: absolute; inset: 0; background: url('/splash-planeta.webp') center / cover no-repeat;
+        .intro-bg { position: absolute; inset: 0; background: url('/splash-planeta-poster.webp') center / cover no-repeat;
           filter: blur(28px) brightness(.45); transform: scale(1.15); }
-        .intro-img { position: relative; width: min(880px, 94vw); border-radius: 18px;
-          box-shadow: 0 40px 120px rgba(0,0,0,.65); animation: introZoom 14s ease-in-out infinite alternate; }
-        @keyframes introZoom { from { transform: scale(1); } to { transform: scale(1.045); } }
+        .intro-media { position: relative; width: min(880px, 94vw); aspect-ratio: 16 / 9; object-fit: cover;
+          border-radius: 18px; box-shadow: 0 40px 120px rgba(0,0,0,.65); background: #17110a; }
         .intro-brand { position: absolute; left: 0; right: 0; bottom: 8%; text-align: center; padding: 0 16px; }
         .intro-word { font-size: clamp(30px, 5vw, 46px); font-weight: 800; letter-spacing: .34em; text-indent: .34em; color: #f6eee2; }
         .intro-i { position: relative; }
@@ -51,10 +53,17 @@ export default function IntroSplash({ done }: { done: boolean }) {
         .intro-bar i { display: block; height: 100%; width: 40%; border-radius: 2px;
           background: linear-gradient(90deg, #b45f16, #ef9d25, #ffd98a); animation: introSlide 1.3s ease-in-out infinite; }
         @keyframes introSlide { 0% { transform: translateX(-110%); } 100% { transform: translateX(280%); } }
-        @media (prefers-reduced-motion: reduce) { .intro-img, .intro-bar i { animation: none; } }
+        @media (prefers-reduced-motion: reduce) { .intro-bar i { animation: none; } }
       `}</style>
       <div className="intro-bg" aria-hidden="true" />
-      <img className="intro-img" src="/splash-planeta.webp" alt="" />
+      {reduced ? (
+        <img className="intro-media" src="/splash-planeta-poster.webp" alt="" />
+      ) : (
+        <video className="intro-media" autoPlay muted loop playsInline poster="/splash-planeta-poster.webp" aria-hidden="true">
+          <source src="/splash-planeta.webm" type="video/webm" />
+          <source src="/splash-planeta.mp4" type="video/mp4" />
+        </video>
+      )}
       <div className="intro-brand">
         <div className="intro-word">
           HAYA

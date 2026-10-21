@@ -41,6 +41,8 @@ const msgOf = (e: unknown, fallback: string) => (e instanceof Error ? e.message 
 
 // ---------- formulario ----------
 type Form = {
+  usd: string
+  estado: string
   bs: string
   tasa: string
   fechaTasa: string
@@ -53,6 +55,8 @@ type Form = {
   notas: string
 }
 const formOf = (c: CobroT | null): Form => ({
+  usd: inputNum(c?.monto),
+  estado: c?.estado ?? 'pendiente',
   bs: inputNum(c?.monto_bs),
   tasa: inputNum(c?.tasa, 4),
   fechaTasa: c?.fecha_tasa ?? '',
@@ -65,6 +69,8 @@ const formOf = (c: CobroT | null): Form => ({
   notas: c?.notas ?? '',
 })
 const LABELS: Record<keyof Form, string> = {
+  usd: 'Neto recibido ($)',
+  estado: 'Estado',
   bs: 'Pagado por el cliente (Bs.)',
   tasa: 'Tasa',
   fechaTasa: 'Fecha de la tasa',
@@ -77,6 +83,8 @@ const LABELS: Record<keyof Form, string> = {
   notas: 'Notas',
 }
 const GUARD_LABELS: Partial<Record<keyof Form, string>> = {
+  usd: 'monto en dólares',
+  estado: 'estado',
   bs: 'bolívares',
   tasa: 'tasa',
   fechaTasa: 'fecha de la tasa',
@@ -92,8 +100,15 @@ const GUARD_LABELS: Partial<Record<keyof Form, string>> = {
 const nul = (s: string) => (s.trim() === '' ? null : s.trim())
 
 /** Solo lo que cambió, en la forma que acepta PATCH /cobros/:id. Lanza Error con un mensaje en español si algo no sirve. */
-function toPatch(f: Form, i: Form, usd: number): CobroPatch {
+function toPatch(f: Form, i: Form, usd0: number): CobroPatch {
   const p: CobroPatch = {}
+  let usd = usd0
+  if (f.usd !== i.usd) {
+    const n = parseNum(f.usd)
+    if (n == null || n <= 0) throw new Error('El monto en dólares tiene que ser un número mayor que 0 (ej. 120,50).')
+    p.monto = usd = n
+  }
+  if (f.estado !== i.estado) p.estado = f.estado as 'pendiente' | 'cobrado'
   const bs = nul(f.bs)
   const tasa = nul(f.tasa)
   const bsN = bs == null ? null : parseNum(bs)
@@ -660,9 +675,22 @@ export default function Cobro({ id, onClose }: { id: string; onClose: () => void
                       }}
                       autoComplete="off"
                     >
-                      <p className="cobro-usd-row">
-                        Neto recibido ($) <b>{fmtUsd(cobro.monto)}</b> <small>Se cambia desde Finanzas</small>
-                      </p>
+                      {cobro.tipo !== 'inicial' && (
+                        <>
+                          <label className="cobro-field">
+                            <span>Neto recibido ($)</span>
+                            <input inputMode="decimal" value={form.usd} onChange={(e) => set('usd', e.target.value)} placeholder="120,50" />
+                            <small>Finanzas suma este monto cuando el cobro está pagado.</small>
+                          </label>
+                          <label className="cobro-field">
+                            <span>Estado</span>
+                            <select value={form.estado} onChange={(e) => set('estado', e.target.value)}>
+                              <option value="pendiente">Pendiente</option>
+                              <option value="cobrado">Pagado</option>
+                            </select>
+                          </label>
+                        </>
+                      )}
                       <label className="cobro-field">
                         <span>Pagado por el cliente (Bs.)</span>
                         <input ref={firstField} inputMode="decimal" value={form.bs} onChange={(e) => set('bs', e.target.value)} placeholder="65.540,25" />

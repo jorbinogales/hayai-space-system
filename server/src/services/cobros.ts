@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { type Db, pool, tx } from '../db.ts'
 import { detectDocument, extractText, maskDocument, maskDocumentsIn, normalizeDocument } from '../ocr.ts'
 import { DETAIL_COLUMNS, DETAIL_JOINS, detalleOut } from '../paymentDetail.ts'
+import { patchPayment } from '../payments.ts'
 import { userByName } from '../socios.ts'
 import { HttpError, id, text } from '../util.ts'
 import { op, todayISO } from './common.ts'
@@ -153,6 +154,8 @@ export const comprobanteSubir = op(
       )
       return applyDetection(c, b.id, doc)
     })
+    // un comprobante es la prueba del pago: si seguía pendiente (o vencido), pasa a cobrado
+    if ((await cobro(b.id)).estado === 'pendiente') await patchPayment(actor, b.id, { estado: 'cobrado' })
     return { cobro: await cobro(b.id), deteccion: { ...deteccion, texto_ocr: maskDocumentsIn(ocr).slice(0, 1500) } }
   },
 )

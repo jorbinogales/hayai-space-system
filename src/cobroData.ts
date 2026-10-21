@@ -53,6 +53,8 @@ export interface Receptor {
 export const getCobro = (id: string) => api.get<Cobro>(`/cobros/${id}`)
 
 export type CobroPatch = Partial<{
+  monto: number
+  estado: 'pendiente' | 'cobrado'
   monto_bs: number | null
   tasa: number | null
   fecha_tasa: string | null

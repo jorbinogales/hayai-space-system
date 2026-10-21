@@ -24,6 +24,7 @@ import { setFinanceView } from './nav'
 import Versions from './Versions'
 import ToastHost from './Toast'
 import { hideSplash } from './splash'
+import IntroSplash from './IntroSplash'
 
 export type Screen = 'home' | 'clientes' | 'proyectos' | 'finanzas' | 'tareas' | 'hub' | 'marketing'
 /** A dónde se puede navegar: «gastos» ya no es una pantalla, es la vista Gastos dentro de Finanzas. */
@@ -163,6 +164,7 @@ export default function App() {
         {ui === 'hub' && <Hub onBack={() => navigate('home')} onOpen={navigate} />}
         {ui === 'marketing' && <Marketing from={marketingFrom.current} onBack={() => navigate(marketingFrom.current)} />}
       </Cosmos>
+      {session && <IntroSplash done={sceneReady} />}
       {session && (
         <Topbar
           user={session}

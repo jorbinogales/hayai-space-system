@@ -57,7 +57,7 @@ function fallbackTexture(): THREE.CanvasTexture {
 async function decodePlanet(url: string): Promise<THREE.CanvasTexture> {
   const img = new Image()
   img.src = url
-  await img.decode() // decodifica el PNG fuera del hilo principal
+  await conTope(img.decode(), 6000) // decodifica fuera del hilo principal; con tope: si se cuelga, cuenta como fallo y entra el reintento/respaldo
   const c = document.createElement('canvas')
   c.width = 2048
   c.height = 1024
@@ -81,6 +81,12 @@ export function preloadPlanets() {
 }
 
 const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()))
+
+/** Nada de lo que la escena espera puede colgarla para siempre: hay navegadores/GPU donde decode() o
+ * compileAsync() nunca resuelven ni rechazan, y un .catch no protege contra un cuelgue. Todo lo critico
+ * se corre con tope de tiempo: si vence, se sigue con lo que se tenga (reintento, textura plana o primer render). */
+const conTope = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([p, new Promise<never>((_, no) => setTimeout(() => no(new Error(`tope de ${ms} ms`)), ms))])
 
 // Pool de renderers: crear un contexto WebGL y compilar shaders cuesta decenas de ms (el "tiron" al entrar a una pantalla).
 // Se crean y calientan una vez, durante la pantalla de acceso, y las pantallas los reutilizan (pueden solaparse dos: la que sale y la que entra).
@@ -183,18 +189,29 @@ export function mountScene(
   const loadSafe = (u: string) => loadPlanetTexture(u).catch(() => loadPlanetTexture(u)).catch(() => fallbackTexture())
   Promise.all(textureUrls.map(loadSafe)).then(async (textures) => {
     if (disposed) return
-    live = build(ctx, textures)
-    measure()
-    // subida de texturas y compilacion de shaders repartidas en frames, antes de mostrar la escena: sin tirones al entrar
-    for (const t of textures) {
-      renderer.initTexture(t)
-      await nextFrame()
-    }
     try {
-      await renderer.compileAsync(ctx.scene, camera)
-    } catch {
-      /* se compilara en el primer render */
+      live = build(ctx, textures)
+    } catch (e) {
+      // Un mundo a medias es peor que uno plano: se reconstruye con las texturas de respaldo.
+      console.error('[escena] la construccion del mundo fallo; reintento con texturas planas', e)
+      live = build(ctx, textures.map(() => fallbackTexture()))
     }
+    measure()
+    // Subida de texturas y compilacion de shaders repartidas en frames, antes de mostrar la escena: sin
+    // tirones al entrar. PERO con tope: si algo de esto se cuelga, la escena se muestra igual a los 2,5 s
+    // en vez de quedarse en el fondo vacio para siempre (el calentamiento sigue en segundo plano).
+    const calentar = (async () => {
+      for (const t of textures) {
+        renderer.initTexture(t)
+        await nextFrame()
+      }
+      try {
+        await renderer.compileAsync(ctx.scene, camera)
+      } catch {
+        /* se compilara en el primer render */
+      }
+    })()
+    await Promise.race([calentar, new Promise<void>((r) => setTimeout(r, 2500))])
     if (disposed) return
     renderer.domElement.classList.add('ready')
     let last = performance.now()
@@ -213,6 +230,9 @@ export function mountScene(
     raf = requestAnimationFrame(loop)
     // tras dos frames ya hay una imagen real del planeta pintada
     if (onReady) requestAnimationFrame(() => requestAnimationFrame(onReady))
+  }).catch((err) => {
+    // Que ningun fallo de la cadena deje la app muda: al menos queda el error en consola para diagnosticar.
+    console.error('[escena] no se pudo construir el mundo', err)
   })
 
   return {

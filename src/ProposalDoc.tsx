@@ -61,7 +61,7 @@ async function toPng(d: ProposalDocData): Promise<Blob> {
   const GRUPO = 46
   const top = 430 // donde empieza la lista de ítems
   const rowsH = rows.reduce((s, r) => s + (r.kind === 'grupo' ? GRUPO : ROW), 0)
-  const H = top + rowsH + 230
+  const H = top + rowsH + 330
   const cv = document.createElement('canvas')
   cv.width = W
   cv.height = H
@@ -139,7 +139,15 @@ async function toPng(d: ProposalDocData): Promise<Blob> {
   g.fillStyle = '#8a7c6a'
   font(500, 18)
   g.textAlign = 'center'
-  g.fillText('Gracias por confiar en Hayai', W / 2, H - 40)
+  g.fillText('Gracias por confiar en Hayai', W / 2, top + rowsH + 192)
+  g.fillStyle = 'rgba(22,17,11,0.12)'
+  g.fillRect(48, H - 102, W - 96, 2)
+  g.fillStyle = '#16110b'
+  font(700, 21)
+  g.fillText('hayai.com.ve', W / 2, H - 68)
+  g.fillStyle = '#8a7c6a'
+  font(500, 17)
+  g.fillText('Instagram @hayaive · TikTok @hayai.ve · Facebook @hayai', W / 2, H - 38)
   return new Promise((ok, fail) => cv.toBlob((b) => (b ? ok(b) : fail(new Error('png'))), 'image/png'))
 }
 
@@ -248,6 +256,10 @@ export default function ProposalDoc({ client, proposal, onClose }: { client: Cli
               </p>
             )}
             <p className="inv-thanks">Gracias por confiar en Hayai</p>
+            <footer className="inv-letterfoot">
+              <p className="inv-site">hayai.com.ve</p>
+              <p className="inv-social">Instagram @hayaive · TikTok @hayai.ve · Facebook @hayai</p>
+            </footer>
           </article>
         </div>
         <footer>

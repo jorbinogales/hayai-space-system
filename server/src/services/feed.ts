@@ -30,6 +30,15 @@ import { tareaCrear } from './tareas.ts'
 
 export const TIPOS = ['idea', 'potencial', 'alerta', 'noticia', 'oportunidad', 'proyecto'] as const
 export const ESTADOS = ['nuevo', 'revisado', 'descartado', 'convertido'] as const
+/**
+ * Estado de contacto de un prospecto del feed (Release 1.8.3 «Órbita fina IV»): GLOBAL, lo ve todo el equipo
+ * (a diferencia de revisar/descartar, que son personales). Solo tiene sentido en tipo=potencial; el resto de
+ * tipos nace en sin_contactar y ahí se queda. Los 5 valores cubren el flujo completo: el «contactado» a secas
+ * es el paso intermedio que pide el botón «Marcar contactado» (ya se escribió, aún no se sabe si responde);
+ * sin él, marcar contactado tendría que mentir «sin respuesta» antes de saberlo.
+ */
+export const ESTADOS_CONTACTO = ['sin_contactar', 'contactado', 'contactado_sin_respuesta', 'respondio_positivo', 'respondio_negativo'] as const
+export type EstadoContacto = (typeof ESTADOS_CONTACTO)[number]
 /** Los tipos que avisan en la campana al publicarse (el resto se ve en el feed sin interrumpir). */
 export const TIPOS_AVISO = ['alerta', 'noticia', 'potencial'] as const
 export const CONVERSIONES = ['posible_cliente', 'cliente', 'tarea', 'proyecto', 'seguimiento', 'contenido'] as const
@@ -62,6 +71,7 @@ const AVISO_AGRUPA_MIN = 10
 // «potencial» era el nombre anterior de «potencial»: los agentes que aún lo mandan siguen funcionando.
 const tipo = z.preprocess((v) => (v === 'prospecto' ? 'potencial' : v), z.enum(TIPOS, `Tipo inválido (${TIPOS.join(', ')})`))
 const estado = z.enum(ESTADOS, `Estado inválido (${ESTADOS.join(', ')})`)
+const estadoContacto = z.enum(ESTADOS_CONTACTO, `contacto inválido (${ESTADOS_CONTACTO.join(', ')})`)
 /** Nombre anterior de lo que hoy es Growi: si algún flujo viejo sigue publicando con él, cae en `growi` (misma clave externa = no se duplica). */
 const FUENTES_ANTIGUAS: Record<string, string> = { 'gumloop-video-auditorias': 'growi' }
 export const fuente = z
@@ -104,6 +114,7 @@ type Item = z.infer<typeof itemSchema>
 // ---------- salida ----------
 /** `u` es el marcador ($n) del id del socio que mira: su estado personal y sus guardados salen de feed_item_usuarios. */
 const SELECT = (u: string) => `SELECT f.id, f.title, f.summary, f.kind, f.source, f.external_key, f.category, f.visibility, f.status, f.data, f.found_at, f.status_at, f.converted_to, f.converted_id,
+    f.estado_contacto, f.contactado_el, f.contacto_motivo, f.seguimiento_accion, f.seguimiento_fecha,
     f.created_at, f.updated_at, f.actions, f.actions_status, f.actions_at, f.actions_error, f.actions_model, pu.id AS pub_id, pu.name AS pub_name, su.name AS status_by,
     mu.status AS my_status, mu.discard_reason AS my_reason, COALESCE(mu.saved, false) AS saved
   FROM feed_items f JOIN users pu ON pu.id = f.published_by LEFT JOIN users su ON su.id = f.status_by
@@ -123,6 +134,18 @@ export const itemOut = (r: any) => ({
   publicado_por: { id: r.pub_id as string, nombre: r.pub_name as string },
   /** GLOBAL: nuevo o convertido. Lo que cada socio revisó o descartó es suyo: mira mi_estado. */
   estado: (r.status === 'convertido' ? 'convertido' : 'nuevo') as 'nuevo' | 'convertido',
+  /** GLOBAL (1.8.3): en qué punto va el contacto con este prospecto. Solo tiene sentido en tipo=potencial. */
+  estado_contacto: (r.estado_contacto ?? 'sin_contactar') as EstadoContacto,
+  /** Cuándo se marcó contactado (null si nunca); de ahí salen los días desde el envío. */
+  contactado_el: r.contactado_el ? (r.contactado_el as Date).toISOString() : null,
+  /** Días (hora de Caracas) desde que se marcó contactado; null si nunca se contactó. */
+  dias_desde_contacto: r.contactado_el ? diasDesde(r.contactado_el as Date) : null,
+  /** Motivo de la respuesta negativa (lo muestra la bandeja de descarte); null en el resto. */
+  contacto_motivo: (r.contacto_motivo ?? null) as string | null,
+  /** Próxima acción y fecha del seguimiento cuando no hubo respuesta (null si no aplica). `seguimiento_fecha` es
+   *  una columna `date`: pg la devuelve como texto 'AAAA-MM-DD', no como Date (a diferencia de los timestamptz). */
+  seguimiento_accion: (r.seguimiento_accion ?? null) as string | null,
+  seguimiento_fecha: r.seguimiento_fecha instanceof Date ? r.seguimiento_fecha.toISOString().slice(0, 10) : ((r.seguimiento_fecha as string | null) ?? null),
   /** PERSONAL (del socio que consulta): nuevo | revisado | descartado. */
   mi_estado: (r.my_status ?? 'nuevo') as 'nuevo' | 'revisado' | 'descartado',
   motivo_descarte: (r.my_reason ?? null) as string | null,
@@ -261,6 +284,8 @@ const joinMi = (u: string) => `LEFT JOIN feed_item_usuarios mu ON mu.item_id = f
 const filtroShape = {
   tipo: tipo.optional(),
   estado: estado.optional(), // el que ve este socio: nuevo | revisado | descartado | convertido
+  /** 1.8.3: en qué punto va el contacto con el prospecto (la bandeja de descarte es contacto=respondio_negativo) */
+  contacto: estadoContacto.optional(),
   fuente: fuente.optional(),
   categoria: z.union([categoria, z.literal('sin_categoria')]).optional(),
   guardado: boolFlag.optional(), // true: solo los que este socio guardó
@@ -275,6 +300,7 @@ function filtrar(i: Filtro) {
   if (i.visibilidad) g.add('f.visibility = ?', i.visibilidad)
   if (i.tipo) g.add('f.kind = ?', i.tipo)
   if (i.estado) g.add(`${MI_ESTADO} = ?`, i.estado)
+  if (i.contacto) g.add('f.estado_contacto = ?', i.contacto)
   if (i.fuente) g.add('f.source = ?', i.fuente)
   if (i.categoria) i.categoria === 'sin_categoria' ? g.raw('f.category IS NULL') : g.add('f.category = ?', i.categoria)
   if (i.guardado !== undefined) g.raw(i.guardado === true || i.guardado === 'true' ? 'COALESCE(mu.saved, false)' : 'NOT COALESCE(mu.saved, false)')
@@ -287,22 +313,27 @@ function filtrar(i: Filtro) {
 
 /** Contadores del socio (no dependen del filtro): sirven para el «N nuevos» y para armar los filtros, en la lista y en el mapa. */
 async function contadores(actor: Actor) {
-  const [porEstado, porTipo, fuentes, categorias, extra] = await Promise.all([
+  const [porEstado, porTipo, fuentes, categorias, extra, porContacto] = await Promise.all([
     pool.query(`SELECT ${MI_ESTADO} AS e, count(*)::int AS n FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY 1`, [actor.id]),
     pool.query(`SELECT f.kind, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY f.kind`, [actor.id]),
     pool.query(`SELECT f.source, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY f.source ORDER BY 3 DESC, 2 DESC, 1`, [actor.id]),
     pool.query(`SELECT f.category, count(*)::int AS n FROM feed_items f WHERE f.category IS NOT NULL AND ${visible('$1')} GROUP BY f.category ORDER BY 2 DESC, 1`, [actor.id]),
     pool.query(`SELECT count(*) FILTER (WHERE COALESCE(mu.saved, false))::int AS guardados, count(*) FILTER (WHERE f.category IS NULL)::int AS sin_categoria FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')}`, [actor.id]),
+    // 1.8.3: solo potenciales (los demás tipos nacen sin_contactar y no se contactan).
+    pool.query(`SELECT f.estado_contacto AS c, count(*)::int AS n FROM feed_items f WHERE f.kind = 'potencial' AND ${visible('$1')} GROUP BY 1`, [actor.id]),
   ])
   const por_estado = Object.fromEntries(ESTADOS.map((e) => [e, 0])) as Record<string, number>
   for (const r of porEstado.rows) por_estado[r.e] = r.n
   const por_tipo = Object.fromEntries(TIPOS.map((t) => [t, { total: 0, nuevos: 0 }])) as Record<string, { total: number; nuevos: number }>
   for (const r of porTipo.rows) por_tipo[r.kind] = { total: r.n, nuevos: r.nuevos }
+  const por_contacto = Object.fromEntries(ESTADOS_CONTACTO.map((c) => [c, 0])) as Record<string, number>
+  for (const r of porContacto.rows) por_contacto[r.c] = r.n
   return {
     nuevos: por_estado.nuevo,
     guardados: extra.rows[0].guardados as number,
     por_estado,
     por_tipo,
+    por_contacto,
     fuentes: fuentes.rows.map((r) => ({ fuente: r.source as string, total: r.n as number, nuevos: r.nuevos as number })),
     categorias: categorias.rows.map((r) => ({ categoria: r.category as string, total: r.n as number })),
     sin_categoria: extra.rows[0].sin_categoria as number,
@@ -493,6 +524,67 @@ export const feedMarcar = op(
         `INSERT INTO feed_item_usuarios (item_id, user_id, status, discard_reason) VALUES ($1, $2, $3, $4)
          ON CONFLICT (item_id, user_id) DO UPDATE SET status = EXCLUDED.status, discard_reason = EXCLUDED.discard_reason, updated_at = now()`,
         [b.id, actor.id, b.estado === 'nuevo' ? null : b.estado, b.estado === 'descartado' ? (b.motivo ?? null) : null],
+      )
+    })
+    return item(pool, b.id, actor.id)
+  },
+)
+
+// ---------- contacto del prospecto (1.8.3 «Órbita fina IV») ----------
+/**
+ * Qué pasó al escribirle a un prospecto del feed. Es GLOBAL (lo ve todo el equipo) y solo vale en
+ * tipo=potencial: marcar «mensaje enviado» ya no califica el lead —sin respuesta queda en seguimiento
+ * en el Feed, y solo una respuesta positiva lo lleva al pipeline (convirtiéndolo en cliente potencial).
+ * La bandeja de descarte no borra nada: es el filtro contacto=respondio_negativo, con motivo, y se
+ * restaura a sin_contactar. Los ítems ya convertidos no cambian de contacto (su historia quedó en el cliente).
+ */
+export const RESULTADOS_CONTACTO = ['contactado', 'sin_respuesta', 'positivo', 'negativo', 'restaurar'] as const
+/** Desde qué estado se puede marcar cada resultado (el resto es 409, para no saltarse el flujo). */
+const TRANSICIONES_CONTACTO: Record<(typeof RESULTADOS_CONTACTO)[number], EstadoContacto[]> = {
+  contactado: ['sin_contactar'],
+  sin_respuesta: ['contactado'],
+  positivo: ['contactado', 'contactado_sin_respuesta'],
+  negativo: ['contactado', 'contactado_sin_respuesta'],
+  restaurar: ['respondio_negativo'],
+}
+const ESTADO_TRAS_CONTACTO: Record<(typeof RESULTADOS_CONTACTO)[number], EstadoContacto> = {
+  contactado: 'contactado',
+  sin_respuesta: 'contactado_sin_respuesta',
+  positivo: 'respondio_positivo',
+  negativo: 'respondio_negativo',
+  restaurar: 'sin_contactar',
+}
+/** Próxima acción si no se dice otra al marcar «sin respuesta» (mismo plazo que el seguimiento del feed: hoy + 3 días). */
+export const SEGUIMIENTO_POR_DEFECTO = 'Volver a escribir'
+export const feedMarcarContacto = op(
+  z.strictObject({
+    id,
+    resultado: z.enum(RESULTADOS_CONTACTO, 'resultado inválido (contactado | sin_respuesta | positivo | negativo | restaurar)'),
+    motivo: text(200).nullish(), // solo al responder negativo (la bandeja lo muestra)
+    seguimiento_accion: text(120).nullish(), // solo con sin_respuesta
+    seguimiento_fecha: z.iso.date('seguimiento_fecha inválida (AAAA-MM-DD)').optional(), // solo con sin_respuesta, hoy o después
+  }),
+  async (actor, b) => {
+    if (b.motivo && b.resultado !== 'negativo') throw new HttpError(400, 'motivo solo aplica al responder negativo')
+    if ((b.seguimiento_accion || b.seguimiento_fecha) && b.resultado !== 'sin_respuesta') throw new HttpError(400, 'seguimiento_accion y seguimiento_fecha solo aplican a sin_respuesta')
+    if (b.seguimiento_fecha && b.seguimiento_fecha < hoyISO()) throw new HttpError(400, 'seguimiento_fecha no puede ser pasada')
+    await tx(async (c) => {
+      const cur = (await c.query(`SELECT kind, status, estado_contacto, contactado_el FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id])).rows[0]
+      if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
+      if (cur.status === 'convertido') throw new HttpError(409, 'Este ítem ya se convirtió en algo real: su contacto ya no cambia')
+      if (cur.kind !== 'potencial') throw new HttpError(409, 'El contacto solo se marca en potenciales del feed')
+      const actual = cur.estado_contacto as EstadoContacto
+      if (!TRANSICIONES_CONTACTO[b.resultado].includes(actual)) throw new HttpError(409, `No se puede marcar «${b.resultado}» desde «${actual}»`)
+      await c.query(
+        `UPDATE feed_items SET estado_contacto = $2, contactado_el = $3, contacto_motivo = $4, seguimiento_accion = $5, seguimiento_fecha = $6, updated_at = now() WHERE id = $1`,
+        [
+          b.id,
+          ESTADO_TRAS_CONTACTO[b.resultado],
+          b.resultado === 'restaurar' ? null : b.resultado === 'contactado' ? new Date() : (cur.contactado_el as Date | null),
+          b.resultado === 'negativo' ? (b.motivo ?? null) : null,
+          b.resultado === 'sin_respuesta' ? (b.seguimiento_accion ?? SEGUIMIENTO_POR_DEFECTO) : null,
+          b.resultado === 'sin_respuesta' ? (b.seguimiento_fecha ?? masDias(hoyISO(), 3)) : null,
+        ],
       )
     })
     return item(pool, b.id, actor.id)
@@ -744,13 +836,22 @@ export const masDias = (iso: string, n: number) => {
   const [y, m, d] = iso.split('-').map(Number)
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10)
 }
+/** Días (hora de Caracas, por días de calendario) desde un instante hasta hoy; 0 = hoy. */
+const diasDesde = (d: Date) => {
+  const fecha = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d)
+  return Math.max(0, Math.round((Date.parse(hoyISO()) - Date.parse(fecha)) / 86_400_000))
+}
 const ETIQUETA: Record<Vinculo, string> = { posible_cliente: 'el cliente potencial', cliente: 'el cliente', tarea: 'la tarea', proyecto: 'el proyecto', propuesta: 'la propuesta', seguimiento: 'el seguimiento', contenido: 'la pieza de contenido' }
 
 export const feedConvertir = op(convertirShape, async (actor, b) => {
   // Se reclama la clase ANTES de crear nada: dos socios tocando "Convertir" a la vez no duplican el cliente o la tarea.
+  let antesContacto: EstadoContacto = 'sin_contactar' // para devolver el contacto a como estaba si la creación falla
   const antes = await tx(async (c) => {
-    const cur = (await c.query(`SELECT status FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id])).rows[0]
+    const cur = (await c.query(`SELECT status, estado_contacto FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id])).rows[0]
     if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
+    antesContacto = cur.estado_contacto as EstadoContacto
+    // 1.8.3: un prospecto que respondió negativo no se convierte en cliente potencial sin restaurarlo antes.
+    if (b.a === 'posible_cliente' && cur.estado_contacto === 'respondio_negativo') throw new HttpError(409, 'Respondió negativo: restáuralo desde la bandeja de descarte antes de convertirlo en cliente potencial')
     const prev = (await c.query('SELECT ref_id, created_at FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])).rows[0]
     if (prev) {
       const viva = prev.ref_id ? (await c.query(`SELECT 1 FROM ${VINCULO_TABLA[b.a]} WHERE id = $1`, [prev.ref_id])).rowCount : Date.now() - (prev.created_at as Date).getTime() < 120_000
@@ -758,8 +859,12 @@ export const feedConvertir = op(convertirShape, async (actor, b) => {
       await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a]) // lo creado ya no existe (papelera) o el intento quedó a medias
     }
     await c.query('INSERT INTO feed_item_vinculos (item_id, kind, created_by) VALUES ($1, $2, $3)', [b.id, b.a, actor.id])
-    if (cur.status !== 'convertido')
-      await c.query(`UPDATE feed_items SET status = 'convertido', converted_to = $2, discard_reason = NULL, status_by = $3, status_at = now() WHERE id = $1`, [b.id, b.a, actor.id])
+    if (cur.status !== 'convertido') {
+      // 1.8.3: convertir en cliente potencial a un prospecto contactado deja constancia de la respuesta positiva
+      // (solo si ya estaba contactado: convertir directo desde sin_contactar no inventa una respuesta que no hubo).
+      const contacto = b.a === 'posible_cliente' && (cur.estado_contacto === 'contactado' || cur.estado_contacto === 'contactado_sin_respuesta') ? 'respondio_positivo' : cur.estado_contacto
+      await c.query(`UPDATE feed_items SET status = 'convertido', converted_to = $2, discard_reason = NULL, status_by = $3, status_at = now(), estado_contacto = $4 WHERE id = $1`, [b.id, b.a, actor.id, contacto])
+    }
     return cur.status as string
   })
   const f = await item(pool, b.id, actor.id)
@@ -839,7 +944,7 @@ export const feedConvertir = op(convertirShape, async (actor, b) => {
     await tx(async (c) => {
       await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2 AND ref_id IS NULL', [b.id, b.a])
       if (antes !== 'convertido' && !(await c.query('SELECT 1 FROM feed_item_vinculos WHERE item_id = $1', [b.id])).rowCount)
-        await c.query(`UPDATE feed_items SET status = $2, converted_to = NULL, converted_id = NULL, status_by = NULL, status_at = NULL WHERE id = $1`, [b.id, antes])
+        await c.query(`UPDATE feed_items SET status = $2, converted_to = NULL, converted_id = NULL, status_by = NULL, status_at = NULL, estado_contacto = $3 WHERE id = $1`, [b.id, antes, antesContacto])
     })
     throw e
   }

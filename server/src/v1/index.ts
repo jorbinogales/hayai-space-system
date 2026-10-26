@@ -14,7 +14,7 @@ import { buscar } from '../services/buscar.ts'
 import { chatBorrar, chatContadores, chatEditar, chatListar, chatMarcarLeido, chatPublicar, chatUsuarios, chatVer } from '../services/chat.ts'
 import { feedGuionEditar, feedGuionRestablecer, feedGuionVer } from '../services/feedGuion.ts'
 import { feedEjecutarAccion, feedSugerirAcciones } from '../services/feedAcciones.ts'
-import { feedBorrar, feedContacto, feedConvertir, feedDeshacer, feedGeocodificar, feedGuardar, feedListar, feedMapa, feedMarcar, feedPublicar, feedUbicacion, feedVer } from '../services/feed.ts'
+import { feedBorrar, feedContacto, feedConvertir, feedDeshacer, feedGeocodificar, feedGuardar, feedListar, feedMapa, feedMarcar, feedMarcarContacto, feedPublicar, feedUbicacion, feedVer } from '../services/feed.ts'
 import { radarActualizar, radarCrear, radarEliminar, radarListar } from '../services/radar.ts'
 import { interaccionActualizar, interaccionesListar, interaccionRegistrar } from '../services/interacciones.ts'
 import { checklistEliminar, clienteEliminar, gastoEliminar, hitoEliminar, interaccionEliminar, pagoEliminar, papeleraListar, papeleraRestaurar, proyectoEliminar, tareaEliminar } from '../services/papelera.ts'
@@ -213,6 +213,7 @@ route('patch', '/feed/:id/estado', feedMarcar)
 route('patch', '/feed/:id/ubicacion', feedUbicacion) // direccion corregida (se vuelve a buscar) y/o lat+lng (pin a mano)
 route('post', '/feed/:id/guardar', feedGuardar)
 route('patch', '/feed/:id/contacto', feedContacto)
+route('post', '/feed/:id/contacto-estado', feedMarcarContacto) // estado de contacto del prospecto (1.8.3): contactado | sin_respuesta | positivo | negativo | restaurar
 route('post', '/feed/:id/sugerir-acciones', feedSugerirAcciones)
 route('post', '/feed/:id/acciones/:accion/ejecutar', feedEjecutarAccion)
 route('post', '/feed/:id/convertir', feedConvertir)

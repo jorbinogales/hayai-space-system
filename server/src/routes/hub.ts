@@ -8,7 +8,7 @@ import { briefActualizar, briefVer } from '../services/brief.ts'
 import { feedGuionEditar, feedGuionRestablecer, feedGuionVer } from '../services/feedGuion.ts'
 import { feedEjecutarAccion, feedSugerirAcciones } from '../services/feedAcciones.ts'
 import { teselas } from '../geocode.ts'
-import { feedBorrar, feedContacto, feedConvertir, feedDeshacer, feedGeocodificar, feedGuardar, feedListar, feedMapa, feedMarcar, feedPublicar, feedUbicacion, feedVer } from '../services/feed.ts'
+import { feedBorrar, feedContacto, feedConvertir, feedDeshacer, feedGeocodificar, feedGuardar, feedListar, feedMapa, feedMarcar, feedMarcarContacto, feedPublicar, feedUbicacion, feedVer } from '../services/feed.ts'
 import { radarActualizar, radarCrear, radarEliminar, radarListar } from '../services/radar.ts'
 import { sistemaActualizar, sistemaCrear, sistemasListar, sistemaVer, sistemaVerificar } from '../services/sistemas.ts'
 
@@ -91,6 +91,7 @@ hubRouter.patch('/feed/:id/estado', async (req, res) => void res.json(await exec
 hubRouter.patch('/feed/:id/ubicacion', async (req, res) => void res.json(await exec(feedUbicacion, req.user!, { ...body(req), id: req.params.id })))
 hubRouter.post('/feed/:id/guardar', async (req, res) => void res.json(await exec(feedGuardar, req.user!, { ...body(req), id: req.params.id })))
 hubRouter.patch('/feed/:id/contacto', async (req, res) => void res.json(await exec(feedContacto, req.user!, { ...body(req), id: req.params.id })))
+hubRouter.post('/feed/:id/contacto-estado', async (req, res) => void res.json(await exec(feedMarcarContacto, req.user!, { ...body(req), id: req.params.id })))
 hubRouter.post('/feed/:id/sugerir-acciones', async (req, res) => void res.json(await exec(feedSugerirAcciones, req.user!, { ...body(req), id: req.params.id })))
 hubRouter.post('/feed/:id/acciones/:accion/ejecutar', async (req, res) => void res.json(await exec(feedEjecutarAccion, req.user!, { ...body(req), id: req.params.id, accion: req.params.accion })))
 hubRouter.post('/feed/:id/convertir', async (req, res) => void res.json(await exec(feedConvertir, req.user!, { ...body(req), id: req.params.id })))

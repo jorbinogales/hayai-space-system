@@ -12,6 +12,23 @@ export type FeedTipo = (typeof FEED_TIPOS)[number]
 export type FeedEstado = (typeof FEED_ESTADOS)[number]
 /** Estado PERSONAL del socio que consulta. */
 export type MiEstado = 'nuevo' | 'revisado' | 'descartado'
+/**
+ * Estado GLOBAL de contacto de un potencial del feed (1.8.3 «Órbita fina IV»): lo ve todo el equipo.
+ * Sin contactar nace el ítem; contactado es «ya se escribió, esperando respuesta»; sin_respuesta queda en
+ * seguimiento; positivo y negativo son la respuesta. Los 5 valores (y no 4) existen porque «Marcar
+ * contactado» necesita un estado intermedio: sin él habría que mentir «sin respuesta» antes de saberlo.
+ */
+export type EstadoContacto = 'sin_contactar' | 'contactado' | 'contactado_sin_respuesta' | 'respondio_positivo' | 'respondio_negativo'
+export const CONTACTO_LABEL: Record<EstadoContacto, string> = {
+  sin_contactar: 'Sin contactar',
+  contactado: 'Contactado',
+  contactado_sin_respuesta: 'Sin respuesta',
+  respondio_positivo: 'Respondió positivo',
+  respondio_negativo: 'Respondió negativo',
+}
+export const CONTACTO_ORDEN: EstadoContacto[] = ['sin_contactar', 'contactado', 'contactado_sin_respuesta', 'respondio_positivo', 'respondio_negativo']
+/** Lo que se le puede marcar a un prospecto (POST /feed/:id/contacto-estado). */
+export type ResultadoContacto = 'contactado' | 'sin_respuesta' | 'positivo' | 'negativo' | 'restaurar'
 /** Lo que se puede crear a partir de un ítem (POST /feed/:id/convertir). La propuesta se arma desde la ficha del cliente (con `feed_item_id`). */
 export type FeedConversion = 'posible_cliente' | 'cliente' | 'tarea' | 'seguimiento' | 'proyecto' | 'contenido'
 /** Todo lo que puede quedar enlazado a un ítem. */
@@ -92,6 +109,16 @@ export interface FeedItem {
   motivo_descarte: string | null
   /** PERSONAL: lo guardó el socio que consulta */
   guardado: boolean
+  /** GLOBAL (1.8.3): en qué punto va el contacto con este prospecto. Solo tiene sentido en tipo=potencial. */
+  estado_contacto: EstadoContacto
+  contactado_el: string | null
+  /** días (Caracas) desde que se marcó contactado; null si nunca se contactó */
+  dias_desde_contacto: number | null
+  /** motivo de la respuesta negativa (lo muestra la bandeja de descarte); null en el resto */
+  contacto_motivo: string | null
+  /** próxima acción y fecha del seguimiento cuando no hubo respuesta (null si no aplica) */
+  seguimiento_accion: string | null
+  seguimiento_fecha: string | null
   /** forma libre: negocio, fugas, guion, urls, metricas, contacto, origen_url, telefono, email, origen... */
   datos: Record<string, unknown>
   ubicacion: Ubicacion
@@ -121,6 +148,8 @@ export interface FeedMeta {
   guardados: number
   por_estado: Record<FeedEstado, number>
   por_tipo: Record<FeedTipo, { total: number; nuevos: number }>
+  /** 1.8.3: cuántos potenciales hay en cada estado de contacto (no depende del filtro) */
+  por_contacto: Record<EstadoContacto, number>
   fuentes: { fuente: string; total: number; nuevos: number }[]
   categorias: { categoria: string; total: number }[]
   sin_categoria: number
@@ -134,6 +163,8 @@ export interface FeedPage {
 export interface FeedFilters {
   tipo?: FeedTipo
   estado?: FeedEstado
+  /** 1.8.3: en qué punto va el contacto con el prospecto (respondio_negativo = bandeja de descarte) */
+  contacto?: EstadoContacto
   fuente?: string
   /** una categoría, o 'sin_categoria' */
   categoria?: string
@@ -209,6 +240,13 @@ export const publishFeed = (b: { titulo: string; tipo: FeedTipo; resumen?: strin
 
 /** Revisar / descartar / volver a nuevo: PERSONAL (no afecta a los demás socios). Solo da 409 si el ítem ya está convertido. */
 export const markFeed = (it: FeedItem, estado: MiEstado, motivo?: string) => api.patch<FeedItem>(`/feed/${it.id}/estado`, { estado, ...(motivo ? { motivo } : {}) })
+/**
+ * Marcar qué pasó al escribirle a un prospecto: contactado | sin_respuesta | positivo | negativo | restaurar.
+ * GLOBAL (lo ve todo el equipo); 409 si el salto no aplica o el ítem ya está convertido. `motivo` solo con
+ * negativo; `seguimiento_accion` y `seguimiento_fecha` solo con sin_respuesta (por defecto «Volver a escribir», hoy + 3 días).
+ */
+export const marcarContactoFeed = (it: FeedItem, b: { resultado: ResultadoContacto; motivo?: string; seguimiento_accion?: string; seguimiento_fecha?: string }) =>
+  api.post<FeedItem>(`/feed/${it.id}/contacto-estado`, b)
 /** Guardar o quitar de guardados: PERSONAL. */
 export const saveFeed = (it: FeedItem, guardado: boolean) => api.post<FeedItem>(`/feed/${it.id}/guardar`, { guardado })
 

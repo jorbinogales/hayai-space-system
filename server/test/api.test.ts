@@ -484,7 +484,7 @@ describe('datos', () => {
   it('tareas: crear, listar, marcar/desmarcar (done_at coherente), borrar, 404', async () => {
     const t = await call('/tasks', { cookie, body: { projectId, title: 'Diseñar home' } })
     assert.equal(t.status, 201, JSON.stringify(t.body))
-    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Diseñar home', done: false, due: null, owner: 'Elis', hidden: false, milestoneId: null })
+    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Diseñar home', done: false, due: null, owner: 'Elis', hidden: false, milestoneId: null, assigneeId: null, responsable: 'Leandro', asignada: false })
     assert.equal(t.body.projectId, projectId)
     assert.deepEqual((await call('/tasks', { cookie })).body, [t.body])
 
@@ -746,7 +746,7 @@ describe('datos', () => {
   it('tareas con fecha: due en POST/PATCH/GET, null la borra, PATCH vacío => 400', async () => {
     const t = await call('/tasks', { cookie, body: { projectId, title: 'Con fecha', due: '2019-05-05' } })
     assert.equal(t.status, 201, JSON.stringify(t.body))
-    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Con fecha', done: false, due: '2019-05-05', owner: 'Elis', hidden: false, milestoneId: null })
+    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Con fecha', done: false, due: '2019-05-05', owner: 'Elis', hidden: false, milestoneId: null, assigneeId: null, responsable: 'Leandro', asignada: false })
     assert.deepEqual((await call('/tasks', { cookie })).body.find((x: any) => x.id === t.body.id), t.body)
     const nul = await call('/tasks', { cookie, body: { projectId, title: 'Sin fecha', due: null } })
     assert.equal(nul.body.due, null)

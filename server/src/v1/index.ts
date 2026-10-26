@@ -2,7 +2,7 @@
 // Contrato: ver SPEC.md y server/src/v1/README en el README del repo. Errores: { error: { code, message } }.
 import express, { Router, type NextFunction, type Request, type Response } from 'express'
 import { exec, type Op } from '../services/common.ts'
-import { clienteActualizar, clienteCrear, clientesListar, clienteVer, pagoActualizar, pagoRegistrar, pagosListar } from '../services/clientes.ts'
+import { clienteActualizar, clienteCrear, clientesListar, clienteVer, logoArchivo, logoEliminar, logoSubir, pagoActualizar, pagoRegistrar, pagosListar } from '../services/clientes.ts'
 import { comprobanteArchivo, comprobanteDetectar, comprobanteSubir, comprobanteVer, pagoVer, receptorEliminar, receptorGuardar, receptoresListar } from '../services/cobros.ts'
 import { acuerdoActualizar, acuerdoCrear, acuerdosListar, equipoActualizar, equipoVer, hubVer, marketingEmbudo } from '../services/hub.ts'
 import { versionesListar, versionHeader, versionPublicar, versionVer } from '../services/versiones.ts'
@@ -82,6 +82,7 @@ v1Router.use(apiKeyAuth, keyRateLimit())
 v1Router.use(versionHeader) // X-Hayai-Version: el agente ve si el sistema se actualizó sin preguntar
 // El comprobante viaja en base64 (hasta 4 MB de imagen): solo esa ruta admite un cuerpo grande.
 v1Router.post('/pagos/:id/comprobante', jsonOnly, express.json({ limit: '6mb' }))
+v1Router.post('/clientes/:id/logo', jsonOnly, express.json({ limit: '6mb' }))
 v1Router.use(jsonOnly, express.json({ limit: '100kb' }))
 v1Router.use(conflictGuard) // If-Match o `actualizado_el` en el cuerpo: no pisar lo que cambió mientras alguien editaba
 
@@ -111,6 +112,16 @@ route('get', '/clientes', clientesListar)
 route('get', '/clientes/:id', clienteVer)
 route('post', '/clientes', clienteCrear, 201)
 route('patch', '/clientes/:id', clienteActualizar)
+route('post', '/clientes/:id/logo', logoSubir, 201)
+route('delete', '/clientes/:id/logo', logoEliminar)
+v1Router.get('/clientes/:id/logo/archivo', async (req, res) => {
+  requireScope(req, 'read')
+  const f = await logoArchivo(String(req.params.id))
+  res.setHeader('Content-Type', f.mime)
+  res.setHeader('Content-Disposition', `inline; filename="${f.filename}"`)
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox")
+  res.send(f.data)
+})
 route('post', '/clientes/:cliente_id/pagos', pagoRegistrar, 201)
 route('delete', '/clientes/:id', clienteEliminar)
 

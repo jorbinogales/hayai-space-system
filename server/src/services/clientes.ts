@@ -13,6 +13,7 @@ import { interaccionOut } from './interacciones.ts'
 // «posible» era el nombre anterior de «potencial»: se sigue aceptando en la entrada; la salida siempre dice «potencial».
 const estadoCliente = z.preprocess((v) => (v === 'posible' ? 'potencial' : v), z.enum(['activo', 'potencial'], 'Estado inválido (activo o potencial)'))
 import { propuestasPor } from './propuestas.ts'
+import { clientLogoFile, deleteClientLogo, LOGO_EXT, MAX_LOGO_BYTES, saveClientLogo, sniffLogo } from '../clientLogo.ts'
 
 type Loaded = Awaited<ReturnType<typeof loadClients>>[number]
 type Move = Loaded['movements'][number]
@@ -69,6 +70,8 @@ function resumen(c: Loaded) {
     origen: c.source,
     utm_source: c.utmSource,
     redes: c.socials,
+    enlaces: c.systemLinks,
+    tiene_logo: c.hasLogo,
     fecha_implementacion: c.implementationDate,
     // pipeline (etapa es null en los clientes de antes del pipeline)
     etapa: c.stage,
@@ -364,3 +367,29 @@ export const pagoActualizar = op(
 )
 
 export const pagoMarcarCobrado = op(z.strictObject({ id }), (actor, b) => actualizarPago(actor, { id: b.id, estado: 'cobrado' }))
+
+// ---------- logo del cliente (la imagen vive en la BD: client_logos) ----------
+export const logoSubir = op(
+  z.strictObject({
+    id,
+    imagen_base64: z.string('imagen_base64 es obligatoria').min(100, 'La imagen está vacía o incompleta').max(6_000_000, 'Imagen demasiado grande (máximo 4 MB)'),
+    nombre: text(120).optional(),
+  }),
+  async (actor, b) => {
+    const buf = Buffer.from(b.imagen_base64.replace(/^data:[^;]+;base64,/, ''), 'base64')
+    if (buf.length > MAX_LOGO_BYTES) throw new HttpError(413, 'Imagen demasiado grande (máximo 4 MB)')
+    const mime = sniffLogo(buf)
+    if (!mime) throw new HttpError(400, 'imagen_base64: solo se aceptan imágenes PNG, JPEG o WebP')
+    const nombre = (b.nombre ?? `logo.${LOGO_EXT[mime]}`).replace(/[\r\n"\\/]/g, '_')
+    await saveClientLogo(pool, b.id, actor.id, { filename: nombre, mime, data: buf })
+    return clienteDetalle(b.id)
+  },
+)
+
+export const logoEliminar = op(z.strictObject({ id }), async (_a, b) => {
+  if (!(await deleteClientLogo(pool, b.id))) throw new HttpError(404, 'El cliente no tiene logo')
+  return clienteDetalle(b.id)
+})
+
+/** El archivo del logo para servirlo por HTTP (web y API v1 comparten la lectura). */
+export const logoArchivo = (clientId: string) => clientLogoFile(pool, clientId)

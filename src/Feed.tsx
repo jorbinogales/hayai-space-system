@@ -16,6 +16,8 @@ import {
   categoriaLabel,
   closeFeed,
   conTexto,
+  CONTACTO_LABEL,
+  CONTACTO_ORDEN,
   guionEtiqueta,
   mensajeVentas,
   conceptoDe,
@@ -37,6 +39,7 @@ import {
   isRec,
   loadFeed,
   loadFeedItem,
+  marcarContactoFeed,
   markFeed,
   onFeedFocus,
   openFeed,
@@ -60,6 +63,7 @@ import {
   type ConvertBody,
   type CreadoKind,
   type EnlaceContacto,
+  type EstadoContacto,
   type FeedConversion,
   type FeedEstado,
   type FeedFilters,
@@ -68,6 +72,7 @@ import {
   type FeedMeta,
   type FeedTipo,
   type MiEstado,
+  type ResultadoContacto,
 } from './feedData'
 import { go, requestFicha } from './nav'
 import { loadProjects, useProjects } from './projectData'
@@ -876,9 +881,76 @@ function DescartarForm({ busy, onClose, onSubmit, id }: PanelProps & { id: strin
   )
 }
 
+/** «Respondió negativo»: el motivo sí se pide (la bandeja de descarte lo muestra) y el ítem no se borra. */
+function NegativoForm({ busy, onClose, onSubmit, id }: PanelProps & { id: string; onSubmit: (motivo: string) => void }) {
+  const [motivo, setMotivo] = useState('')
+  const first = useFirstFocus<HTMLInputElement>()
+  const hint = `${id}-h`
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    if (!busy && motivo.trim()) onSubmit(motivo.trim())
+  }
+  return (
+    <form className="fd-form" id={id} onSubmit={submit} onKeyDown={escape(onClose)} aria-label="Respondió negativo">
+      <fieldset disabled={busy}>
+        <label>
+          <span>Motivo</span>
+          <input ref={first} value={motivo} maxLength={200} aria-describedby={hint} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej. Ya trabaja con otro proveedor" />
+          <small id={hint}>{motivo.length}/200</small>
+        </label>
+      </fieldset>
+      <div className="fd-actions">
+        <button type="submit" className="fd-btn is-dark" disabled={busy || !motivo.trim()}>
+          {busy ? 'Moviendo…' : 'Mover a descarte'}
+        </button>
+        <button type="button" className="fd-btn" onClick={onClose} disabled={busy}>
+          Cancelar
+        </button>
+      </div>
+    </form>
+  )
+}
+
+/** «Respondió positivo»: confirmación explícita, porque en el mismo gesto se crea el cliente Potencial. */
+function PositivoConfirm({ busy, onClose, onSubmit, id }: PanelProps & { id: string; onSubmit: () => void }) {
+  const first = useFirstFocus<HTMLButtonElement>()
+  return (
+    <div className="fd-confirm" id={id} role="group" aria-label="Confirmar respuesta positiva" onKeyDown={escape(onClose)}>
+      <p className="fd-confirm-t">¿Respondió positivo?</p>
+      <p className="fd-confirm-d">Se crea el cliente Potencial en el pipeline (etapa Potencial, 10%) y el hallazgo queda marcado como convertido. Puedes deshacerlo 2 minutos.</p>
+      <div className="fd-actions">
+        <button ref={first} type="button" className="fd-btn is-primary" disabled={busy} onClick={onSubmit}>
+          {busy ? 'Creando…' : 'Sí, crear cliente Potencial'}
+        </button>
+        <button type="button" className="fd-btn" onClick={onClose} disabled={busy}>
+          Cancelar
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** «hoy» / «hace 1 día» / «hace N días» desde que se marcó contactado. */
+const diasTexto = (n: number | null) => (n === null ? '' : n === 0 ? 'hoy' : n === 1 ? 'hace 1 día' : `hace ${n} días`)
+/** Lo que avisa la tarjeta tras marcar un resultado de contacto. */
+const notaContacto = (resultado: ResultadoContacto, n: FeedItem): string => {
+  switch (resultado) {
+    case 'contactado':
+      return 'Marcado como contactado: esperando respuesta.'
+    case 'sin_respuesta':
+      return `Quedó en seguimiento: ${n.seguimiento_accion ?? 'Volver a escribir'}${n.seguimiento_fecha ? ` el ${fmtDate(n.seguimiento_fecha, true)}` : ''}.`
+    case 'positivo':
+      return 'Respondió positivo.'
+    case 'negativo':
+      return 'Movido a la bandeja de descarte.'
+    case 'restaurar':
+      return 'Volvió a sin contactar.'
+  }
+}
+
 // ---------- tarjeta ----------
-type Panel = 'ajustar' | 'descartar' | null
-type Busy = 'convertir' | 'revisado' | 'descartar' | 'nuevo' | 'guardar' | 'accion' | 'sugerir' | null
+type Panel = 'ajustar' | 'descartar' | 'negativo' | 'positivo' | null
+type Busy = 'convertir' | 'revisado' | 'descartar' | 'nuevo' | 'guardar' | 'accion' | 'sugerir' | 'contacto' | null
 interface Done {
   a: FeedConversion
   nombre?: string
@@ -1001,8 +1073,9 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, ia, onItem, onGon
     }
   }
 
-  const convert = (kind: FeedConversion, body: ConvertBody, proyecto?: string) =>
+  const convert = (kind: FeedConversion, body: ConvertBody, proyecto?: string, pre?: () => Promise<void>) =>
     act('convertir', async () => {
+      await pre?.()
       const r = await convertFeed(it, body)
       const det = r.creado.detalle
       const etapa = typeof det.etapa === 'string' ? (STAGE_LABEL[det.etapa] ?? 'Potencial captado') : 'Potencial captado'
@@ -1061,6 +1134,17 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, ia, onItem, onGon
       setNote({ tone: 'ok', text: estado === 'nuevo' ? 'Volvió a nuevo.' : estado === 'revisado' ? 'Marcado como revisado.' : 'Descartado.' })
       onItem(n)
     })
+
+  /** Marcar qué pasó al escribirle al prospecto (GLOBAL: lo ve todo el equipo). */
+  const contactoOp = (resultado: ResultadoContacto, extra?: { motivo?: string }) =>
+    act('contacto', async () => {
+      const n = await marcarContactoFeed(it, { resultado, ...extra })
+      setPanel(null)
+      setNote({ tone: 'ok', text: notaContacto(resultado, n) })
+      onItem(n)
+    })
+  /** «Respondió positivo» con confirmación: marca la respuesta y crea el cliente Potencial en el mismo gesto. */
+  const positivo = () => void convert('posible_cliente', body('posible_cliente'), undefined, async () => void (await marcarContactoFeed(it, { resultado: 'positivo' })))
 
   const save = () =>
     act('guardar', async () => {
@@ -1244,6 +1328,66 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, ia, onItem, onGon
             <b>Lo descartaste</b>
             {it.motivo_descarte ? `: ${it.motivo_descarte}` : '.'}
           </p>
+        )}
+
+        {it.tipo === 'potencial' && !converted && (
+          <div className={`fd-contacto is-${it.estado_contacto}`} role="group" aria-label={`Contacto: ${CONTACTO_LABEL[it.estado_contacto]}`}>
+            <div className="fd-contacto-top">
+              <span className="fd-contacto-badge">{CONTACTO_LABEL[it.estado_contacto]}</span>
+              {it.estado_contacto === 'contactado' && <p className="fd-contacto-info">Le escribiste {diasTexto(it.dias_desde_contacto)}: esperando respuesta.</p>}
+              {it.estado_contacto === 'contactado_sin_respuesta' && (
+                <p className="fd-contacto-info">
+                  Sin respuesta · contactado {diasTexto(it.dias_desde_contacto)} · Próxima acción: {it.seguimiento_accion}
+                  {it.seguimiento_fecha && <> el {fmtDate(it.seguimiento_fecha, true)}</>}
+                </p>
+              )}
+              {it.estado_contacto === 'respondio_positivo' && <p className="fd-contacto-info">Respondió positivo: créalo como cliente Potencial para seguirlo en el pipeline.</p>}
+              {it.estado_contacto === 'respondio_negativo' && <p className="fd-contacto-info">Respondió negativo{it.contacto_motivo ? `: ${it.contacto_motivo}` : '.'}</p>}
+            </div>
+            <div className="fd-contacto-btns">
+              {it.estado_contacto === 'sin_contactar' && (
+                <button type="button" className="fd-btn is-primary" disabled={isBusy} onClick={() => void contactoOp('contactado')}>
+                  {busy === 'contacto' ? 'Marcando…' : 'Marcar contactado'}
+                </button>
+              )}
+              {(it.estado_contacto === 'contactado' || it.estado_contacto === 'contactado_sin_respuesta') && (
+                <>
+                  {it.estado_contacto === 'contactado' && (
+                    <button type="button" className="fd-btn" disabled={isBusy} onClick={() => void contactoOp('sin_respuesta')}>
+                      {busy === 'contacto' ? 'Marcando…' : 'Sin respuesta'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="fd-btn is-primary"
+                    ref={(n) => void (triggers.current.positivo = n)}
+                    disabled={isBusy}
+                    aria-expanded={panel === 'positivo'}
+                    aria-controls={`${pid}-po`}
+                    onClick={() => toggle('positivo')}
+                  >
+                    Respondió positivo
+                  </button>
+                  <button
+                    type="button"
+                    className="fd-btn"
+                    ref={(n) => void (triggers.current.negativo = n)}
+                    disabled={isBusy}
+                    aria-expanded={panel === 'negativo'}
+                    aria-controls={`${pid}-ne`}
+                    onClick={() => toggle('negativo')}
+                  >
+                    Respondió negativo
+                  </button>
+                </>
+              )}
+              {it.estado_contacto === 'respondio_negativo' && (
+                <button type="button" className="fd-btn" disabled={isBusy} onClick={() => void contactoOp('restaurar')}>
+                  {busy === 'contacto' ? 'Restaurando…' : 'Restaurar'}
+                </button>
+              )}
+            </div>
+          </div>
         )}
 
         <Contacto it={it} onItem={onItem} />
@@ -1452,6 +1596,8 @@ const FeedCard = memo(function FeedCard({ it, hit, owners, me, ia, onItem, onGon
           </div>
         )}
         {panel === 'descartar' && <DescartarForm id={`${pid}-de`} busy={busy === 'descartar'} onClose={() => closePanel()} onSubmit={(m) => void mark('descartado', m)} />}
+        {panel === 'negativo' && <NegativoForm id={`${pid}-ne`} busy={busy === 'contacto'} onClose={() => closePanel()} onSubmit={(m) => void contactoOp('negativo', { motivo: m })} />}
+        {panel === 'positivo' && <PositivoConfirm id={`${pid}-po`} busy={busy === 'convertir'} onClose={() => closePanel()} onSubmit={() => void positivo()} />}
 
         {!converted && (
           <div className="fd-triage" role="group" aria-label={`Revisar: ${it.titulo}`}>
@@ -1575,13 +1721,15 @@ type EstadoSel = FeedEstado | 'todos'
 interface Filters {
   estado: EstadoSel
   tipo: FeedTipo | ''
+  /** '' = todos; si no, el estado de contacto del prospecto (la bandeja de descarte es respondio_negativo) */
+  contacto: EstadoContacto | ''
   fuente: string
   /** '' = todas, 'sin_categoria' o el nombre de la categoría */
   categoria: string
   guardado: boolean
   q: string
 }
-const DEFAULTS: Filters = { estado: 'nuevo', tipo: '', fuente: '', categoria: '', guardado: false, q: '' }
+const DEFAULTS: Filters = { estado: 'nuevo', tipo: '', contacto: '', fuente: '', categoria: '', guardado: false, q: '' }
 const ESTADO_TABS: { key: EstadoSel; label: string }[] = [
   { key: 'nuevo', label: 'Nuevos' },
   { key: 'revisado', label: 'Revisados' },
@@ -1589,10 +1737,11 @@ const ESTADO_TABS: { key: EstadoSel; label: string }[] = [
   { key: 'convertido', label: 'Convertidos' },
   { key: 'todos', label: 'Todos' },
 ]
-const sameFilters = (a: Filters, b: Filters) => a.estado === b.estado && a.tipo === b.tipo && a.fuente === b.fuente && a.categoria === b.categoria && a.guardado === b.guardado && a.q === b.q
+const sameFilters = (a: Filters, b: Filters) => a.estado === b.estado && a.tipo === b.tipo && a.contacto === b.contacto && a.fuente === b.fuente && a.categoria === b.categoria && a.guardado === b.guardado && a.q === b.q
 const toQuery = (f: Filters): FeedFilters => ({
   ...(f.estado !== 'todos' ? { estado: f.estado } : {}),
   ...(f.tipo ? { tipo: f.tipo } : {}),
+  ...(f.contacto ? { contacto: f.contacto } : {}),
   ...(f.fuente ? { fuente: f.fuente } : {}),
   ...(f.categoria ? { categoria: f.categoria } : {}),
   ...(f.guardado ? { guardado: true } : {}),
@@ -1915,7 +2064,7 @@ export function FeedScreen({ owners }: { owners: string[] }) {
   // ---- derivados ----
   const nuevos = meta?.nuevos ?? null
   const totalAll = meta ? Object.values(meta.por_estado).reduce((a, b) => a + b, 0) : null
-  const extra = !!(f.tipo || f.fuente || f.categoria || f.q)
+  const extra = !!(f.tipo || f.contacto || f.fuente || f.categoria || f.q)
   const fuentes = meta ? (f.fuente && !meta.fuentes.some((x) => x.fuente === f.fuente) ? [...meta.fuentes, { fuente: f.fuente, total: 0, nuevos: 0 }] : meta.fuentes) : []
   const categorias = meta?.categorias ?? []
   const showCat = !!meta && (categorias.length > 0 || !!f.categoria)
@@ -2047,6 +2196,26 @@ export function FeedScreen({ owners }: { owners: string[] }) {
                     )
                   })}
                 </div>
+                {(f.tipo === 'potencial' || f.contacto) && (
+                  <div className="fd-chips fd-contacto-row" role="group" aria-label="Contacto del prospecto">
+                    <span className="fd-contacto-l" aria-hidden="true">
+                      Contacto
+                    </span>
+                    <button type="button" className={`fd-chip${f.contacto === '' ? ' is-on' : ''}`} aria-pressed={f.contacto === ''} aria-label={`Todos los contactos${meta ? `, ${plural(CONTACTO_ORDEN.reduce((a, k) => a + (meta.por_contacto[k] ?? 0), 0), 'potencial', 'potenciales')}` : ''}`} onClick={() => setF((c) => ({ ...c, contacto: '' }))}>
+                      Todos {meta && <em>{fmtN(CONTACTO_ORDEN.reduce((a, k) => a + (meta.por_contacto[k] ?? 0), 0))}</em>}
+                    </button>
+                    {CONTACTO_ORDEN.map((k) => {
+                      const n = meta?.por_contacto[k]
+                      const etiqueta = k === 'respondio_negativo' ? 'Descartados' : CONTACTO_LABEL[k]
+                      const aviso = k === 'respondio_negativo' ? `Bandeja de descarte${n !== undefined ? `, ${plural(n, 'potencial', 'potenciales')}` : ''}` : `${etiqueta}${n !== undefined ? `, ${plural(n, 'potencial', 'potenciales')}` : ''}`
+                      return (
+                        <button key={k} type="button" className={`fd-chip${f.contacto === k ? ' is-on' : ''}`} aria-pressed={f.contacto === k} aria-label={aviso} onClick={() => setF((c) => ({ ...c, contacto: c.contacto === k ? '' : k }))}>
+                          {etiqueta} {n !== undefined && <em className={n === 0 ? 'is-zero' : ''}>{fmtN(n)}</em>}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
                 <div className={`fd-find${showCat ? ' has-cat' : ''}`}>
                   <label className="fd-field">
                     <span className="fd-sr">Fuente</span>
@@ -2115,7 +2284,7 @@ export function FeedScreen({ owners }: { owners: string[] }) {
 
             {vista === 'lista' && firstLoad && !error && <Skeleton />}
 
-            {vista === 'lista' && empty && <Empty f={f} extra={extra} initial={totalAll === 0} onPropose={() => setProposing(true)} onFilters={setF} onClear={() => applyFilters({ ...f, tipo: '', fuente: '', categoria: '', guardado: false, q: '' })} />}
+            {vista === 'lista' && empty && <Empty f={f} extra={extra} initial={totalAll === 0} onPropose={() => setProposing(true)} onFilters={setF} onClear={() => applyFilters({ ...f, tipo: '', contacto: '', fuente: '', categoria: '', guardado: false, q: '' })} />}
 
             {vista === 'lista' && shown.length > 0 && (
               <ul className="fd-list">

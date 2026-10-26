@@ -13,7 +13,6 @@ import type { Proposal, ProposalItem } from './proposalData'
  */
 
 const LOGO = `${import.meta.env.BASE_URL}hayai-logo.png`
-const STATE_LABEL: Record<Proposal['estado'], string> = { borrador: 'Borrador', presentada: 'Presentada', aceptada: 'Aceptada', rechazada: 'Rechazada', reemplazada: 'Reemplazada' }
 
 export interface ProposalDocData {
   client: Client
@@ -95,14 +94,6 @@ async function toPng(d: ProposalDocData): Promise<Blob> {
   font(700, 44)
   const name = d.client.name
   g.fillText(name.length > 24 ? `${name.slice(0, 23)}…` : name, 48, 366)
-  g.fillStyle = '#8a7c6a'
-  font(600, 18)
-  g.textAlign = 'right'
-  g.fillText('VERSIÓN', W - 48, 316)
-  g.fillStyle = '#16110b'
-  font(500, 28)
-  g.fillText(`${p.version} · ${STATE_LABEL[p.estado]}`, W - 48, 352)
-  g.textAlign = 'left'
   g.fillStyle = 'rgba(22,17,11,0.12)'
   g.fillRect(48, top - 26, W - 96, 2)
 
@@ -209,10 +200,6 @@ export default function ProposalDoc({ client, proposal, onClose }: { client: Cli
               <dd>
                 {client.hasLogo && <img className="inv-clogo" src={`/api/clients/${client.id}/logo`} alt="" />}
                 {client.name}
-              </dd>
-              <dt>Versión</dt>
-              <dd>
-                {proposal.version} · {STATE_LABEL[proposal.estado]}
               </dd>
             </dl>
             {uni.length > 0 && (

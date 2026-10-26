@@ -10,10 +10,10 @@ import type { Proposal, ProposalItem } from './proposalData'
  * Mismo formato que la factura mensual (logo, papel crema, total destacado) para imprimir o mandar por WhatsApp:
  * con el teléfono de la ficha abre el chat del cliente con el texto; sin él, comparte la imagen (canvas).
  * Es solo una vista de la propuesta guardada: editarla es crear una versión nueva.
+ * Las notas de la propuesta son internas (la negociación): NO se imprimen ni se comparten aquí.
  */
 
 const LOGO = `${import.meta.env.BASE_URL}hayai-logo.png`
-const STATE_LABEL: Record<Proposal['estado'], string> = { borrador: 'Borrador', presentada: 'Presentada', aceptada: 'Aceptada', rechazada: 'Rechazada', reemplazada: 'Reemplazada' }
 
 export interface ProposalDocData {
   client: Client
@@ -36,7 +36,6 @@ const asText = (d: ProposalDocData) => {
   }
   lines.push('', '*Mensualidad*', ...mensuales(p).map((i) => `• ${lineLabel(i)}: ${money(i.subtotal)}/mes`))
   lines.push(`*Mensualidad total: ${money(p.totales.mensual)}/mes*`)
-  if (p.notas) lines.push('', p.notas)
   lines.push('', 'Gracias por confiar en Hayai')
   return lines.join('\n')
 }
@@ -95,14 +94,6 @@ async function toPng(d: ProposalDocData): Promise<Blob> {
   font(700, 44)
   const name = d.client.name
   g.fillText(name.length > 24 ? `${name.slice(0, 23)}…` : name, 48, 366)
-  g.fillStyle = '#8a7c6a'
-  font(600, 18)
-  g.textAlign = 'right'
-  g.fillText('VERSIÓN', W - 48, 316)
-  g.fillStyle = '#16110b'
-  font(500, 28)
-  g.fillText(`${p.version} · ${STATE_LABEL[p.estado]}`, W - 48, 352)
-  g.textAlign = 'left'
   g.fillStyle = 'rgba(22,17,11,0.12)'
   g.fillRect(48, top - 26, W - 96, 2)
 
@@ -210,10 +201,6 @@ export default function ProposalDoc({ client, proposal, onClose }: { client: Cli
                 {client.hasLogo && <img className="inv-clogo" src={`/api/clients/${client.id}/logo`} alt="" />}
                 {client.name}
               </dd>
-              <dt>Versión</dt>
-              <dd>
-                {proposal.version} · {STATE_LABEL[proposal.estado]}
-              </dd>
             </dl>
             {uni.length > 0 && (
               <>
@@ -260,7 +247,6 @@ export default function ProposalDoc({ client, proposal, onClose }: { client: Cli
                 {money(proposal.totales.mensual)}/mes
               </p>
             )}
-            {proposal.notas && <p className="inv-nota">{proposal.notas}</p>}
             <p className="inv-thanks">Gracias por confiar en Hayai</p>
           </article>
         </div>

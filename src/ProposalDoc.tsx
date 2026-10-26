@@ -140,14 +140,45 @@ async function toPng(d: ProposalDocData): Promise<Blob> {
   font(500, 18)
   g.textAlign = 'center'
   g.fillText('Gracias por confiar en Hayai', W / 2, top + rowsH + 192)
+  // pie membretado: fila de contacto con su icono por canal, igual que en la vista
+  const LF_ICONS: Record<string, string> = {
+    globe: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM3 12h18M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9Z',
+    instagram: 'M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4ZM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM17.2 6.8h.01',
+    tiktok: 'M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.57 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1Z',
+    facebook: 'M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z',
+    phone: 'M8 3h8a1.5 1.5 0 0 1 1.5 1.5v15A1.5 1.5 0 0 1 16 21H8a1.5 1.5 0 0 1-1.5-1.5v-15A1.5 1.5 0 0 1 8 3ZM11 18h2',
+  }
+  const lfItems: Array<[string, string]> = [
+    [LF_ICONS.globe, 'hayai.com.ve'],
+    [LF_ICONS.instagram, '@hayaive'],
+    [LF_ICONS.tiktok, '@hayai.ve'],
+    [LF_ICONS.facebook, '@hayai'],
+    [LF_ICONS.phone, '0424-1387198'],
+  ]
   g.fillStyle = 'rgba(22,17,11,0.12)'
-  g.fillRect(48, H - 102, W - 96, 2)
-  g.fillStyle = '#16110b'
-  font(700, 21)
-  g.fillText('hayai.com.ve', W / 2, H - 68)
-  g.fillStyle = '#8a7c6a'
-  font(500, 17)
-  g.fillText('Instagram @hayaive · TikTok @hayai.ve · Facebook @hayai', W / 2, H - 38)
+  g.fillRect(48, H - 92, W - 96, 2)
+  font(600, 16)
+  const IS = 16
+  const IGAP = 6
+  const GAP = 18
+  const widths = lfItems.map(([, t]) => IS + IGAP + g.measureText(t).width)
+  let fx = (W - (widths.reduce((a, b) => a + b, 0) + GAP * (lfItems.length - 1))) / 2
+  const fy = H - 46
+  g.textAlign = 'left'
+  lfItems.forEach(([d, t], i) => {
+    g.save()
+    g.translate(fx, fy - IS + 3)
+    g.scale(IS / 24, IS / 24)
+    g.strokeStyle = '#c67f14'
+    g.lineWidth = 2.4
+    g.lineCap = 'round'
+    g.lineJoin = 'round'
+    g.stroke(new Path2D(d))
+    g.restore()
+    g.fillStyle = '#16110b'
+    g.fillText(t, fx + IS + IGAP, fy)
+    fx += widths[i] + GAP
+  })
   return new Promise((ok, fail) => cv.toBlob((b) => (b ? ok(b) : fail(new Error('png'))), 'image/png'))
 }
 
@@ -257,8 +288,11 @@ export default function ProposalDoc({ client, proposal, onClose }: { client: Cli
             )}
             <p className="inv-thanks">Gracias por confiar en Hayai</p>
             <footer className="inv-letterfoot">
-              <p className="inv-site">hayai.com.ve</p>
-              <p className="inv-social">Instagram @hayaive · TikTok @hayai.ve · Facebook @hayai</p>
+              <span className="lf-item"><Icon name="globe" size={15} /> hayai.com.ve</span>
+              <span className="lf-item"><Icon name="instagram" size={15} /> @hayaive</span>
+              <span className="lf-item"><Icon name="tiktok" size={15} /> @hayai.ve</span>
+              <span className="lf-item"><Icon name="facebook" size={15} /> @hayai</span>
+              <span className="lf-item"><Icon name="phone" size={15} /> 0424-1387198</span>
             </footer>
           </article>
         </div>

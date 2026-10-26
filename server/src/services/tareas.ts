@@ -3,6 +3,7 @@ import { recordActivity } from '../activity.ts'
 import { assertFresh, stamp } from '../concurrency.ts'
 import { pool, tx } from '../db.ts'
 import { userByName } from '../socios.ts'
+import { queueTaskWebhookIfAssigned } from '../taskWebhook.ts'
 import { HttpError, id, isoDate, text } from '../util.ts'
 import { type Actor, archivadosParam, boolFlag, filters, op, pageShape, paged } from './common.ts'
 
@@ -110,6 +111,8 @@ export const tareaCrear = op(
         actor.id,
         assignee,
       ])
+      // Webhook (1.8.3): si la tarea quedó con responsable Leandro, encola `tarea.asignada` en esta misma transacción.
+      await queueTaskWebhookIfAssigned(c, rows[0].id as string, null)
       // El aviso nombra al dueño de la llave (actor.name), venga de donde venga la peticion.
       await recordActivity(c, { kind: 'tarea_nueva', actorId: actor.id, subject: b.titulo, detail: project.name, clientId: project.client_id, projectId: b.proyecto_id, taskId: rows[0].id, via: actor.via })
       return rows[0].id as string
@@ -125,7 +128,7 @@ export async function actualizarTarea(actor: Actor, b: { id: string; titulo?: st
     // Se bloquea la fila: solo el cambio que la completa avisa al equipo (reabrir o repetir "completada" no).
     const cur = (
       await c.query(
-        `SELECT t.done, t.title, p.id AS project_id, p.name AS project, p.client_id
+        `SELECT t.done, t.title, t.assignee_id, p.id AS project_id, p.name AS project, p.client_id, p.owner_id
          FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = $1 FOR UPDATE OF t`,
         [b.id],
       )
@@ -144,6 +147,9 @@ export async function actualizarTarea(actor: Actor, b: { id: string; titulo?: st
        WHERE id = $1`,
       [b.id, b.estado === undefined ? null : b.estado === 'completada', b.vence !== undefined, b.vence ?? null, b.titulo ?? null, b.hito_id !== undefined, b.hito_id ?? null, b.responsable !== undefined, assignee],
     )
+    // Webhook (1.8.3): solo dispara si el responsable CAMBIA a Leandro (lo decide queueTaskWebhookIfAssigned con el anterior).
+    const prevRespId = (cur.assignee_id ?? cur.owner_id) as string
+    await queueTaskWebhookIfAssigned(c, b.id, prevRespId)
     if (b.estado === 'completada' && !cur.done)
       await recordActivity(c, { kind: 'tarea_completada', actorId: actor.id, subject: b.titulo ?? cur.title, detail: cur.project, clientId: cur.client_id, projectId: cur.project_id, taskId: b.id, via: actor.via })
   })

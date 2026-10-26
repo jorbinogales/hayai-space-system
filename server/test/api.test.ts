@@ -3,12 +3,15 @@
 // Uso: npm run test:server
 import assert from 'node:assert/strict'
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
+import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import EmbeddedPostgres from 'embedded-postgres'
 import pg from 'pg'
+import { verifyTaskWebhookSignature } from '../src/taskWebhook.ts'
 
 const root = resolve(import.meta.dirname, '../..')
 const PG_PORT = 54330
@@ -22,6 +25,12 @@ let embedded: EmbeddedPostgres
 let dataDir: string
 let server: ChildProcess
 let admin: pg.Client
+
+// Receptor falso del webhook de tareas (1.8.3): recoge los POST que el worker envía al crear tareas de Leandro.
+const WEBHOOK_PORT = 3199
+const WEBHOOK_SECRET = 'test-secreto-webhook'
+const webhookHits: { headers: Record<string, string | string[] | undefined>; raw: string; body: any }[] = []
+let webhookServer: Server
 
 type Res = { status: number; body: any; full?: any; cookie?: string; setCookie?: string }
 
@@ -95,7 +104,34 @@ before(async () => {
   await embedded.start()
   await embedded.createDatabase('hayai')
 
-  const env = { ...process.env, DATABASE_URL, PORT: String(API_PORT), LOGIN_IP_MAX: '100000', NODE_ENV: 'test' }
+  webhookServer = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c) => chunks.push(c as Buffer))
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8')
+      let body: any = null
+      try {
+        body = JSON.parse(raw)
+      } catch {
+        /* cuerpo no JSON: queda null */
+      }
+      webhookHits.push({ headers: req.headers, raw, body })
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{"ok":true}')
+    })
+  })
+  await new Promise<void>((resolve) => webhookServer.listen(WEBHOOK_PORT, '127.0.0.1', resolve))
+
+  const env = {
+    ...process.env,
+    DATABASE_URL,
+    PORT: String(API_PORT),
+    LOGIN_IP_MAX: '100000',
+    NODE_ENV: 'test',
+    HAYAI_TASK_WEBHOOK_URL: `http://127.0.0.1:${WEBHOOK_PORT}/webhooks/space-tareas`,
+    HAYAI_TASK_WEBHOOK_SECRET: WEBHOOK_SECRET,
+    TASK_WEBHOOK_RETRY_MS: '300',
+    TASK_WEBHOOK_RETRY_BASE_MS: '200',
+  }
   const mig = spawnSync(process.execPath, ['server/db/migrate.mjs'], { cwd: root, env, encoding: 'utf8' })
   assert.equal(mig.status, 0, mig.stderr + mig.stdout)
 
@@ -115,6 +151,7 @@ before(async () => {
 after(async () => {
   await admin?.end().catch(() => {})
   server?.kill()
+  await new Promise<void>((resolve) => webhookServer?.close(() => resolve()))
   await embedded?.stop().catch(() => {})
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 })
 })
@@ -864,5 +901,67 @@ describe('borrar', () => {
     )
     assert.equal((await call(`/clients/${c.id}`, { cookie, method: 'DELETE' })).status, 404)
     assert.equal((await call(`/projects/${p.id}`, { cookie, method: 'DELETE' })).status, 404)
+  })
+})
+
+describe('webhook tareas asignadas a Leandro (1.8.3)', () => {
+  const waitFor = async (cond: () => boolean | Promise<boolean>, ms = 5000) => {
+    const start = Date.now()
+    while (Date.now() - start < ms) {
+      if (await cond()) return true
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    return false
+  }
+  const deliveries = async () =>
+    (await admin.query('SELECT event_id, event, task_id, status, attempts FROM task_webhook_deliveries ORDER BY created_at')).rows
+
+  it('firma: válida pasa; cuerpo alterado, firma corta o sin firma no', () => {
+    const raw = Buffer.from(JSON.stringify({ event_id: 'x', event: 'tarea.asignada' }), 'utf8')
+    const sig = createHmac('sha256', WEBHOOK_SECRET).update(raw).digest('hex')
+    assert.equal(verifyTaskWebhookSignature(WEBHOOK_SECRET, raw, `sha256=${sig}`), true)
+    assert.equal(verifyTaskWebhookSignature(WEBHOOK_SECRET, Buffer.from('{"event_id":"y"}'), `sha256=${sig}`), false)
+    assert.equal(verifyTaskWebhookSignature(WEBHOOK_SECRET, raw, undefined), false)
+    assert.equal(verifyTaskWebhookSignature(WEBHOOK_SECRET, raw, 'sha256=00'), false)
+  })
+
+  it('tarea en proyecto de Leandro => entrega firmada; en proyecto de Jorbi => nada', async () => {
+    const cookie = await sessionFor('Elis', '482913')
+    const client = (await call('/clients', { cookie, body: { name: 'Webhook SA', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] } })).body
+    const mkProject = async (owner: string) =>
+      (await call('/projects', { cookie, body: { name: `Proyecto ${owner} webhook`, icon: 'globe', clientId: client.id, owner, status: 'activo', due: null } })).body
+    const pLeandro = await mkProject('Leandro')
+    const pJorbi = await mkProject('Jorbi')
+    const t = await call('/tasks', { cookie, body: { projectId: pLeandro.id, title: 'Avisar a Leandro', due: '2026-10-30' } })
+    assert.equal(t.status, 201, JSON.stringify(t.body))
+    const tj = await call('/tasks', { cookie, body: { projectId: pJorbi.id, title: 'No avisar', due: null } })
+    assert.equal(tj.status, 201, JSON.stringify(tj.body))
+
+    assert.equal(await waitFor(async () => (await deliveries()).some((d: any) => d.task_id === t.body.id)), true)
+    const row = (await deliveries()).find((d: any) => d.task_id === t.body.id)
+    assert.equal(row.event, 'tarea.asignada')
+    assert.equal((await deliveries()).some((d: any) => d.task_id === tj.body.id), false)
+
+    assert.equal(await waitFor(async () => webhookHits.some((h) => h.body?.tarea?.id === t.body.id)), true)
+    const hit = webhookHits.find((h) => h.body?.tarea?.id === t.body.id)!
+    assert.equal(hit.headers['x-hayai-event'], 'tarea.asignada')
+    assert.match(hit.headers['x-hayai-timestamp'] as string, /^\d+$/)
+    assert.equal(verifyTaskWebhookSignature(WEBHOOK_SECRET, Buffer.from(hit.raw, 'utf8'), hit.headers['x-hayai-signature'] as string), true)
+    assert.deepEqual(shape(hit.body), {
+      event_id: '<uuid>',
+      event: 'tarea.asignada',
+      timestamp: '<ts>',
+      tarea: {
+        id: '<uuid>',
+        titulo: 'Avisar a Leandro',
+        proyecto_id: '<uuid>',
+        proyecto: 'Proyecto Leandro webhook',
+        vence: '2026-10-30',
+        creada_por: 'Elis',
+        responsable: { id: '<uuid>', nombre: 'Leandro' },
+      },
+    })
+    assert.equal(hit.body.event_id, row.event_id)
+    assert.equal(await waitFor(async () => (await deliveries()).find((d: any) => d.task_id === t.body.id)?.status === 'enviado'), true)
   })
 })

@@ -1684,9 +1684,9 @@ legend { padding: 0 6px; }
 .inv-per { font-size: 0.78rem; font-weight: 500; color: #8a7c6a; }
 .inv-mensual { margin: 10px 2px 0; text-align: right; font-size: 0.92rem; color: #4a3f33; }
 .inv-clogo { height: 30px; max-width: 110px; object-fit: contain; vertical-align: middle; margin-right: 10px; }
-.inv-letterfoot { margin-top: 26px; border-top: 1px solid rgba(22, 17, 11, 0.12); padding-top: 12px; text-align: center; }
-.inv-site { margin: 0; font-weight: 700; font-size: 0.95rem; letter-spacing: 0.02em; }
-.inv-social { margin: 3px 0 0; font-size: 0.8rem; color: #8a7c6a; }
+.inv-letterfoot { margin-top: 26px; border-top: 1px solid rgba(22, 17, 11, 0.12); padding-top: 12px; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 20px; }
+.lf-item { display: inline-flex; align-items: center; gap: 6px; font-size: 0.82rem; font-weight: 600; white-space: nowrap; }
+.lf-item svg { color: #c67f14; flex: none; }
 .logo-now img { max-height: 64px; max-width: 220px; object-fit: contain; background: #fff; border-radius: 8px; padding: 6px 10px; }
 .sheet footer .ghost, .sheet footer .primary { display: inline-flex; align-items: center; gap: 8px; }
 
@@ -1695,8 +1695,9 @@ legend { padding: 0 6px; }
   body * { visibility: hidden; }
   .invoice-paper, .invoice-paper * { visibility: visible; }
   .inv-lines { max-height: none; overflow: visible; }
-  .invoice-paper { position: fixed; inset: 0 auto auto 0; width: 100%; box-shadow: none; border-radius: 0; padding: 12mm 10mm 10mm; }
-  .cpanel, .toasts, .upd-banner, .srch-veil, .boot, .warp, .summary, .modal-actions { display: none !important; }
+  .invoice-paper { position: fixed; inset: 0 auto auto 0; width: 100%; box-shadow: none; border-radius: 0; padding: 12mm 10mm 10mm; display: flex; flex-direction: column; min-height: calc(100vh - 22mm); }
+  .inv-letterfoot { margin-top: auto; }
+  .history, .cpanel, .toasts, .upd-banner, .srch-veil, .boot, .warp, .summary, .modal-actions { display: none !important; }
   @page { margin: 0; }
 }
 .stack[data-more]::after { content: attr(data-more); position: sticky; display: block; width: fit-content; bottom: 0; margin: -22px 8px 0 auto; padding: 2px 8px; border-radius: 999px; background: var(--amber); color: var(--night); font-size: 0.68rem; font-weight: 700; pointer-events: none; }

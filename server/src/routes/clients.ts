@@ -9,6 +9,7 @@ import { assertFresh } from '../concurrency.ts'
 import { sendToTrash } from '../trash.ts'
 import { expandCharge, insertCharges, insertItems, repeatMonths } from '../charges.ts'
 export { expandCharge, insertCharges, insertItems, repeatMonths }
+import { clientLogoFile, deleteClientLogo, LOGO_EXT, MAX_LOGO_BYTES, saveClientLogo, sniffLogo } from '../clientLogo.ts'
 import { PROJECT_SELECT, projectIcon } from './projects.ts'
 import { TASK_SELECT } from './tasks.ts'
 
@@ -21,7 +22,8 @@ export async function loadClients(db: Db, ids?: string[]) {
     db.query(
       `SELECT c.id, c.name, c.avatar, c.is_prospect, c.archived_at, c.created_at, c.phone, c.email, c.contact_name, c.contact_role, c.address, c.notes,
               c.tags, c.lead_source, c.utm_source, c.pipeline_stage, c.est_value, c.probability, c.expected_close, c.lost_reason, c.stage_changed_at,
-              c.next_action, c.next_action_date, c.socials, c.implementation_date, c.updated_at,
+              c.next_action, c.next_action_date, c.socials, c.system_links, c.implementation_date, c.updated_at,
+              (EXISTS (SELECT 1 FROM client_logos l WHERE l.client_id = c.id)) AS has_logo,
               -- ultimo contacto real: las entradas automaticas de etapa no cuentan
               (SELECT max(i.occurred_at) FROM interactions i WHERE i.client_id = c.id AND i.kind <> 'etapa') AS last_contact_at,
               -- el ítem del feed del que salió (solo si se creó con «Convertir»): da el enlace a la fuente y el «Devolver al feed»
@@ -78,6 +80,8 @@ export async function loadClients(db: Db, ids?: string[]) {
     nextAction: c.next_action as string | null,
     nextActionDate: c.next_action_date as string | null,
     socials: (c.socials ?? []) as { red: string; url: string }[],
+    systemLinks: (c.system_links ?? []) as { etiqueta: string; url: string }[],
+    hasLogo: (c.has_logo as boolean | null) ?? false,
     implementationDate: c.implementation_date as string | null,
     lastContactAt: c.last_contact_at as Date | null,
     delFeed: (c.del_feed ?? null) as { id: string; titulo: string; fuente: string; fecha: string } | null,
@@ -193,6 +197,40 @@ clientsRouter.put('/:id/initial', async (req, res) => {
       await c.query("DELETE FROM payments WHERE client_id = $1 AND kind = 'inicial'", [clientId])
     }
   })
+  res.json(await clientOr404(pool, clientId))
+})
+
+// ---------- logo del cliente (la imagen vive en la BD: client_logos) ----------
+clientsRouter.post('/:id/logo', async (req, res) => {
+  const clientId = idParam(req.params.id)
+  const b = parse(
+    z.strictObject({
+      imagen_base64: z.string('imagen_base64 es obligatoria').min(100, 'La imagen está vacía o incompleta').max(6_000_000, 'Imagen demasiado grande (máximo 4 MB)'),
+      nombre: text(120).optional(),
+    }),
+    req.body,
+  )
+  const buf = Buffer.from(b.imagen_base64.replace(/^data:[^;]+;base64,/, ''), 'base64')
+  if (buf.length > MAX_LOGO_BYTES) throw new HttpError(413, 'Imagen demasiado grande (máximo 4 MB)')
+  const mime = sniffLogo(buf)
+  if (!mime) throw new HttpError(400, 'imagen_base64: solo se aceptan imágenes PNG, JPEG o WebP')
+  const nombre = (b.nombre ?? `logo.${LOGO_EXT[mime]}`).replace(/[\r\n"\\/]/g, '_')
+  await saveClientLogo(pool, clientId, req.user!.id, { filename: nombre, mime, data: buf })
+  res.status(201).json(await clientOr404(pool, clientId))
+})
+
+clientsRouter.get('/:id/logo', async (req, res) => {
+  const f = await clientLogoFile(pool, idParam(req.params.id))
+  res.setHeader('Content-Type', f.mime)
+  res.setHeader('Content-Disposition', `inline; filename="${f.filename}"`)
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox")
+  res.setHeader('Cache-Control', 'private, max-age=300')
+  res.send(f.data)
+})
+
+clientsRouter.delete('/:id/logo', async (req, res) => {
+  const clientId = idParam(req.params.id)
+  if (!(await deleteClientLogo(pool, clientId))) throw new HttpError(404, 'El cliente no tiene logo')
   res.json(await clientOr404(pool, clientId))
 })
 

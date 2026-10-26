@@ -67,6 +67,7 @@ export function createApp() {
   api.use(versionHeader) // X-Hayai-Version: la pestaña abierta detecta una versión nueva en cualquier respuesta
   api.use(csrf)
   api.post('/cobros/:id/comprobante', express.json({ limit: '6mb' })) // la imagen viaja en base64 (hasta 4 MB)
+  api.post('/clients/:id/logo', express.json({ limit: '6mb' })) // el logo del cliente tambien viaja en base64 (hasta 4 MB)
   api.use(express.json({ limit: '100kb' }))
   api.use(conflictGuard) // If-Match: no pisar lo que cambió mientras alguien editaba
   api.use('/auth', authRouter)

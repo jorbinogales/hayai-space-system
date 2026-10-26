@@ -38,6 +38,7 @@ const FICHA_KEYS: Record<string, string> = {
   nextAction: 'proxima_accion',
   nextActionDate: 'proxima_accion_fecha',
   socials: 'redes', // [{ red, url }]
+  systemLinks: 'enlaces', // [{ etiqueta, url }]: los sistemas del cliente
   implementationDate: 'fecha_implementacion',
   visitDate: 'fecha_visita',
   visitSummary: 'resumen_visita',

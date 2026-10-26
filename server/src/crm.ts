@@ -83,6 +83,21 @@ const social = z
   })
   .refine((v) => normalizeSocialUrl(v.red, v.url) !== null, { path: ['url'], message: 'URL inválida (https://… o @usuario en instagram, tiktok y x)' })
 
+const enlace = z.strictObject({
+  etiqueta: text(60),
+  url: z
+    .string()
+    .trim()
+    .min(1, 'Es obligatorio')
+    .max(500, 'Máximo 500 caracteres')
+    .refine((u) => /^https?:\/\/\S+$/i.test(u), 'URL inválida (https://…)'),
+})
+
+/** Normaliza los enlaces a los sistemas del cliente: recorta espacios y conserva el orden dado. */
+export function normEnlaces(list: { etiqueta: string; url: string }[]) {
+  return list.map((x) => ({ etiqueta: x.etiqueta.trim(), url: x.url.trim() }))
+}
+
 /** Normaliza (URL final) y valida el conjunto: una red por tipo, salvo 'otra' (hasta 3). */
 export function normSocials(list: { red: string; url: string }[]) {
   const out = list.map((x) => ({ red: x.red, url: normalizeSocialUrl(x.red, x.url)! }))
@@ -104,6 +119,7 @@ export const fichaShape = {
   notas: text(4000).nullable().optional(),
   etiquetas: z.array(tag).max(10, 'Máximo 10 etiquetas').optional(), // [] las quita todas
   redes: z.array(social).max(8, 'Máximo 8 redes').optional(), // reemplazo completo; [] las quita todas
+  enlaces: z.array(enlace).max(8, 'Máximo 8 enlaces').optional(), // reemplazo completo; [] los quita todos
   origen: z.enum(SOURCES, `Origen inválido (${SOURCES.join(', ')})`).nullable().optional(),
   utm_source: text(80).nullable().optional(), // texto libre del utm_source con que llegó el lead (campaña, anuncio, página…)
   fecha_implementacion: isoDate.nullable().optional(), // dia en que se implementa el sistema (obligatorio al ganar)
@@ -329,6 +345,7 @@ export async function applyClientPatch(c: PoolClient, actorId: string, clientId:
   if (p.notas !== undefined) set('notes', p.notas)
   if (p.etiquetas !== undefined) set('tags', normTags(p.etiquetas), '::text[]')
   if (p.redes !== undefined) set('socials', JSON.stringify(normSocials(p.redes)), '::jsonb')
+  if (p.enlaces !== undefined) set('system_links', JSON.stringify(normEnlaces(p.enlaces)), '::jsonb')
   if (p.origen !== undefined) set('lead_source', p.origen)
   if (p.utm_source !== undefined) set('utm_source', p.utm_source)
   if (implementation !== undefined) set('implementation_date', implementation, '::date')

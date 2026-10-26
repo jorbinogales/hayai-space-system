@@ -26,6 +26,11 @@ export interface Movement {
 
 /** Texto del movimiento: el concepto y, si es recurrente, su posicion ("Pago mensual 3/12"). */
 export const moveLabel = (m: { concept: string; series?: { index: number; total: number } | null }) => (m.series ? `${m.concept} ${m.series.index}/${m.series.total}` : m.concept)
+export interface ClientLink {
+  etiqueta: string
+  url: string
+}
+
 export interface Client {
   id: string
   /** version del registro: se manda como If-Match al editar */
@@ -39,6 +44,10 @@ export interface Client {
   avatar: string
   /** telefono de la ficha (lo usa la factura para abrir el chat de WhatsApp del cliente) */
   phone?: string | null
+  /** enlaces a los sistemas del cliente (su panel, su tienda…), en el orden en que se muestran */
+  systemLinks?: ClientLink[]
+  /** si el cliente tiene logo guardado (la imagen se sirve en /api/clients/<id>/logo) */
+  hasLogo?: boolean
   /** desglose de la inicial */
   items: Item[]
   movements: Movement[]
@@ -98,6 +107,27 @@ export async function addClient(d: Draft): Promise<Client> {
 
 /** Reemplaza en la lista el cliente que devuelve el servidor tras una edicion. */
 const put = (c: Client) => clients.update((cur) => cur.map((x) => (x.id === c.id ? c : x)))
+
+/** Sube (o reemplaza) el logo del cliente: la imagen viaja en base64, como los comprobantes. */
+export async function uploadClientLogo(id: string, imagen_base64: string, nombre?: string): Promise<Client> {
+  const c = await api.post<Client>(`/clients/${id}/logo`, { imagen_base64, nombre })
+  put(c)
+  return c
+}
+
+/** Quita el logo del cliente. */
+export async function removeClientLogo(id: string): Promise<Client> {
+  const c = await api.del<Client>(`/clients/${id}/logo`)
+  put(c)
+  return c
+}
+
+/** Reemplaza los enlaces a los sistemas del cliente (van por el endpoint de la ficha). */
+export async function saveClientLinks(id: string, systemLinks: ClientLink[]): Promise<Client> {
+  const c = await api.patch<Client>(`/clients/${id}/ficha`, { systemLinks })
+  put(c)
+  return c
+}
 
 export async function updateClient(id: string, d: { name: string; avatar: string }, ifMatch?: string): Promise<Client> {
   const c = await api.patch<Client>(`/clients/${id}`, d, { ifMatch })

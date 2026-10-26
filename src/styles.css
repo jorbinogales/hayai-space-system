@@ -1677,6 +1677,15 @@ legend { padding: 0 6px; }
 .inv-total { display: grid; margin: 20px 0 0; padding: 14px 16px; border-radius: 10px; background: #fbeed6; font: 700 2rem / 1.1 var(--display); font-variant-numeric: tabular-nums; }
 .inv-total small { font: 600 0.7rem / 1.6 var(--display); letter-spacing: 0.1em; text-transform: uppercase; color: #8a7c6a; }
 .inv-thanks { margin: 16px 0 0; text-align: center; font-size: 0.8rem; color: #8a7c6a; }
+/* documento de propuesta: el mismo papel de la factura, con grupos (instalación / mensualidad) */
+.proposal-paper .inv-lines li { grid-template-columns: 1fr auto; }
+.inv-group { margin: 18px 0 0; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #8a7c6a; }
+.inv-group + .inv-lines { margin-top: 4px; }
+.inv-per { font-size: 0.78rem; font-weight: 500; color: #8a7c6a; }
+.inv-mensual { margin: 10px 2px 0; text-align: right; font-size: 0.92rem; color: #4a3f33; }
+.inv-nota { margin: 14px 0 0; font-size: 0.85rem; color: #4a3f33; white-space: pre-wrap; }
+.inv-clogo { height: 30px; max-width: 110px; object-fit: contain; vertical-align: middle; margin-right: 10px; }
+.logo-now img { max-height: 64px; max-width: 220px; object-fit: contain; background: #fff; border-radius: 8px; padding: 6px 10px; }
 .sheet footer .ghost, .sheet footer .primary { display: inline-flex; align-items: center; gap: 8px; }
 
 /* imprimir: solo la factura, sobre papel blanco */

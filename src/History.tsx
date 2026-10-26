@@ -12,6 +12,7 @@ import { ago } from './time'
 import { takeFichaIntent } from './nav'
 import NewProposal from './NewProposal'
 import { closeProposal, loadProposals, openProposal, useProposalRequest, useProposalsVersion, type Proposal } from './proposalData'
+import ProposalDoc from './ProposalDoc'
 import { devolverAlFeed, notifyFeed, openFeed } from './feedData'
 import { refreshAlerts } from './live'
 import { loadProjects } from './projectData'
@@ -56,6 +57,7 @@ const PROPOSAL_STATE: Record<Proposal['estado'], string> = { borrador: 'Borrador
 function ProposalsCard({ c }: { c: Client }) {
   const version = useProposalsVersion()
   const [list, setList] = useState<Proposal[] | null>(null)
+  const [doc, setDoc] = useState<Proposal | null>(null)
   useEffect(() => {
     let live = true
     setList(null)
@@ -82,10 +84,37 @@ function ProposalsCard({ c }: { c: Client }) {
               <p className="pr-top">
                 <b>Versión {p.version}</b>
                 <span className="pr-state">{PROPOSAL_STATE[p.estado]}</span>
+                <button type="button" className="pr-doc" onClick={() => setDoc(p)}>
+                  <Icon name="print" size={13} /> Documento
+                </button>
               </p>
               <small>
                 {money(p.totales.mensual)} por mes{p.totales.unico > 0 ? ` · ${money(p.totales.unico)} único` : ''} · {p.items.map((i) => i.concepto).join(', ')}
               </small>
+            </li>
+          ))}
+        </ul>
+      )}
+      {doc && <ProposalDoc client={c} proposal={doc} onClose={() => setDoc(null)} />}
+    </section>
+  )
+}
+
+/** El logo del cliente y los enlaces a los sistemas que usa (se cargan en «Editar cliente»). */
+function SistemaCard({ c }: { c: Client }) {
+  const links = c.systemLinks ?? []
+  if (!c.hasLogo && links.length === 0) return null
+  return (
+    <section className="fx-card" aria-label="Sistema del cliente">
+      <h3>Sistema</h3>
+      {c.hasLogo && <img className="fx-logo" src={`/api/clients/${c.id}/logo`} alt={`Logo de ${c.name}`} />}
+      {links.length > 0 && (
+        <ul className="fx-links">
+          {links.map((l, i) => (
+            <li key={i}>
+              <a href={l.url} target="_blank" rel="noreferrer">
+                <Icon name="globe" size={14} /> {l.etiqueta}
+              </a>
             </li>
           ))}
         </ul>
@@ -284,6 +313,8 @@ function FichaPanel({ c, stages, project, visit, next, onConvert, onClose }: { c
       )}
 
       <ProposalsCard c={c} />
+
+      <SistemaCard c={c} />
 
       <section className="fx-card" aria-label="Contacto">
         <h3>Contacto</h3>

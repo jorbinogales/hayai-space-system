@@ -35,3 +35,7 @@
 .pr-state { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-2); }
 .pr-list li.is-live .pr-state { color: #7a4700; }
 .pr-list small { font-size: 0.8rem; color: var(--ink-2); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+/* botón «Documento» en cada propuesta de la ficha: abre el papel compartible */
+.pr-doc { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border: 1px solid rgba(22, 17, 11, 0.2); border-radius: 999px; background: none; font: inherit; font-size: 0.75rem; font-weight: 600; cursor: pointer; }
+.pr-doc:hover { background: rgba(22, 17, 11, 0.06); }

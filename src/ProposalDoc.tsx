@@ -10,6 +10,7 @@ import type { Proposal, ProposalItem } from './proposalData'
  * Mismo formato que la factura mensual (logo, papel crema, total destacado) para imprimir o mandar por WhatsApp:
  * con el teléfono de la ficha abre el chat del cliente con el texto; sin él, comparte la imagen (canvas).
  * Es solo una vista de la propuesta guardada: editarla es crear una versión nueva.
+ * Las notas de la propuesta son internas (la negociación): NO se imprimen ni se comparten aquí.
  */
 
 const LOGO = `${import.meta.env.BASE_URL}hayai-logo.png`
@@ -35,7 +36,6 @@ const asText = (d: ProposalDocData) => {
   }
   lines.push('', '*Mensualidad*', ...mensuales(p).map((i) => `• ${lineLabel(i)}: ${money(i.subtotal)}/mes`))
   lines.push(`*Mensualidad total: ${money(p.totales.mensual)}/mes*`)
-  if (p.notas) lines.push('', p.notas)
   lines.push('', 'Gracias por confiar en Hayai')
   return lines.join('\n')
 }
@@ -247,7 +247,6 @@ export default function ProposalDoc({ client, proposal, onClose }: { client: Cli
                 {money(proposal.totales.mensual)}/mes
               </p>
             )}
-            {proposal.notas && <p className="inv-nota">{proposal.notas}</p>}
             <p className="inv-thanks">Gracias por confiar en Hayai</p>
           </article>
         </div>

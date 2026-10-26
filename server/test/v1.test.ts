@@ -929,10 +929,10 @@ describe('MCP', () => {
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 106) // lectura + escritura
+    assert.equal(names.length, 107) // lectura + escritura (1.8.3 suma hayai_feed_marcar_contacto)
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 118)
+    assert.equal(full.length, 119)
     assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -3764,7 +3764,7 @@ describe('Historial de versiones (changelog)', () => {
     assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.8.3', true], ['1.8.2', false], ['1.8.1', false], ['1.8.0', false], ['1.7.5', false], ['1.7.0', false], ['1.6.7', false], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
     const [v183, v182, v181, v18, v175, v17, v167, v166, , v16, v15, v10] = r.body.data
     assert.deepEqual([v183.titulo, v183.autor, v183.fecha, v183.cambios.length], ['Órbita fina IV', 'Equipo HAYAI', '2026-10-26', 3])
-    assert.match([v183.titulo, v183.resumen, ...v183.cambios].join(' '), /delegar|Tareas/)
+    assert.match([v183.titulo, v183.resumen, ...v183.cambios].join(' '), /delegar|Tareas|contacto del prospecto|bandeja de descarte/i)
     assert.deepEqual([v182.titulo, v182.autor, v182.fecha, v182.cambios.length], ['Radar de competidores', 'Equipo HAYAI', '2026-10-17', 4])
     assert.match([v182.titulo, v182.resumen, ...v182.cambios].join(' '), /Competidores/)
     assert.deepEqual([v181.titulo, v181.resumen, v181.autor, v181.fecha, v181.cambios.length], ['Copiloto invisible', 'Correcciones de bugs y fixes.', 'Equipo HAYAI', '2026-10-14', 4])
@@ -4415,6 +4415,113 @@ describe('Feed de oportunidades', () => {
     assert.equal(r.datos.instagram, 'https://instagram.com/cafegatonegro')
   })
 
+  // 1.8.3 «Órbita fina IV»: flujo de contacto del prospecto en el Feed.
+  const hoyCcs = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+  const masDias = (iso: string, n: number) => {
+    const [y, m, d] = iso.split('-').map(Number)
+    return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10)
+  }
+  const contacto = (id: string, body: unknown) => api(`/feed/${id}/contacto-estado`, { body })
+
+  it('contacto del prospecto: nace sin_contactar; contactado; sin_respuesta con seguimiento por defecto; filtro y contadores por_contacto', async () => {
+    const it = await pub({ titulo: 'Panadería Contacto A', tipo: 'potencial', fuente: 'manual' })
+    assert.deepEqual(
+      [it.body.estado_contacto, it.body.contactado_el, it.body.dias_desde_contacto, it.body.contacto_motivo, it.body.seguimiento_accion, it.body.seguimiento_fecha],
+      ['sin_contactar', null, null, null, null, null],
+    )
+    // una idea también nace sin_contactar
+    assert.equal((await pub({ titulo: 'Idea sin contacto', tipo: 'idea', fuente: 'manual' })).body.estado_contacto, 'sin_contactar')
+    // sin_respuesta directo desde sin_contactar es 409: primero hay que marcar contactado
+    assert.equal((await contacto(it.body.id, { resultado: 'sin_respuesta' })).status, 409)
+    const c = await contacto(it.body.id, { resultado: 'contactado' })
+    assert.equal(c.status, 200, JSON.stringify(c.body))
+    assert.equal(c.body.estado_contacto, 'contactado')
+    assert.ok(c.body.contactado_el)
+    assert.equal(c.body.dias_desde_contacto, 0)
+    assert.equal((await contacto(it.body.id, { resultado: 'contactado' })).status, 409, 'marcar contactado dos veces es 409')
+    // sin respuesta: seguimiento por defecto «Volver a escribir», hoy + 3 días (hora de Caracas)
+    const s = await contacto(it.body.id, { resultado: 'sin_respuesta' })
+    assert.equal(s.status, 200, JSON.stringify(s.body))
+    assert.deepEqual([s.body.estado_contacto, s.body.seguimiento_accion, s.body.seguimiento_fecha], ['contactado_sin_respuesta', 'Volver a escribir', masDias(hoyCcs(), 3)])
+    assert.equal(s.body.dias_desde_contacto, 0, 'el contactado_el no se pisa al marcar sin respuesta')
+    // filtro y contadores (no dependen del resto de filtros)
+    const lista = (await api('/feed?contacto=contactado_sin_respuesta&per_page=100')).body
+    assert.ok(lista.data.some((x: any) => x.id === it.body.id))
+    assert.equal(lista.data.every((x: any) => x.estado_contacto === 'contactado_sin_respuesta'), true)
+    assert.equal((await api('/feed?contacto=roto')).status, 400)
+    // otro potencial que se queda sin contactar: los contadores por_contacto cuentan potenciales, no ideas
+    await pub({ titulo: 'Panadería Contacto Z', tipo: 'potencial', fuente: 'manual' })
+    const meta = (await api('/feed?per_page=1')).body.meta
+    assert.ok(meta.por_contacto.contactado_sin_respuesta >= 1 && meta.por_contacto.sin_contactar >= 1)
+    assert.deepEqual(Object.keys(meta.por_contacto).sort(), ['contactado', 'contactado_sin_respuesta', 'respondio_negativo', 'respondio_positivo', 'sin_contactar'])
+    // con seguimiento explícito
+    const it2 = await pub({ titulo: 'Panadería Contacto B', tipo: 'potencial', fuente: 'manual' })
+    await contacto(it2.body.id, { resultado: 'contactado' })
+    const s2 = await contacto(it2.body.id, { resultado: 'sin_respuesta', seguimiento_accion: 'Llamar al fijo', seguimiento_fecha: masDias(hoyCcs(), 30) })
+    assert.deepEqual([s2.body.seguimiento_accion, s2.body.seguimiento_fecha], ['Llamar al fijo', masDias(hoyCcs(), 30)])
+    // fecha pasada es 400 (la validación corre antes que la transición)
+    assert.equal((await contacto(it2.body.id, { resultado: 'sin_respuesta', seguimiento_fecha: '2020-01-01' })).status, 400)
+  })
+
+  it('contacto del prospecto: negativo con motivo, bandeja de descarte y restaurar; transiciones inválidas', async () => {
+    const it = await pub({ titulo: 'Panadería Contacto C', tipo: 'potencial', fuente: 'manual' })
+    assert.equal((await contacto(it.body.id, { resultado: 'negativo', motivo: 'No le interesa' })).status, 409, 'negativo directo desde sin_contactar es 409')
+    await contacto(it.body.id, { resultado: 'contactado' })
+    assert.equal((await contacto(it.body.id, { resultado: 'sin_respuesta', motivo: 'x' })).status, 400, 'motivo solo aplica al responder negativo')
+    const n = await contacto(it.body.id, { resultado: 'negativo', motivo: 'Ya trabaja con otro proveedor' })
+    assert.equal(n.status, 200, JSON.stringify(n.body))
+    assert.deepEqual([n.body.estado_contacto, n.body.contacto_motivo, n.body.seguimiento_accion], ['respondio_negativo', 'Ya trabaja con otro proveedor', null])
+    // la bandeja: filtro contacto=respondio_negativo
+    assert.ok((await api('/feed?contacto=respondio_negativo&per_page=100')).body.data.some((x: any) => x.id === it.body.id))
+    // convertir un negativo es 409
+    assert.equal((await api(`/feed/${it.body.id}/convertir`, { body: { a: 'posible_cliente' } })).status, 409)
+    // restaurar: vuelve a sin_contactar, limpio
+    const r = await contacto(it.body.id, { resultado: 'restaurar' })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual([r.body.estado_contacto, r.body.contacto_motivo, r.body.contactado_el, r.body.dias_desde_contacto], ['sin_contactar', null, null, null])
+    assert.equal((await contacto(it.body.id, { resultado: 'restaurar' })).status, 409, 'restaurar dos veces es 409')
+    // resultado inválido y campo desconocido son 400; ítem que no existe es 404
+    assert.equal((await contacto(it.body.id, { resultado: 'otro' })).status, 400)
+    assert.equal((await contacto(it.body.id, { resultado: 'contactado', raro: 1 })).status, 400)
+    assert.equal((await contacto(NOPE, { resultado: 'contactado' })).status, 404)
+    // en una idea no se marca contacto
+    const idea = await pub({ titulo: 'Idea sin contacto 2', tipo: 'idea', fuente: 'manual' })
+    assert.equal((await contacto(idea.body.id, { resultado: 'contactado' })).status, 409)
+  })
+
+  it('contacto del prospecto: positivo marca y convierte; convertir directo no inventa una respuesta', async () => {
+    const it = await pub({ titulo: 'Panadería Contacto D', tipo: 'potencial', fuente: 'manual' })
+    await contacto(it.body.id, { resultado: 'contactado' })
+    const p = await contacto(it.body.id, { resultado: 'positivo' })
+    assert.equal(p.status, 200, JSON.stringify(p.body))
+    assert.equal(p.body.estado_contacto, 'respondio_positivo')
+    const r = await api(`/feed/${it.body.id}/convertir`, { body: { a: 'posible_cliente' } })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual([r.body.item.estado, r.body.item.estado_contacto], ['convertido', 'respondio_positivo'])
+    assert.deepEqual([(await api(`/clientes/${r.body.creado.id}`)).body.estado, (await api(`/clientes/${r.body.creado.id}`)).body.etapa], ['potencial', 'potencial'])
+    assert.equal((await contacto(it.body.id, { resultado: 'contactado' })).status, 409, 'ya convertido, el contacto no cambia')
+    // convertir directo desde sin_contactar no inventa una respuesta: queda sin_contactar
+    const it2 = await pub({ titulo: 'Panadería Contacto E', tipo: 'potencial', fuente: 'manual' })
+    const r2 = await api(`/feed/${it2.body.id}/convertir`, { body: { a: 'posible_cliente' } })
+    assert.equal(r2.status, 200, JSON.stringify(r2.body))
+    assert.equal(r2.body.item.estado_contacto, 'sin_contactar')
+    // convertir desde contactado sí deja constancia de la respuesta positiva
+    const it3 = await pub({ titulo: 'Panadería Contacto F', tipo: 'potencial', fuente: 'manual' })
+    await contacto(it3.body.id, { resultado: 'contactado' })
+    const r3 = await api(`/feed/${it3.body.id}/convertir`, { body: { a: 'posible_cliente' } })
+    assert.equal(r3.status, 200, JSON.stringify(r3.body))
+    assert.equal(r3.body.item.estado_contacto, 'respondio_positivo')
+  })
+
+  it('MCP: hayai_feed_marcar_contacto marca el contacto del prospecto', async () => {
+    const it = await pub({ titulo: 'Café Contacto MCP', tipo: 'potencial', fuente: 'growi' })
+    const r = dato(await mcp('hayai_feed_marcar_contacto', { id: it.body.id, resultado: 'contactado' }))
+    assert.equal(r.estado_contacto, 'contactado')
+    assert.equal(r.dias_desde_contacto, 0)
+    // un salto inválido vuelve como error de la herramienta (isError) para que el agente lo lea
+    assert.equal((await mcp('hayai_feed_marcar_contacto', { id: it.body.id, resultado: 'restaurar' })).result.isError, true)
+  })
+
   it('convertir: lo que pasas pisa lo pre-llenado; un dato sucio del ítem (teléfono, origen) no rompe la conversión', async () => {
     const it = await pub({ titulo: 'Repostería Dulce Hogar', tipo: 'potencial', fuente: 'cazador-summit', datos: { telefono: 'no es un teléfono', origen: 'tiktok-ads' } })
     const r = await api(`/feed/${it.body.id}/convertir`, { body: { a: 'posible_cliente', nombre: 'Dulce Hogar', origen: 'referido', notas: 'Me la pasó Elis', valor_estimado: 120 } })
@@ -4752,7 +4859,7 @@ describe('Feed de oportunidades', () => {
 
   it('MCP: las herramientas del feed (las de lectura se ven con solo lectura), publicar idempotente, marcar y guardar personales y convertir', async () => {
     const nombres = async (key: string) => ((await rpc('tools/list', {}, key)).body.result.tools as any[]).map((t) => t.name).filter((x: string) => x.startsWith('hayai_feed'))
-    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_contacto', 'hayai_feed_convertir', 'hayai_feed_deshacer', 'hayai_feed_ejecutar_accion', 'hayai_feed_geocodificar', 'hayai_feed_guardar', 'hayai_feed_guion', 'hayai_feed_guion_editar', 'hayai_feed_guion_restablecer', 'hayai_feed_listar', 'hayai_feed_mapa', 'hayai_feed_marcar', 'hayai_feed_publicar', 'hayai_feed_sugerir_acciones', 'hayai_feed_ubicacion'])
+    assert.deepEqual((await nombres(KEY)).sort(), ['hayai_feed_contacto', 'hayai_feed_convertir', 'hayai_feed_deshacer', 'hayai_feed_ejecutar_accion', 'hayai_feed_geocodificar', 'hayai_feed_guardar', 'hayai_feed_guion', 'hayai_feed_guion_editar', 'hayai_feed_guion_restablecer', 'hayai_feed_listar', 'hayai_feed_mapa', 'hayai_feed_marcar', 'hayai_feed_marcar_contacto', 'hayai_feed_publicar', 'hayai_feed_sugerir_acciones', 'hayai_feed_ubicacion'])
     assert.deepEqual((await nombres(KEY_R)).sort(), ['hayai_feed_guion', 'hayai_feed_listar', 'hayai_feed_mapa'])
     const tools = (await rpc('tools/list')).full.result.tools as any[] // full: body quita `actualizado_el`
     assert.equal(tools.find((t) => t.name === 'hayai_feed_listar').annotations.readOnlyHint, true)

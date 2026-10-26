@@ -4,7 +4,7 @@ import { Icon } from './ui'
 import { AvatarPicker } from './blob'
 import { DraftBar } from './UpdateUI'
 import { saveGuarded, show, useFormGuard } from './updates'
-import { addPayment, archiveClient, deletePayment, money, moveLabel, removeClient, saveInitial, todayISO, updateClient, updatePayment, useAllClients, loadClients, movementNow, clientNow, type Movement } from './store'
+import { addPayment, archiveClient, deletePayment, money, moveLabel, removeClient, removeClientLogo, saveClientLinks, saveInitial, todayISO, updateClient, updatePayment, uploadClientLogo, useAllClients, loadClients, movementNow, clientNow, type ClientLink, type Movement } from './store'
 
 /** Cuota o cobro editable: fecha, concepto, monto y estado se guardan al salir del campo o al pulsar; borrar es inmediato. */
 function PayRow({ m, onError }: { m: Movement; onError: (s: string) => void }) {
@@ -86,6 +86,9 @@ export default function EditClient({ clientId, onClose }: { clientId: string; on
   const [iDate, setIDate] = useState(initial?.date ?? todayISO())
   const [items, setItems] = useState(() => (client?.items.length ? client.items.map((i) => ({ concept: i.concept, amount: String(i.amount) })) : [{ concept: '', amount: '' }]))
   const [nd, setNd] = useState({ date: todayISO(), concept: 'Pago mensual', amount: '', rep: false, n: '12', paid: false })
+  const [links, setLinks] = useState<ClientLink[]>(() => client?.systemLinks ?? [])
+  const [logoBust, setLogoBust] = useState(0)
+  const logoFile = useRef<HTMLInputElement>(null)
   const [msg, setMsg] = useState('')
   const [saved, setSaved] = useState('')
   const [busy, setBusy] = useState(false)
@@ -157,6 +160,39 @@ export default function EditClient({ clientId, onClose }: { clientId: string; on
       return 'Se quedó la versión guardada'
     }, 'Datos guardados')
   }
+  const pickLogo = (f: File | undefined) => {
+    if (!f || !client) return
+    if (f.size > 4 * 1024 * 1024) return setMsg('El logo pesa más de 4 MB.')
+    const rd = new FileReader()
+    rd.onload = () => {
+      const url = String(rd.result ?? '')
+      const b64 = url.slice(url.indexOf(',') + 1)
+      if (!b64) return setMsg('No se pudo leer la imagen.')
+      void wrap(async () => {
+        await uploadClientLogo(client.id, b64, f.name)
+        setLogoBust((n) => n + 1)
+      }, 'Logo guardado')
+    }
+    rd.readAsDataURL(f)
+  }
+  const quitLogo = () =>
+    void wrap(async () => {
+      await removeClientLogo(client.id)
+      setLogoBust((n) => n + 1)
+    }, 'Logo eliminado')
+  const saveLinks = () => {
+    const clean: ClientLink[] = []
+    for (const l of links) {
+      if (!l.etiqueta.trim() && !l.url.trim()) continue
+      if (!l.etiqueta.trim() || !/^https?:\/\//i.test(l.url.trim())) return setMsg('Cada enlace necesita una etiqueta y una URL que empiece con https://')
+      clean.push({ etiqueta: l.etiqueta.trim(), url: l.url.trim() })
+    }
+    void wrap(async () => {
+      await saveClientLinks(client.id, clean)
+      setLinks(clean)
+    }, 'Enlaces guardados')
+  }
+
   const saveIni = () => {
     const its: { concept: string; amount: number }[] = []
     for (const r of items) {
@@ -223,6 +259,53 @@ export default function EditClient({ clientId, onClose }: { clientId: string; on
               <span />
               <button type="button" className="add" onClick={saveData} disabled={busy}>
                 Guardar datos
+              </button>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Logo del cliente</legend>
+            {client.hasLogo ? (
+              <p className="logo-now">
+                <img src={`/api/clients/${client.id}/logo?v=${logoBust}`} alt={`Logo de ${client.name}`} />
+              </p>
+            ) : (
+              <p className="none">Este cliente aún no tiene logo. Se muestra en su ficha y en el documento de propuesta.</p>
+            )}
+            <input ref={logoFile} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => { pickLogo(e.target.files?.[0]); e.target.value = '' }} />
+            <div className="row-foot">
+              <button type="button" className="add" onClick={() => logoFile.current?.click()} disabled={busy}>
+                <Icon name="plus" size={15} />
+                {client.hasLogo ? 'Cambiar logo' : 'Subir logo'}
+              </button>
+              {client.hasLogo && (
+                <button type="button" className="add" onClick={quitLogo} disabled={busy}>
+                  <Icon name="close" size={15} />
+                  Quitar logo
+                </button>
+              )}
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Enlaces de sus sistemas</legend>
+            {links.length === 0 && <p className="none">Sin enlaces. Agrega el panel, la tienda o lo que el cliente use.</p>}
+            {links.map((l, i) => (
+              <div className="line" key={i}>
+                <input aria-label="Etiqueta del enlace" value={l.etiqueta} onChange={(e) => setLinks(links.map((x, k) => (k === i ? { ...x, etiqueta: e.target.value } : x)))} placeholder="Etiqueta (ej. Panel)" />
+                <input aria-label="URL del enlace" value={l.url} onChange={(e) => setLinks(links.map((x, k) => (k === i ? { ...x, url: e.target.value } : x)))} placeholder="https://…" />
+                <button type="button" className="rm" aria-label="Quitar enlace" onClick={() => setLinks(links.filter((_, k) => k !== i))}>
+                  <Icon name="close" size={15} />
+                </button>
+              </div>
+            ))}
+            <div className="row-foot">
+              <button type="button" className="add" onClick={() => setLinks([...links, { etiqueta: '', url: '' }])}>
+                <Icon name="plus" size={15} />
+                Agregar enlace
+              </button>
+              <button type="button" className="add" onClick={saveLinks} disabled={busy}>
+                Guardar enlaces
               </button>
             </div>
           </fieldset>

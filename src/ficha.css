@@ -123,3 +123,8 @@
 .fx-origin-err { margin: 10px 0 0; font-size: 0.85rem; color: #8c2f14; }
 .fx-feedlink { color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) { .fx-linkbtn { transition-duration: 0.01ms; } }
+
+/* tarjeta «Sistema» de la ficha: logo del cliente y enlaces a sus sistemas */
+.fx-logo { max-height: 56px; max-width: 200px; object-fit: contain; background: #fff; border-radius: 8px; padding: 6px 10px; margin: 0 0 8px; }
+.fx-links { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.fx-links a { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }

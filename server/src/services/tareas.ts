@@ -125,8 +125,8 @@ export async function actualizarTarea(actor: Actor, b: { id: string; titulo?: st
     // Se bloquea la fila: solo el cambio que la completa avisa al equipo (reabrir o repetir "completada" no).
     const cur = (
       await c.query(
-        `SELECT t.done, t.title, p.id AS project_id, p.name AS project, p.client_id
-         FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id = $1 FOR UPDATE OF t`,
+        `SELECT t.done, t.title, t.assignee_id, COALESCE(au.name, po.name) AS resp_name, p.id AS project_id, p.name AS project, p.client_id
+         FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN users au ON au.id = t.assignee_id JOIN users po ON po.id = p.owner_id WHERE t.id = $1 FOR UPDATE OF t`,
         [b.id],
       )
     ).rows[0]
@@ -146,6 +146,20 @@ export async function actualizarTarea(actor: Actor, b: { id: string; titulo?: st
     )
     if (b.estado === 'completada' && !cur.done)
       await recordActivity(c, { kind: 'tarea_completada', actorId: actor.id, subject: b.titulo ?? cur.title, detail: cur.project, clientId: cur.client_id, projectId: cur.project_id, taskId: b.id, via: actor.via })
+    // Reasignar deja constancia solo si quien la lleva cambia de verdad (poner el mismo
+    // nombre, o quitar el asignado cuando ya la llevaba el responsable del proyecto, no avisa).
+    // Quitar el asignado (responsable null) la devuelve al responsable del proyecto: eso
+    // NO cambia el responsable del proyecto, solo el de esta tarea.
+    if (b.responsable !== undefined) {
+      const nuevo = (
+        await c.query(
+          `SELECT COALESCE(au.name, po.name) AS resp_name FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN users au ON au.id = t.assignee_id JOIN users po ON po.id = p.owner_id WHERE t.id = $1`,
+          [b.id],
+        )
+      ).rows[0]?.resp_name as string | undefined
+      if (nuevo && nuevo !== cur.resp_name)
+        await recordActivity(c, { kind: 'tarea_reasignada', actorId: actor.id, subject: b.titulo ?? cur.title, detail: nuevo, clientId: cur.client_id, projectId: cur.project_id, taskId: b.id, via: actor.via })
+    }
   })
   return tarea(b.id)
 }

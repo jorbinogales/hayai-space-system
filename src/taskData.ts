@@ -11,8 +11,12 @@ export interface Task {
   done: boolean
   /** fecha agendada (YYYY-MM-DD), p.ej. la visita al cliente */
   due?: string | null
-  /** astronauta que la creo (nombre) */
+  /** astronauta que la creo (nombre) — NO es quien la lleva */
   owner: string
+  /** quien la lleva: el asignado y, sin asignar, el responsable del proyecto */
+  responsable?: string | null
+  /** true si se le asignó a mano a alguien distinto del responsable del proyecto */
+  asignada?: boolean
   /** su proyecto (o el cliente de este) está archivado: no se muestra */
   hidden?: boolean
 }
@@ -28,8 +32,8 @@ export const taskNow = (id: string) => tasks.get().find((t) => t.id === id)
 export const loadTasks = async () => tasks.set(await api.get<Task[]>('/tasks'))
 export const resetTasks = () => tasks.set([])
 
-export async function addTask(projectId: string, title: string, due?: string): Promise<Task> {
-  const t = await api.post<Task>('/tasks', { projectId, title, ...(due ? { due } : {}) })
+export async function addTask(projectId: string, title: string, due?: string, responsable?: string): Promise<Task> {
+  const t = await api.post<Task>('/tasks', { projectId, title, ...(due ? { due } : {}), ...(responsable ? { responsable } : {}) })
   tasks.update((cur) => [...cur, t])
   return t
 }
@@ -52,6 +56,42 @@ export async function removeTask(id: string) {
     await api.del(`/tasks/${id}`)
   } catch {
     tasks.set(before)
+  }
+}
+
+/** Parche de edición de una tarea (título, fecha, responsable). `responsable: null` la
+ * devuelve al responsable del proyecto. Es la ÚNICA vía de edición en la web: tanto la
+ * pantalla Tareas como el detalle de Proyecto la usan, así que lo que se edita en un
+ * lado se ve en el otro sin duplicar estado en el frontend. */
+export interface TaskPatch {
+  titulo?: string
+  due?: string | null
+  responsable?: string | null
+}
+export async function updateTask(id: string, patch: TaskPatch): Promise<Task> {
+  const before = tasks.get()
+  const cur = before.find((x) => x.id === id)
+  if (!cur) throw new Error('Tarea no encontrada')
+  const next: Task = {
+    ...cur,
+    ...(patch.titulo !== undefined ? { title: patch.titulo } : {}),
+    ...(patch.due !== undefined ? { due: patch.due } : {}),
+    // El servidor devuelve el responsable real tras el cambio (el asignado o, sin
+    // asignar, el del proyecto); aquí solo se anticipa el nombre elegido.
+    ...(patch.responsable !== undefined ? { responsable: patch.responsable } : {}),
+  }
+  tasks.update((l) => l.map((x) => (x.id === id ? next : x)))
+  try {
+    const saved = await api.patch<Task>(`/tasks/${id}`, {
+      ...(patch.titulo !== undefined ? { titulo: patch.titulo } : {}),
+      ...(patch.due !== undefined ? { due: patch.due } : {}),
+      ...(patch.responsable !== undefined ? { responsable: patch.responsable } : {}),
+    })
+    tasks.update((l) => l.map((x) => (x.id === id ? saved : x)))
+    return saved
+  } catch (err) {
+    tasks.set(before)
+    throw err
   }
 }
 

@@ -4,7 +4,9 @@ import { Blobvatar } from './blob'
 import { useCosmos } from './Cosmos'
 import { useDragScroll } from './drag'
 import { avatarFor, useProjects, STATUS_LABEL } from './projectData'
-import { addTask, removeTask, taskCounts, toggleTask, useTasks, type Task } from './taskData'
+import { addTask, loadTasks, removeTask, taskCounts, toggleTask, useTasks, type Task } from './taskData'
+import { ResponsableSelect, TaskEditForm, TaskResp } from './TaskEditor'
+import { subscribeProject } from './projectLive'
 import { reduced } from './warp'
 import { fmtDate, todayISO } from './store'
 import { isInternalProject, useInternalFilter } from './nav'
@@ -26,6 +28,9 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
   const [sel, setSel] = useState(projects[0]?.id ?? '')
   const [title, setTitle] = useState('')
   const [due, setDue] = useState('') // fecha agendada opcional (p.ej. una visita)
+  const [resp, setResp] = useState('') // '' = la lleva el responsable del proyecto
+  const [editing, setEditing] = useState<string | null>(null)
+  const [editErr, setEditErr] = useState('')
   const [exiting, setExiting] = useState(false)
   const rail = useRef<HTMLDivElement>(null)
   const todoCol = useRef<HTMLDivElement>(null)
@@ -43,6 +48,15 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
   }
 
   const project = projects.find((p) => p.id === sel) ?? projects[0]
+  // En vivo: si otro (otra pestaña, la API, el MCP, el detalle de Proyecto) cambia una
+  // tarea de este proyecto, se vuelve a pedir la lista. Es la misma fuente de verdad
+  // que usa el detalle de Proyecto, así que no hay dos versiones de la tarea.
+  useEffect(() => {
+    if (!project) return
+    return subscribeProject(project.id, (c) => {
+      if (c.tareas) void loadTasks().catch(() => {})
+    })
+  }, [project?.id])
   const mine = useMemo(() => tasks.filter((x) => x.projectId === project?.id), [tasks, project])
   const todo = mine.filter((x) => !x.done)
   const done = mine.filter((x) => x.done)
@@ -51,9 +65,10 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!title.trim() || !project) return
-    void addTask(project.id, title, due || undefined)
+    void addTask(project.id, title, due || undefined, resp || undefined)
     setTitle('')
     setDue('')
+    setResp('')
   }
 
   const card = (x: Task) => (
@@ -61,11 +76,20 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
       <button className="task-check" role="checkbox" aria-checked={x.done} aria-label={x.done ? `Marcar "${x.title}" como pendiente` : `Completar "${x.title}"`} onClick={() => toggleTask(x.id)}>
         <Icon name="check" size={15} />
       </button>
-      <span className="task-title">
-        {x.title}
-        {x.due && <small className={`task-due${!x.done && x.due < todayISO() ? ' late' : ''}`}>{fmtDate(x.due, true)}</small>}
-      </span>
-      <Blobvatar seed={avatarFor(x.owner)} size={26} />
+      {editing === x.id ? (
+        <TaskEditForm task={x} projectOwner={project?.owner ?? ''} onDone={() => setEditing(null)} onError={setEditErr} />
+      ) : (
+        <>
+          <span className="task-title">
+            {x.title}
+            {x.due && <small className={`task-due${!x.done && x.due < todayISO() ? ' late' : ''}`}>{fmtDate(x.due, true)}</small>}
+          </span>
+          <TaskResp task={x} projectOwner={project?.owner ?? ''} />
+          <button type="button" className="task-edit-btn" aria-label={`Editar "${x.title}"`} title="Editar título, fecha y responsable" onClick={() => { setEditErr(''); setEditing(x.id) }}>
+            Editar
+          </button>
+        </>
+      )}
       <button className="task-x" aria-label={`Eliminar "${x.title}"`} onClick={() => removeTask(x.id)}>
         <Icon name="close" size={14} />
       </button>
@@ -147,11 +171,13 @@ export default function Tasks({ onBack }: { onBack: () => void }) {
                 <form className="tk-add" onSubmit={submit}>
                   <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Nueva tarea para este proyecto…" aria-label="Nueva tarea" autoComplete="off" />
                   <input type="date" className="tk-date" value={due} onChange={(e) => setDue(e.target.value)} aria-label="Fecha de la tarea (opcional)" title="Fecha (opcional)" />
+                  <ResponsableSelect value={resp} projectOwner={project.owner} onChange={setResp} label="Responsable de la tarea nueva" />
                   <button type="submit" className="new" disabled={!title.trim()}>
                     <Icon name="plus" size={16} />
                     Agregar
                   </button>
                 </form>
+                {editErr && <p className="tk-err" role="alert">{editErr}</p>}
 
                 <div className="tk-cols">
                   <section className="tk-col" aria-label="Por hacer">

@@ -4,7 +4,7 @@
 // avisos de algo que no paso, ni algo que pasa sin aviso.
 import type { Pool, PoolClient } from 'pg'
 
-export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido', 'lead_meta', 'acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado', 'version_nueva', 'feed_nuevo'] as const
+export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'tarea_reasignada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido', 'lead_meta', 'acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado', 'version_nueva', 'feed_nuevo'] as const
 export type ActivityKind = (typeof KINDS)[number]
 
 /** Avisos que trae el sistema (no un socio): le llegan a TODOS, también a quien figura como actor. */
@@ -62,6 +62,8 @@ export function activityText(kind: ActivityKind, actor: string, subject: string,
       return `${actor} añadió la tarea «${subject}»${detail ? ` en ${detail}` : ''}`
     case 'tarea_completada':
       return `${actor} completó la tarea «${subject}»${detail ? ` de ${detail}` : ''}`
+    case 'tarea_reasignada':
+      return `${actor} reasignó la tarea «${subject}»${detail ? ` a ${detail}` : ''}`
     case 'cobro_cobrado':
       return `${actor} registró el cobro${detail ? ` de ${detail}` : ''} a ${subject}`
     case 'cambio_etapa':

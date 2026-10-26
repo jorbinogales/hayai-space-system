@@ -706,6 +706,42 @@ describe('tareas', () => {
     assert.equal((await api(`/tareas/${NOPE}`)).status, 404)
     assert.equal((await api('/tareas?estado=por_hacer')).status, 400)
   })
+
+  it('tareas delegables: crear con responsable la asigna a otro socio; sin él la lleva el responsable del proyecto', async () => {
+    const a = await api('/tareas', { body: { titulo: 'Llamar a Karelys', proyecto_id: p1, responsable: 'Elis' } })
+    assert.equal(a.status, 201)
+    assert.deepEqual(a.body.responsable, { id: a.body.responsable.id, nombre: 'Elis' })
+    assert.equal(a.body.asignada, true)
+    const b = await api('/tareas', { body: { titulo: 'Revisar contrato', proyecto_id: p1 } })
+    assert.deepEqual(b.body.responsable, { id: b.body.responsable.id, nombre: 'Leandro' }, 'sin responsable explícito la lleva el responsable del proyecto')
+    assert.equal(b.body.asignada, false)
+    const bad = await api('/tareas', { body: { titulo: 'x', proyecto_id: p1, responsable: 'Nadie' } })
+    assert.equal(bad.status, 404)
+    assert.match(bad.body.error.message, /responsable/i)
+    await admin.query('DELETE FROM tasks WHERE title IN ($1, $2)', ['Llamar a Karelys', 'Revisar contrato'])
+  })
+
+  it('PATCH responsable: reasigna y deja constancia en la actividad; repetir no avisa; null la devuelve al responsable del proyecto sin cambiarlo', async () => {
+    const count = async () => (await admin.query("SELECT count(*)::int AS n FROM activity WHERE kind = 'tarea_reasignada'")).rows[0].n
+    const before = await count()
+    const r = await api(`/tareas/${t2}`, { method: 'PATCH', body: { responsable: 'Elis' } })
+    assert.deepEqual(r.body.responsable.nombre, 'Elis')
+    assert.equal(r.body.asignada, true)
+    assert.equal(await count(), before + 1, 'reasignar deja un aviso')
+    const row = (await admin.query("SELECT subject, detail FROM activity WHERE kind = 'tarea_reasignada' ORDER BY id DESC LIMIT 1")).rows[0]
+    assert.deepEqual(row, { subject: 'Reunión de arranque', detail: 'Elis' })
+    const again = await api(`/tareas/${t2}`, { method: 'PATCH', body: { responsable: 'Elis' } })
+    assert.equal(again.body.responsable.nombre, 'Elis')
+    assert.equal(await count(), before + 1, 'reasignar a la misma persona no avisa de nuevo')
+    const bad = await api(`/tareas/${t2}`, { method: 'PATCH', body: { responsable: 'Nadie' } })
+    assert.equal(bad.status, 404)
+    assert.equal(await count(), before + 1, 'un responsable inexistente no deja aviso')
+    const back = await api(`/tareas/${t2}`, { method: 'PATCH', body: { responsable: null } })
+    assert.deepEqual(back.body.responsable.nombre, 'Leandro')
+    assert.equal(back.body.asignada, false)
+    const pr = await api(`/proyectos/${p1}`)
+    assert.equal(pr.body.responsable, 'Leandro', 'reasignar tareas no cambia el responsable del proyecto')
+  })
 })
 
 describe('gastos', () => {
@@ -3650,7 +3686,7 @@ describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la ta
     bcvPayload.principal = oficial(873.87, caracas())
     const r = await api('/version')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.equal(r.body.version, '1.8.2')
+    assert.equal(r.body.version, '1.8.3')
     assert.equal(r.body.hoy, caracas())
     assert.deepEqual({ ...r.body.bcv, actualizada_el: '<t>' }, { moneda: 'USD', tasa: 873.87, fecha: caracas(), es_de_hoy: true, fuente: `localhost:${BCV_PORT}`, actualizada_el: '<t>' })
     const hits = bcvHits.principal
@@ -3706,7 +3742,7 @@ describe('Barra superior: tasa BCV (caché en servidor, respaldo, fecha de la ta
 
   it('MCP y web: la misma respuesta; sin llave o sin sesión 401', async () => {
     const m = data(await mcp('hayai_version_ver', {}))
-    assert.equal(m.version, '1.8.2')
+    assert.equal(m.version, '1.8.3')
     assert.equal(m.bcv.tasa, 890)
     assert.equal((await http(`${ROOT}/api/v1/version`)).status, 401)
     const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
@@ -3722,11 +3758,13 @@ describe('Historial de versiones (changelog)', () => {
   const hoy = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Caracas', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
   const publicar = (b: Record<string, unknown>, key = KEY) => api('/versiones', { key, body: b })
 
-  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6, 1.6.7, 1.7.0, 1.7.5, 1.8.0, 1.8.1 y 1.8.2 vienen publicadas; la más nueva primero y marcada como actual', async () => {
+  it('GET /versiones: 1.0.0, 1.5.0, 1.6.0, 1.6.5, 1.6.6, 1.6.7, 1.7.0, 1.7.5, 1.8.0, 1.8.1, 1.8.2 y 1.8.3 vienen publicadas; la más nueva primero y marcada como actual', async () => {
     const r = await api('/versiones')
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.8.2', true], ['1.8.1', false], ['1.8.0', false], ['1.7.5', false], ['1.7.0', false], ['1.6.7', false], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
-    const [v182, v181, v18, v175, v17, v167, v166, , v16, v15, v10] = r.body.data
+    assert.deepEqual(r.body.data.map((v: any) => [v.version, v.actual]), [['1.8.3', true], ['1.8.2', false], ['1.8.1', false], ['1.8.0', false], ['1.7.5', false], ['1.7.0', false], ['1.6.7', false], ['1.6.6', false], ['1.6.5', false], ['1.6.0', false], ['1.5.0', false], ['1.0.0', false]])
+    const [v183, v182, v181, v18, v175, v17, v167, v166, , v16, v15, v10] = r.body.data
+    assert.deepEqual([v183.titulo, v183.autor, v183.fecha, v183.cambios.length], ['Órbita fina IV', 'Equipo HAYAI', '2026-10-26', 3])
+    assert.match([v183.titulo, v183.resumen, ...v183.cambios].join(' '), /delegar|Tareas/)
     assert.deepEqual([v182.titulo, v182.autor, v182.fecha, v182.cambios.length], ['Radar de competidores', 'Equipo HAYAI', '2026-10-17', 4])
     assert.match([v182.titulo, v182.resumen, ...v182.cambios].join(' '), /Competidores/)
     assert.deepEqual([v181.titulo, v181.resumen, v181.autor, v181.fecha, v181.cambios.length], ['Copiloto invisible', 'Correcciones de bugs y fixes.', 'Equipo HAYAI', '2026-10-14', 4])
@@ -3749,15 +3787,15 @@ describe('Historial de versiones (changelog)', () => {
 
   it('POST /versiones: el autor es el dueño de la llave, la fecha por defecto es hoy, pasa a ser la actual y avisa al equipo', async () => {
     const base = (await api('/actividad?per_page=1', { key: KEY_J })).body.meta.ultimo_id as number
-    const r = await publicar({ version: '1.8.3', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
+    const r = await publicar({ version: '1.8.4', titulo: 'Ajustes de la barra', cambios: ['Se muestra la tasa BCV con su fecha.', 'Se corrige el redondeo.'] })
     assert.equal(r.status, 201, JSON.stringify(r.body))
-    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.8.3', 'Leandro', hoy(), true, 2])
-    assert.equal((await api('/version')).body.version, '1.8.3')
-    assert.equal((await api('/versiones')).body.data[0].version, '1.8.3')
+    assert.deepEqual([r.body.version, r.body.autor, r.body.fecha, r.body.actual, r.body.cambios.length], ['1.8.4', 'Leandro', hoy(), true, 2])
+    assert.equal((await api('/version')).body.version, '1.8.4')
+    assert.equal((await api('/versiones')).body.data[0].version, '1.8.4')
     assert.equal((await api('/versiones')).body.data.filter((v: any) => v.actual).length, 1)
     const ev = ((await api(`/actividad?desde_id=${base}&orden=asc`, { key: KEY_J })).body.data as any[]).filter((e) => e.tipo === 'version_nueva')
     assert.equal(ev.length, 1)
-    assert.equal(ev[0].texto, 'Nueva actualización v1.8.3 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
+    assert.equal(ev[0].texto, 'Nueva actualización v1.8.4 disponible: Ajustes de la barra') // la trae el sistema: no nombra al autor
     assert.equal(ev[0].propia, false)
     // y le llega a TODOS, también a quien la publicó (su pestaña abierta también debe enterarse)
     const mio = ((await api(`/actividad?desde_id=${base}&orden=asc`)).body.data as any[]).find((e) => e.tipo === 'version_nueva')
@@ -3769,7 +3807,7 @@ describe('Historial de versiones (changelog)', () => {
 
   it('el orden es numérico (1.10.0 va después de 1.9.0) y la versión nueva siempre debe ser mayor que la actual', async () => {
     assert.equal((await publicar({ version: '1.10.0', cambios: ['x'] })).status, 201)
-    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.8.3', '1.8.2', '1.8.1', '1.8.0', '1.7.5', '1.7.0', '1.6.7', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
+    assert.deepEqual((await api('/versiones')).body.data.map((v: any) => v.version), ['1.10.0', '1.9.0', '1.8.4', '1.8.3', '1.8.2', '1.8.1', '1.8.0', '1.7.5', '1.7.0', '1.6.7', '1.6.6', '1.6.5', '1.6.0', '1.5.0', '1.0.0'])
     assert.equal((await api('/version')).body.version, '1.10.0')
     for (const v of ['1.10.0', '1.9.5', '1.4.0', '0.9.0']) {
       const r = await publicar({ version: v, cambios: ['x'] })

@@ -9,6 +9,7 @@ import { useSession } from './session'
 import { fmtDate, todayISO, useClients } from './store'
 import { subscribeProject } from './projectLive'
 import { addTask, loadTasks, removeTask, toggleTask, useTasks } from './taskData'
+import { ResponsableSelect, TaskEditForm, TaskResp } from './TaskEditor'
 import { Icon } from './ui'
 import { DraftBar } from './UpdateUI'
 import { saveGuarded, useFormGuard } from './updates'
@@ -590,11 +591,13 @@ function Checklist({ projectId, items, reload, patch, onError }: { projectId: st
 }
 
 // ---------- tareas ----------
-function TaskBlock({ projectId, milestones, onError }: { projectId: string; milestones: Milestone[]; onError: (s: string) => void }) {
+function TaskBlock({ projectId, projectOwner, milestones, onError }: { projectId: string; projectOwner: string; milestones: Milestone[]; onError: (s: string) => void }) {
   const all = useTasks()
   const tasks = useMemo(() => all.filter((t) => t.projectId === projectId).sort((a, b) => Number(a.done) - Number(b.done) || (a.due ?? '9999').localeCompare(b.due ?? '9999')), [all, projectId])
   const [title, setTitle] = useState('')
   const [due, setDue] = useState('')
+  const [resp, setResp] = useState('') // '' = la lleva el responsable del proyecto
+  const [editing, setEditing] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const today = todayISO()
   const done = tasks.filter((t) => t.done).length
@@ -610,9 +613,10 @@ function TaskBlock({ projectId, milestones, onError }: { projectId: string; mile
     setBusy(true)
     onError('')
     try {
-      await addTask(projectId, t, due || undefined)
+      await addTask(projectId, t, due || undefined, resp || undefined)
       setTitle('')
       setDue('')
+      setResp('')
     } catch (err) {
       onError(msg(err, 'No se pudo agregar la tarea.'))
     } finally {
@@ -640,9 +644,19 @@ function TaskBlock({ projectId, milestones, onError }: { projectId: string; mile
                   </svg>
                 )}
               </button>
-              <span className="pd-text is-static">{t.title}</span>
-              {ms && <span className="pd-chip is-quiet">{ms}</span>}
-              {t.due && <span className={`pd-chip${late ? ' is-late' : ''}`}>{late ? 'Vencida · ' : ''}{fmtDate(t.due)}</span>}
+              {editing === t.id ? (
+                <TaskEditForm task={t} projectOwner={projectOwner} onDone={() => setEditing(null)} onError={onError} />
+              ) : (
+                <>
+                  <span className="pd-text is-static">{t.title}</span>
+                  {ms && <span className="pd-chip is-quiet">{ms}</span>}
+                  {t.due && <span className={`pd-chip${late ? ' is-late' : ''}`}>{late ? 'Vencida · ' : ''}{fmtDate(t.due)}</span>}
+                  <TaskResp task={t} projectOwner={projectOwner} />
+                  <button type="button" className="pd-pill is-ghost" aria-label={`Editar la tarea «${t.title}»`} title="Editar título, fecha y responsable" onClick={() => { onError(''); setEditing(t.id) }}>
+                    Editar
+                  </button>
+                </>
+              )}
               <button type="button" className="pd-ibtn is-faint" aria-label={`Quitar la tarea «${t.title}»`} title="Quitar" onClick={() => void removeTask(t.id)}>
                 <Icon name="close" size={14} />
               </button>
@@ -653,6 +667,7 @@ function TaskBlock({ projectId, milestones, onError }: { projectId: string; mile
       <form className="pd-new" onSubmit={add}>
         <input value={title} maxLength={160} onChange={(e) => setTitle(e.target.value)} placeholder="Agregar una tarea" aria-label="Nueva tarea" />
         <input type="date" value={due} onChange={(e) => setDue(e.target.value)} aria-label="Fecha de la tarea (opcional)" />
+        <ResponsableSelect value={resp} projectOwner={projectOwner} onChange={setResp} label="Responsable de la tarea nueva" />
         <button type="submit" className="pd-pill" disabled={busy || !title.trim()}>
           <Icon name="plus" size={14} />
           Agregar
@@ -804,7 +819,7 @@ export default function ProjectDetail({ id, onBack }: { id: string; onBack: () =
                   <i />
                 </div>
               )}
-              <TaskBlock projectId={id} milestones={hitos} onError={setErr} />
+              <TaskBlock projectId={id} projectOwner={project.owner} milestones={hitos} onError={setErr} />
             </div>
 
             <aside className="pd-col" aria-label="Datos del proyecto">

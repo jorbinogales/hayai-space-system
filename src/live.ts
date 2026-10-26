@@ -11,7 +11,7 @@ import { notifyFeed } from './feedData'
 import { chatReconnected, receiveChat, refreshChatCounters, resetChat, type ChatEvent } from './chatData'
 import { projectsResync, receiveProject, resetProjectLive, type ProjectEvent } from './projectLive'
 
-export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta' | 'acuerdo_nuevo' | 'sistema_caido' | 'sistema_recuperado' | 'version_nueva' | 'feed_nuevo'
+export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'tarea_reasignada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta' | 'acuerdo_nuevo' | 'sistema_caido' | 'sistema_recuperado' | 'version_nueva' | 'feed_nuevo'
 export interface Activity {
   id: number
   tipo: ActivityKind

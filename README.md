@@ -120,7 +120,7 @@ Conectar Growi: conector personalizado `custom.hayai-space` → URL `https://spa
 
 - El SPEC tenía un solo campo `contacto`: ahora la ficha guarda `telefono`, `email`, `contacto_nombre` y `contacto_cargo`. `contacto` a secas se rechaza con 400.
 - Estado de proyecto `visita` ↔ `planeacion` interno.
-- Las tareas pertenecen siempre a un proyecto (`proyecto_id` obligatorio) y no tienen asignado: se devuelve `creada_por`.
+- Las tareas pertenecen siempre a un proyecto (`proyecto_id` obligatorio); el asignado es opcional (`assignee_id`, migración 010): sin asignar, la lleva el responsable del proyecto. La web antes no lo exponía (devolvía solo `creada_por`); desde 1.8.3 lo expone y lo edita en Tareas y en Proyectos.
 - El SPEC no tenía DELETE: se añadió con permiso propio y siempre a la papelera (recuperable 30 días).
 - Añadidos fuera del SPEC: pagos, papelera, archivo y los GET de detalle. No se exponen los endpoints de potenciales.
 
@@ -268,7 +268,7 @@ Un solo canal de notas para todo el equipo (los astronautas = `users`). Cada men
 
 ## Actividad del equipo, avisos en vivo y búsqueda
 
-- **Qué se avisa** (solo esto): cliente nuevo, cliente potencial nuevo, tarea nueva, tarea completada (solo al pasar a hecha), cobro cobrado (solo al pasar de pendiente a cobrado, venga de la web, la API o el MCP: «Leandro registró el cobro de $120 a X»), cambio de etapa («Leandro movió a X (Potencial → Visita agendada)»), cliente ganado y posible marcado como perdido (con su motivo). Se guarda en la tabla `activity` dentro de la misma transacción del cambio y se purga a los 60 días.
+- **Qué se avisa** (solo esto): cliente nuevo, cliente potencial nuevo, tarea nueva, tarea completada (solo al pasar a hecha), tarea reasignada (solo si quien la lleva cambia de verdad: «Leandro reasignó la tarea «X» a Elis»), cobro cobrado (solo al pasar de pendiente a cobrado, venga de la web, la API o el MCP: «Leandro registró el cobro de $120 a X»), cambio de etapa («Leandro movió a X (Potencial → Visita agendada)»), cliente ganado y posible marcado como perdido (con su motivo). Se guarda en la tabla `activity` dentro de la misma transacción del cambio y se purga a los 60 días.
 - **Quién figura**: el nombre del socio, nunca el de la herramienta. Si una llave de API (Muse, Growi) crea algo, el aviso dice «Leandro añadió…» si la llave es de Leandro; la llave solo queda en `via`.
 - **Web**: campana con dos pestañas (Alertas · Equipo), contador de no leídos y popup lateral para todos menos para quien hizo el cambio. Llega por SSE (`GET /api/events`, con `Last-Event-ID`/`desde_id` para recuperar lo perdido) y, si un proxy retiene el stream, por un sondeo cada 30 s. «Visto hasta» es por socio (tabla `activity_seen`).
 - **Proyectos en vivo** (migración 026): un trigger de Postgres avisa por `pg_notify('proyecto', …)` al **confirmarse** cualquier cambio en un proyecto, sus hitos, su checklist o sus tareas (web, API, MCP, papelera o SQL directo), y `GET /api/events` lo reparte como evento SSE `proyecto`: `{ op: nuevo|editado|borrado, seccion: proyecto|hitos|checklist|tareas, proyecto_id, hito }`. No lleva datos ni `id:` (no pisa el `Last-Event-ID` de la actividad); la pantalla vuelve a pedir **solo la sección afectada** (`src/projectLive.ts`, avisos seguidos fundidos en 250 ms) y se da de baja al salir. Si el stream cae, el navegador reintenta con espera creciente (1→30 s) y, al volver, las vistas abiertas se resincronizan.

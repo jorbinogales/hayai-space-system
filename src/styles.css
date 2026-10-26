@@ -1616,6 +1616,31 @@ legend { padding: 0 6px; }
 .task-due { font-size: 0.74rem; color: rgba(255, 210, 122, 0.85); }
 .task-due.late { color: #ff9b7e; }
 .task.is-done .task-due { color: rgba(244, 235, 221, 0.4); }
+/* Tareas delegables (1.8.3): quien la lleva, y su edición en línea. El avatar es del
+ * responsable de la tarea, no del creador; «del proyecto» marca que nadie la tomó a mano. */
+.task-resp { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: rgba(244, 235, 221, 0.85); white-space: nowrap; }
+.task-resp small { font-size: 0.72rem; color: rgba(244, 235, 221, 0.55); }
+.task-resp em { font-style: normal; color: #ffd27a; }
+.task-edit-btn { flex: none; padding: 4px 10px; border: 1px solid rgba(244, 235, 221, 0.25); border-radius: 999px; background: none; color: #f4ebdd; font: inherit; font-size: 0.78rem; cursor: pointer; opacity: 0.75; }
+.task-edit-btn:hover, .task-edit-btn:focus-visible { opacity: 1; border-color: var(--amber); outline: none; }
+.task-edit { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.task-edit input, .task-edit select { padding: 7px 10px; border: 1px solid rgba(244, 235, 221, 0.25); border-radius: 10px; background: rgba(255, 255, 255, 0.06); color: #f4ebdd; color-scheme: dark; font: inherit; font-size: 0.88rem; }
+.task-edit input:first-child { flex: 1; min-width: 140px; }
+.task-edit input:focus, .task-edit select:focus { outline: 2px solid var(--amber); border-color: transparent; }
+.task-edit .new { padding: 7px 12px; }
+.task-edit-cancel { padding: 7px 10px; border: 0; border-radius: 999px; background: none; color: rgba(244, 235, 221, 0.7); font: inherit; font-size: 0.84rem; cursor: pointer; }
+.task-edit-cancel:hover { color: #f4ebdd; }
+.task-resp-select { flex: none; max-width: 220px; padding: 8px 10px; border: 1px solid rgba(244, 235, 221, 0.22); border-radius: 12px; background: rgba(255, 255, 255, 0.06); color: #f4ebdd; color-scheme: dark; font: inherit; font-size: 0.88rem; }
+.task-resp-select:focus { outline: 2px solid var(--amber); border-color: transparent; }
+.tk-err { margin: 8px 2px 0; color: #ff9b7e; font-size: 0.86rem; }
+/* El mismo editor dentro del detalle de Proyecto (fondo claro): hereda los campos
+ * oscuros de .task-edit solo en la pantalla Tareas; aquí se aclaran. */
+.pd-card .task-edit input, .pd-card .task-edit select { background: rgba(255, 255, 255, 0.8); color: var(--ink); color-scheme: light; border-color: rgba(22, 17, 11, 0.2); }
+.pd-card .task-resp { color: var(--ink-2); }
+.pd-card .task-resp small { color: var(--ink-2); }
+.pd-card .task-resp em { color: #9a5d08; }
+.pd-card .task-edit-cancel { color: var(--ink-2); }
+.pd-card .task-edit-cancel:hover { color: var(--ink); }
 .tk-add .tk-date { flex: none; width: 150px; padding: 8px 10px; border: 1px solid rgba(244, 235, 221, 0.22); border-radius: 12px; background: rgba(255, 255, 255, 0.06); color: #f4ebdd; color-scheme: dark; font: inherit; font-size: 0.88rem; }
 .tk-add .tk-date:focus { outline: 2px solid var(--amber); border-color: transparent; }
 .history h3 .owed-total { margin-left: 8px; font-style: normal; font-weight: 600; letter-spacing: 0; text-transform: none; color: #9a5d08; }

@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'
-import { requirePinChanged, requireSession } from './auth.ts'
+import { requireAdmin, requirePinChanged, requireSession } from './auth.ts'
+import { adminRouter } from './routes/admin.ts'
+import { moduleGate, requireTenant, WEB_MODULES, WEB_SUBMODULES } from './tenant.ts'
 import { authRouter } from './routes/auth.ts'
 import { clientsRouter, paymentsRouter, prospectsRouter } from './routes/clients.ts'
 import { expensesRouter } from './routes/expenses.ts'
@@ -72,6 +74,10 @@ export function createApp() {
   api.use(conflictGuard) // If-Match: no pisar lo que cambió mientras alguien editaba
   api.use('/auth', authRouter)
   api.use(requireSession, requirePinChanged)
+  // Administración (solo ADMIN, global: no lleva tenant).
+  api.use('/admin', requireAdmin, adminRouter)
+  // Todo lo demás es de un tenant: X-Tenant-Id validado en cada petición + el módulo de la ruta (404 si la ruta no existe).
+  api.use(requireTenant, moduleGate(WEB_MODULES, WEB_SUBMODULES))
   api.use('/users', usersRouter)
   api.use('/clients', clientsRouter)
   api.use('/payments', paymentsRouter)

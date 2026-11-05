@@ -5,6 +5,7 @@
 // Esta parte (sin dependencias del servicio del feed) la usan el listado/detalle (adjuntar el guión vigente a cada ítem), la publicación
 // (sembrar el original de un ítem nuevo) y el script de reescritura. Las operaciones (ver, editar, restablecer) están en services/feedGuion.ts.
 import { pool, tx, type Db } from './db.ts'
+import { tenantById, tid, withTenant } from './tenant.ts'
 import { entradaDe, guionPAS } from './guionPAS.ts'
 import { textoWhatsapp, whatsappDe, type WhatsappDe } from './whatsapp.ts'
 
@@ -53,8 +54,8 @@ export async function sembrarGuion(db: Db, itemId: string, datos: Record<string,
   const g = guionDeDatos(datos)
   if (!g) return false
   const r = await db.query(
-    `INSERT INTO feed_guion_versiones (item_id, nro, contenido, tipo, editado_por) VALUES ($1, 1, $2, 'original', $3) ON CONFLICT DO NOTHING`,
-    [itemId, g, userId],
+    `INSERT INTO feed_guion_versiones (tenant_id, item_id, nro, contenido, tipo, editado_por) VALUES ($4, $1, 1, $2, 'original', $3) ON CONFLICT DO NOTHING`,
+    [itemId, g, userId, tid()],
   )
   return !!r.rowCount
 }
@@ -74,8 +75,8 @@ export async function versionesDe(db: Db, itemId: string): Promise<Version[]> {
   const rows = (
     await db.query(
       `SELECT v.nro, v.tipo, v.contenido, v.editado_en, v.base_nro, u.name AS por
-         FROM feed_guion_versiones v LEFT JOIN users u ON u.id = v.editado_por WHERE v.item_id = $1 ORDER BY v.nro DESC`,
-      [itemId],
+         FROM feed_guion_versiones v LEFT JOIN users u ON u.id = v.editado_por WHERE v.item_id = $1 AND v.tenant_id = $2 ORDER BY v.nro DESC`,
+      [itemId, tid()],
     )
   ).rows
   return rows.map(versionOut)
@@ -111,8 +112,8 @@ export async function adjuntarGuiones<T extends ConGuion>(db: Db, items: T[]): P
   const rows = (
     await db.query(
       `SELECT v.item_id, v.nro, v.tipo, v.contenido, v.editado_en, v.base_nro, u.name AS por
-         FROM feed_guion_versiones v LEFT JOIN users u ON u.id = v.editado_por WHERE v.item_id = ANY($1::uuid[]) ORDER BY v.item_id, v.nro DESC`,
-      [ids],
+         FROM feed_guion_versiones v LEFT JOIN users u ON u.id = v.editado_por WHERE v.item_id = ANY($1::uuid[]) AND v.tenant_id = $2 ORDER BY v.item_id, v.nro DESC`,
+      [ids, tid()],
     )
   ).rows
   const por = new Map<string, Version[]>()
@@ -142,7 +143,8 @@ export type Reescritura = { revisados: number } & Record<ResultadoReescritura, n
 export async function reescribirOriginales(o: { aplicar: boolean; id?: string; limite?: number; progreso?: (id: string, titulo: string, r: ResultadoReescritura, nuevo: string | null) => void } = { aplicar: false }): Promise<Reescritura> {
   const rows = (
     await pool.query(
-      `SELECT DISTINCT f.id, f.title, f.data, f.found_at FROM feed_items f JOIN feed_guion_versiones v ON v.item_id = f.id WHERE ($1::uuid IS NULL OR f.id = $1) ORDER BY f.found_at DESC, f.id`,
+      // Script de mantenimiento (npm run feed:guiones): recorre todos los tenants; cada ítem se reescribe dentro del suyo.
+      `SELECT DISTINCT f.id, f.tenant_id, f.title, f.data, f.found_at FROM feed_items f JOIN feed_guion_versiones v ON v.item_id = f.id WHERE ($1::uuid IS NULL OR f.id = $1) ORDER BY f.found_at DESC, f.id`,
       [o.id ?? null],
     )
   ).rows
@@ -152,8 +154,10 @@ export async function reescribirOriginales(o: { aplicar: boolean; id?: string; l
     if (o.limite !== undefined && hechos >= o.limite) break
     out.revisados++
     const nuevo = guionPAS(entradaDe((r.data ?? {}) as Record<string, unknown>, r.title as string))
-    const res = await tx(async (c): Promise<ResultadoReescritura> => {
-      await c.query('SELECT 1 FROM feed_items WHERE id = $1 FOR UPDATE', [r.id])
+    const t = await tenantById(r.tenant_id as string)
+    if (!t) continue
+    const res = await withTenant(t, () => tx(async (c): Promise<ResultadoReescritura> => {
+      await c.query('SELECT 1 FROM feed_items WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [r.id, tid()])
       const vs = await versionesDe(c, r.id as string)
       const original = vs.find((v) => v.tipo === 'original')
       if (!original) return 'igual'
@@ -164,13 +168,13 @@ export async function reescribirOriginales(o: { aplicar: boolean; id?: string; l
       if (o.aplicar) {
         await c.query(`SELECT set_config('hayai.guion_reescritura', 'on', true)`) // solo esta transacción: el trigger deja tocar el original
         await c.query(
-          `INSERT INTO feed_guion_versiones (item_id, nro, contenido, tipo, editado_por, editado_en) SELECT item_id, 0, contenido, 'previo', editado_por, editado_en FROM feed_guion_versiones WHERE item_id = $1 AND tipo = 'original'`,
-          [r.id],
+          `INSERT INTO feed_guion_versiones (tenant_id, item_id, nro, contenido, tipo, editado_por, editado_en) SELECT tenant_id, item_id, 0, contenido, 'previo', editado_por, editado_en FROM feed_guion_versiones WHERE item_id = $1 AND tenant_id = $2 AND tipo = 'original'`,
+          [r.id, tid()],
         )
-        await c.query(`UPDATE feed_guion_versiones SET contenido = $2, editado_por = NULL, editado_en = now() WHERE item_id = $1 AND tipo = 'original'`, [r.id, nuevo])
+        await c.query(`UPDATE feed_guion_versiones SET contenido = $2, editado_por = NULL, editado_en = now() WHERE item_id = $1 AND tenant_id = $3 AND tipo = 'original'`, [r.id, nuevo, tid()])
       }
       return 'reescrito'
-    })
+    }))
     out[res]++
     if (res === 'reescrito') hechos++
     o.progreso?.(r.id as string, r.title as string, res, res === 'reescrito' ? nuevo : null)

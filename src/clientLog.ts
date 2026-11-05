@@ -2,6 +2,7 @@
 // GET/POST /api/clients/:id/interactions. Las entradas de tipo «etapa» son automáticas: no se crean ni se editan desde aquí.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api'
+import { can } from './tenant'
 import type { Client } from './store'
 
 export const KINDS = ['llamada', 'visita', 'whatsapp', 'nota'] as const
@@ -73,13 +74,18 @@ export interface Stage {
 }
 let stagesCache: Stage[] | null = null
 let stagesAsk: Promise<Stage[]> | null = null
+/** Cambio de espacio de trabajo: las etapas son de cada tenant, se vuelven a pedir. */
+export const resetStages = () => {
+  stagesCache = null
+  stagesAsk = null
+}
 /** Etapas del pipeline, una sola consulta por sesión de la pestaña. */
 export function useStages() {
   const [stages, setStages] = useState<Stage[]>(stagesCache ?? [])
   useEffect(() => {
     if (stagesCache) return
     let live = true
-    stagesAsk ??= api.get<{ data: Stage[] }>('/pipeline/stages').then((r) => (stagesCache = r.data))
+    stagesAsk ??= (can('crm') ? api.get<{ data: Stage[] }>('/pipeline/stages').then((r) => r.data) : Promise.resolve([] as Stage[])).then((d) => (stagesCache = d)) // sin el módulo crm no hay etapas
     stagesAsk.then((s) => live && setStages(s)).catch(() => (stagesAsk = null)) // sin etapas la ficha muestra la clave tal cual
     return () => void (live = false)
   }, [])

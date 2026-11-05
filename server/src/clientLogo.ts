@@ -2,6 +2,7 @@
 // Hoja del grafo de imports (solo db/util): lo usan las rutas de la web, el servicio de clientes
 // de la API v1/MCP y cualquier otro consumidor sin crear ciclos.
 import type { Db } from './db.ts'
+import { tid } from './tenant.ts'
 import { HttpError } from './util.ts'
 
 export const MAX_LOGO_BYTES = 4 * 1024 * 1024
@@ -18,23 +19,23 @@ export const LOGO_EXT: Record<LogoMime, string> = { 'image/png': 'png', 'image/j
 
 /** Guarda (o reemplaza) el logo del cliente. 404 si el cliente no existe. */
 export async function saveClientLogo(db: Db, clientId: string, userId: string, f: { filename: string; mime: LogoMime; data: Buffer }): Promise<void> {
-  if (!(await db.query('SELECT 1 FROM clients WHERE id = $1', [clientId])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
+  if (!(await db.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2', [clientId, tid()])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
   await db.query(
-    `INSERT INTO client_logos (client_id, filename, mime, size, data, uploaded_by) VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO client_logos (tenant_id, client_id, filename, mime, size, data, uploaded_by) VALUES ($7, $1, $2, $3, $4, $5, $6)
      ON CONFLICT (client_id) DO UPDATE SET filename = EXCLUDED.filename, mime = EXCLUDED.mime, size = EXCLUDED.size,
        data = EXCLUDED.data, uploaded_by = EXCLUDED.uploaded_by, uploaded_at = now()`,
-    [clientId, f.filename, f.mime, f.data.length, f.data, userId],
+    [clientId, f.filename, f.mime, f.data.length, f.data, userId, tid()],
   )
 }
 
 /** Quita el logo del cliente. Devuelve si había uno. */
 export async function deleteClientLogo(db: Db, clientId: string): Promise<boolean> {
-  return ((await db.query('DELETE FROM client_logos WHERE client_id = $1', [clientId])).rowCount ?? 0) > 0
+  return ((await db.query('DELETE FROM client_logos WHERE client_id = $1 AND tenant_id = $2', [clientId, tid()])).rowCount ?? 0) > 0
 }
 
 /** El archivo del logo para servirlo. 404 si el cliente no tiene logo. */
 export async function clientLogoFile(db: Db, clientId: string): Promise<{ data: Buffer; mime: LogoMime; filename: string }> {
-  const r = (await db.query('SELECT data, mime, filename FROM client_logos WHERE client_id = $1', [clientId])).rows[0]
+  const r = (await db.query('SELECT data, mime, filename FROM client_logos WHERE client_id = $1 AND tenant_id = $2', [clientId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'El cliente no tiene logo')
   return { data: r.data as Buffer, mime: r.mime as LogoMime, filename: r.filename as string }
 }

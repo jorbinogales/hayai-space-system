@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { api } from './api'
 import { createList } from './cache'
+import { can } from './tenant'
 import { loadExpenses } from './expenseData'
 import { loadProjects } from './projectData'
 import { loadTasks } from './taskData'
@@ -64,7 +65,7 @@ export const useClients = () => {
 /** Lectura puntual (fuera de React) de un cliente o de uno de sus movimientos: para comparar con lo recien recargado. */
 export const clientNow = (id: string) => clients.get().find((c) => c.id === id)
 export const movementNow = (id: string) => clients.get().flatMap((c) => c.movements).find((m) => m.id === id)
-export const loadClients = async () => clients.set(await api.get<Client[]>('/clients'))
+export const loadClients = async () => void (can('clientes') && clients.set(await api.get<Client[]>('/clients')))
 export const resetClients = () => clients.set([])
 
 export const avatarOf = (c: Client) => c.avatar ?? c.id

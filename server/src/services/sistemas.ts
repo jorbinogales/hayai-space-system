@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { pool } from '../db.ts'
 import { checkSystem } from '../systems.ts'
 import { HttpError, id, text } from '../util.ts'
+import { tid } from '../tenant.ts'
 import { boolFlag, filters, op, pageShape, paged } from './common.ts'
 
 const SELECT = `SELECT s.id, s.client_id, c.name AS client, s.name, s.app_url, s.prod_url, s.check_url, s.repo_url, s.server, s.admin_user, s.notes,
@@ -60,7 +61,7 @@ const campos = {
 }
 
 async function sistema(systemId: string) {
-  const r = (await pool.query(`${SELECT} WHERE s.id = $1`, [systemId])).rows[0]
+  const r = (await pool.query(`${SELECT} WHERE s.id = $1 AND s.tenant_id = $2`, [systemId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Sistema no encontrado')
   return out(r)
 }
@@ -73,7 +74,7 @@ export const sistemasListar = op(
     ...pageShape,
   }),
   async (_a, i) => {
-    const f = filters()
+    const f = filters('s.tenant_id')
     if (i.cliente_id) f.add('s.client_id = ?', i.cliente_id)
     if (i.estado) f.add('s.status = ?', i.estado)
     f.add('s.active = ?', i.activos === true || i.activos === 'true')
@@ -81,7 +82,7 @@ export const sistemasListar = op(
     const [total, rows, sum] = await Promise.all([
       pool.query(`SELECT count(*)::int AS n FROM systems s ${f.where()}`, f.params()),
       pool.query(`${SELECT} ${f.where()} ORDER BY (s.status = 'caido') DESC, c.name, s.name, s.id ${clause}`, args),
-      pool.query(`SELECT status, count(*)::int AS n FROM systems WHERE active GROUP BY status`),
+      pool.query(`SELECT status, count(*)::int AS n FROM systems WHERE tenant_id = $1 AND active GROUP BY status`, [tid()]),
     ])
     const por_estado = { arriba: 0, caido: 0, desconocido: 0 } as Record<string, number>
     for (const r of sum.rows) por_estado[r.status] = r.n
@@ -94,11 +95,11 @@ export const sistemaVer = op(z.strictObject({ id }), (_a, i) => sistema(i.id))
 export const sistemaCrear = op(
   z.strictObject({ cliente_id: id, ...campos }),
   async (actor, b) => {
-    if (!(await pool.query('SELECT 1 FROM clients WHERE id = $1', [b.cliente_id])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
+    if (!(await pool.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2', [b.cliente_id, tid()])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
     const { rows } = await pool.query(
-      `INSERT INTO systems (client_id, name, app_url, prod_url, check_url, repo_url, server, admin_user, notes, monitor, active, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
-      [b.cliente_id, b.nombre, b.enlace ?? null, b.url_produccion ?? null, b.url_verificacion ?? null, b.repo ?? null, b.servidor ?? null, b.usuario_gestion ?? null, b.notas ?? null, b.verificar ?? true, b.activo ?? true, actor.id],
+      `INSERT INTO systems (client_id, name, app_url, prod_url, check_url, repo_url, server, admin_user, notes, monitor, active, created_by, tenant_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
+      [b.cliente_id, b.nombre, b.enlace ?? null, b.url_produccion ?? null, b.url_verificacion ?? null, b.repo ?? null, b.servidor ?? null, b.usuario_gestion ?? null, b.notas ?? null, b.verificar ?? true, b.activo ?? true, actor.id, tid()],
     )
     return sistema(rows[0].id)
   },
@@ -119,7 +120,7 @@ export const sistemaActualizar = op(
     // Cambiar la URL que se verifica reinicia el semáforo: lo anterior ya no habla de esta dirección.
     if (b.url_verificacion !== undefined || b.url_produccion !== undefined || b.enlace !== undefined)
       sets.push(`status = 'desconocido'`, 'status_since = NULL', 'fail_streak = 0', 'last_error = NULL', 'last_code = NULL', 'last_ms = NULL')
-    const r = await pool.query(`UPDATE systems SET ${sets.join(', ')} WHERE id = $1`, args)
+    const r = await pool.query(`UPDATE systems SET ${sets.join(', ')} WHERE id = $1 AND tenant_id = $${args.push(tid())}`, args)
     if (!r.rowCount) throw new HttpError(404, 'Sistema no encontrado')
     return sistema(b.id)
   },

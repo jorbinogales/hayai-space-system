@@ -628,6 +628,11 @@ export function publishNuevos(n: number) {
   knownNuevos = n
   nuevosSubs.forEach((f) => f())
 }
+/** Cambio de espacio de trabajo o cierre de sesion: el contador de nuevos era del espacio anterior. */
+export function resetFeedState() {
+  knownNuevos = null
+  nuevosSubs.forEach((fn) => fn())
+}
 export const useKnownNuevos = () =>
   useSyncExternalStore(
     (f) => (nuevosSubs.add(f), () => void nuevosSubs.delete(f)),

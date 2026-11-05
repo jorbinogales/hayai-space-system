@@ -10,6 +10,7 @@ import { z } from 'zod'
 import { ACTIVITY_SELECT, activityOut } from '../activity.ts'
 import { pool } from '../db.ts'
 import { llmConfig, llmJson, LlmError } from '../llm.ts'
+import { hasModule, type Module, resolveAccess, tenantCtx, tid, visibleKinds, withTenant } from '../tenant.ts'
 import { op, r2, TZ, todayISO, type Actor } from './common.ts'
 
 const masDias = (iso: string, n: number) => {
@@ -74,74 +75,91 @@ export async function datosBrief(userId: string, hoy = todayISO()): Promise<Dato
   const en3 = masDias(hoy, 3)
   const en7 = masDias(hoy, 7)
   const ayer = masDias(hoy, -1)
-  // «Mis clientes»: los de los proyectos donde el socio es responsable o tiene tareas asignadas.
-  const MIOS = `SELECT p.client_id FROM projects p WHERE p.client_id IS NOT NULL AND p.archived_at IS NULL
+  const T = tid()
+  // «Mis clientes»: los de los proyectos (de este tenant) donde el socio es responsable o tiene tareas asignadas. `t` = el parámetro del tenant.
+  const MIOS = (t: string) => `SELECT p.client_id FROM projects p WHERE p.tenant_id = ${t} AND p.client_id IS NOT NULL AND p.archived_at IS NULL
       AND (p.owner_id = $1 OR EXISTS (SELECT 1 FROM tasks t WHERE t.project_id = p.id AND t.assignee_id = $1 AND NOT t.done))`
+  // Cada sección solo con el módulo que la respalda en este tenant: el brief no le cuenta a nadie lo que no puede ver.
+  const NONE = Promise.resolve({ rows: [] as Record<string, unknown>[] })
+  const si = (m: Module, sql: string, args: unknown[]) => (hasModule(m) ? pool.query(sql, args) : NONE)
   const [u, cobros, vencidos, tareasVisita, clientesVisita, proyectosVisita, bitacoraVisita, act, estancados, tareas, proyectos] = await Promise.all([
     pool.query('SELECT name, role_title, responsibilities FROM users WHERE id = $1', [userId]),
-    pool.query(
-      `SELECT c.name, p.concept, p.amount, p.date::text AS fecha, (p.client_id IN (${MIOS}) OR p.created_by = $1) AS tuyo
+    si(
+      'cobros',
+      `SELECT c.name, p.concept, p.amount, p.date::text AS fecha, (p.client_id IN (${MIOS('$4')}) OR p.created_by = $1) AS tuyo
        FROM payments p JOIN clients c ON c.id = p.client_id
-       WHERE p.status = 'pendiente' AND p.date BETWEEN $2::date AND $3::date ORDER BY p.date, c.name`,
-      [userId, hoy, en3],
+       WHERE p.tenant_id = $4 AND p.status = 'pendiente' AND p.date BETWEEN $2::date AND $3::date ORDER BY p.date, c.name`,
+      [userId, hoy, en3, T],
     ),
-    pool.query(
-      `SELECT count(*)::int AS n, COALESCE(sum(amount), 0) AS monto, count(*) FILTER (WHERE client_id IN (${MIOS}) OR created_by = $1)::int AS tuyos
-       FROM payments WHERE status = 'pendiente' AND date < $2::date`,
-      [userId, hoy],
+    si(
+      'cobros',
+      `SELECT count(*)::int AS n, COALESCE(sum(amount), 0) AS monto, count(*) FILTER (WHERE client_id IN (${MIOS('$3')}) OR created_by = $1)::int AS tuyos
+       FROM payments WHERE tenant_id = $3 AND status = 'pendiente' AND date < $2::date`,
+      [userId, hoy, T],
     ),
-    pool.query(
+    si(
+      'tareas',
       `SELECT t.title AS que, c.name AS cliente, t.due_date::text AS fecha, u.name AS quien, COALESCE(t.assignee_id, p.owner_id) = $1 AS tuyo
        FROM tasks t JOIN projects p ON p.id = t.project_id AND p.archived_at IS NULL LEFT JOIN clients c ON c.id = p.client_id
        LEFT JOIN users u ON u.id = COALESCE(t.assignee_id, p.owner_id)
-       WHERE NOT t.done AND fold(t.title) ~ '${VISITA}' AND t.due_date BETWEEN $2::date AND $3::date ORDER BY t.due_date LIMIT 20`,
-      [userId, hoy, en7],
+       WHERE t.tenant_id = $4 AND NOT t.done AND fold(t.title) ~ '${VISITA}' AND t.due_date BETWEEN $2::date AND $3::date ORDER BY t.due_date LIMIT 20`,
+      [userId, hoy, en7, T],
     ),
     // próxima acción del cliente que es una visita, y los potenciales en la etapa «Visita agendada» (con su fecha si la tienen)
-    pool.query(
-      `SELECT COALESCE(c.next_action, 'Visita agendada') AS que, c.name AS cliente, c.next_action_date::text AS fecha, u.name AS quien, (c.id IN (${MIOS}) OR c.created_by = $1) AS tuyo
+    si(
+      'clientes',
+      `SELECT COALESCE(c.next_action, 'Visita agendada') AS que, c.name AS cliente, c.next_action_date::text AS fecha, u.name AS quien, (c.id IN (${MIOS('$4')}) OR c.created_by = $1) AS tuyo
        FROM clients c LEFT JOIN users u ON u.id = c.created_by
-       WHERE c.archived_at IS NULL
+       WHERE c.tenant_id = $4 AND c.archived_at IS NULL
          AND ((fold(c.next_action) ~ '${VISITA}' AND c.next_action_date BETWEEN $2::date AND $3::date)
            OR (c.is_prospect AND c.pipeline_stage = 'visita_agendada' AND (c.next_action_date IS NULL OR c.next_action_date BETWEEN $2::date AND $3::date)))
        ORDER BY c.next_action_date NULLS LAST LIMIT 20`,
-      [userId, hoy, en7],
+      [userId, hoy, en7, T],
     ),
     // «Por visitar» (en la BD, planeacion) con fecha
-    pool.query(
+    si(
+      'proyectos',
       `SELECT 'Visita: ' || p.name AS que, c.name AS cliente, p.due_date::text AS fecha, u.name AS quien, p.owner_id = $1 AS tuyo
        FROM projects p LEFT JOIN clients c ON c.id = p.client_id LEFT JOIN users u ON u.id = p.owner_id
-       WHERE p.archived_at IS NULL AND p.status = 'planeacion' AND p.due_date BETWEEN $2::date AND $3::date ORDER BY p.due_date LIMIT 20`,
-      [userId, hoy, en7],
+       WHERE p.tenant_id = $4 AND p.archived_at IS NULL AND p.status = 'planeacion' AND p.due_date BETWEEN $2::date AND $3::date ORDER BY p.due_date LIMIT 20`,
+      [userId, hoy, en7, T],
     ),
     // visitas anotadas en la bitácora con fecha de hoy en adelante (agendadas)
-    pool.query(
+    si(
+      'clientes',
       `SELECT left(i.summary, 140) AS que, c.name AS cliente, (i.occurred_at AT TIME ZONE '${TZ}')::date::text AS fecha, u.name AS quien, i.created_by = $1 AS tuyo
        FROM interactions i JOIN clients c ON c.id = i.client_id LEFT JOIN users u ON u.id = i.created_by
-       WHERE i.kind = 'visita' AND (i.occurred_at AT TIME ZONE '${TZ}')::date BETWEEN $2::date AND $3::date ORDER BY i.occurred_at LIMIT 20`,
-      [userId, hoy, en7],
+       WHERE i.tenant_id = $4 AND i.kind = 'visita' AND (i.occurred_at AT TIME ZONE '${TZ}')::date BETWEEN $2::date AND $3::date ORDER BY i.occurred_at LIMIT 20`,
+      [userId, hoy, en7, T],
     ),
-    pool.query(`${ACTIVITY_SELECT} WHERE (a.created_at AT TIME ZONE '${TZ}')::date = $1::date ORDER BY a.id LIMIT 200`, [ayer]),
-    pool.query(
+    pool.query(`${ACTIVITY_SELECT} WHERE a.tenant_id = $2 AND a.kind = ANY($3::text[]) AND (a.created_at AT TIME ZONE '${TZ}')::date = $1::date ORDER BY a.id LIMIT 200`, [
+      ayer,
+      T,
+      visibleKinds(tenantCtx().modules),
+    ]),
+    si(
+      'crm',
       `SELECT c.name, COALESCE(s.label, c.pipeline_stage, 'sin etapa') AS etapa, c.est_value, c.next_action,
-              (now()::date - COALESCE(c.stage_changed_at, c.created_at)::date) AS dias, (c.id IN (${MIOS}) OR c.created_by = $1) AS tuyo
+              (now()::date - COALESCE(c.stage_changed_at, c.created_at)::date) AS dias, (c.id IN (${MIOS('$3')}) OR c.created_by = $1) AS tuyo
        FROM clients c LEFT JOIN pipeline_stages s ON s.key = c.pipeline_stage
-       WHERE c.is_prospect AND c.archived_at IS NULL AND COALESCE(c.pipeline_stage, '') NOT IN ('ganado', 'perdido')
+       WHERE c.tenant_id = $3 AND c.is_prospect AND c.archived_at IS NULL AND COALESCE(c.pipeline_stage, '') NOT IN ('ganado', 'perdido')
          AND COALESCE(c.stage_changed_at, c.created_at) < now() - make_interval(days => $2)
        ORDER BY dias DESC LIMIT 12`,
-      [userId, ESTANCADO_DIAS],
+      [userId, ESTANCADO_DIAS, T],
     ),
-    pool.query(
+    si(
+      'tareas',
       `SELECT t.title, p.name AS proyecto, t.due_date::text AS vence, t.due_date < $2::date AS vencida
        FROM tasks t JOIN projects p ON p.id = t.project_id AND p.archived_at IS NULL
-       WHERE NOT t.done AND COALESCE(t.assignee_id, p.owner_id) = $1 AND (t.due_date IS NULL OR t.due_date <= $3::date)
+       WHERE t.tenant_id = $4 AND NOT t.done AND COALESCE(t.assignee_id, p.owner_id) = $1 AND (t.due_date IS NULL OR t.due_date <= $3::date)
        ORDER BY t.due_date NULLS LAST, t.created_at LIMIT 15`,
-      [userId, hoy, en3],
+      [userId, hoy, en3, T],
     ),
-    pool.query(
+    si(
+      'proyectos',
       `SELECT p.name, p.status, c.name AS cliente, p.due_date::text AS vence FROM projects p LEFT JOIN clients c ON c.id = p.client_id
-       WHERE p.owner_id = $1 AND p.archived_at IS NULL AND p.status NOT IN ('completado', 'entregado') ORDER BY p.due_date NULLS LAST, p.name LIMIT 10`,
-      [userId],
+       WHERE p.tenant_id = $2 AND p.owner_id = $1 AND p.archived_at IS NULL AND p.status NOT IN ('completado', 'entregado') ORDER BY p.due_date NULLS LAST, p.name LIMIT 10`,
+      [userId, T],
     ),
   ])
   const yo = u.rows[0] ?? {}
@@ -164,7 +182,7 @@ export async function datosBrief(userId: string, hoy = todayISO()): Promise<Dato
     cobros: {
       hoy: todos.filter((c) => c.fecha === hoy),
       proximos: todos.filter((c) => c.fecha > hoy),
-      vencidos: { n: vencidos.rows[0].n as number, monto: r2(Number(vencidos.rows[0].monto)), tuyos: vencidos.rows[0].tuyos as number },
+      vencidos: { n: (vencidos.rows[0]?.n ?? 0) as number, monto: r2(Number(vencidos.rows[0]?.monto ?? 0)), tuyos: (vencidos.rows[0]?.tuyos ?? 0) as number },
     },
     visitas: visitas.slice(0, 15),
     // lo de ayer: el detalle recortado (lo más nuevo pesa igual que lo viejo; 40 líneas bastan para resumir)
@@ -275,21 +293,21 @@ async function generar(userId: string, hoy: string): Promise<Brief> {
   const { texto, model } = await redactar(d)
   const brief: Brief = { fecha: hoy, para: d.socio.nombre, ...texto, cifras: cifrasDe(d), ia: model !== null, generado_el: new Date().toISOString() }
   await pool.query(
-    `INSERT INTO briefs (user_id, day, content, model, generated_at) VALUES ($1, $2, $3::jsonb, $4, now())
-     ON CONFLICT (user_id, day) DO UPDATE SET content = EXCLUDED.content, model = EXCLUDED.model, generated_at = now()`,
-    [userId, hoy, JSON.stringify(brief), model],
+    `INSERT INTO briefs (user_id, tenant_id, day, content, model, generated_at) VALUES ($1, $5, $2, $3::jsonb, $4, now())
+     ON CONFLICT (user_id, tenant_id, day) DO UPDATE SET content = EXCLUDED.content, model = EXCLUDED.model, generated_at = now()`,
+    [userId, hoy, JSON.stringify(brief), model, tid()],
   )
   return brief
 }
 
-/** El brief del día del socio: el guardado o, si no hay (o se pide `actualizar`), uno nuevo. Dos pedidos a la vez comparten la misma redacción. */
+/** El brief del día del socio en el tenant en curso: el guardado o, si no hay (o se pide `actualizar`), uno nuevo. Dos pedidos a la vez comparten la misma redacción. */
 export async function briefDe(userId: string, o: { actualizar?: boolean } = {}): Promise<Brief> {
   const hoy = todayISO()
-  const llave = `${userId}:${hoy}`
+  const llave = `${userId}:${tid()}:${hoy}`
   const corriendo = enCurso.get(llave)
   if (corriendo) return corriendo
   if (!o.actualizar) {
-    const r = (await pool.query(`SELECT content, model, generated_at FROM briefs WHERE user_id = $1 AND day = $2`, [userId, hoy])).rows[0]
+    const r = (await pool.query(`SELECT content, model, generated_at FROM briefs WHERE user_id = $1 AND tenant_id = $3 AND day = $2`, [userId, hoy, tid()])).rows[0]
     // Uno de plantilla porque la IA falló se reintenta solo pasados 20 minutos (si ahora hay IA); si no, se sirve el guardado.
     const reintentar = r && r.model === null && llmConfig() && Date.now() - (r.generated_at as Date).getTime() > 20 * 60_000
     if (r && !reintentar) return r.content as Brief
@@ -306,11 +324,26 @@ export const briefActualizar = op(z.strictObject({}), async (actor: Actor) => br
 let timer: ReturnType<typeof setInterval> | null = null
 const horaLocal = () => Number(new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', hour12: false }).format(new Date()))
 
-/** Prepara, una vez pasada la hora (BRIEF_HORA, 6 por defecto), los briefs que falten hoy de los socios activos. Uno a la vez. */
+/**
+ * Prepara, una vez pasada la hora (BRIEF_HORA, 6 por defecto), los briefs que falten hoy: uno por membresía (socio activo x tenant
+ * activo con el módulo hub; los ADMIN, en todos los tenants), cada uno dentro de su tenant y con los módulos de ese socio. Uno a la vez.
+ */
 export async function prepararBriefs(): Promise<number> {
   const hoy = todayISO()
-  const faltan = (await pool.query(`SELECT u.id FROM users u WHERE u.active AND NOT EXISTS (SELECT 1 FROM briefs b WHERE b.user_id = u.id AND b.day = $1) ORDER BY u.name`, [hoy])).rows
-  for (const r of faltan) await briefDe(r.id as string).catch((e) => console.error('brief: no se pudo preparar:', (e as Error).message))
+  const faltan = (
+    await pool.query(
+      `SELECT u.id, u.role, t.id AS tenant_id FROM users u CROSS JOIN tenants t
+       WHERE u.active AND t.active
+         AND (u.role = 'ADMIN' OR EXISTS (SELECT 1 FROM user_tenants ut WHERE ut.user_id = u.id AND ut.tenant_id = t.id AND 'hub' = ANY(ut.modules)))
+         AND NOT EXISTS (SELECT 1 FROM briefs b WHERE b.user_id = u.id AND b.tenant_id = t.id AND b.day = $1)
+       ORDER BY t.created_at, u.name`,
+      [hoy],
+    )
+  ).rows
+  for (const r of faltan) {
+    const access = await resolveAccess({ id: r.id, role: r.role }, r.tenant_id)
+    if (access) await withTenant(access, () => briefDe(r.id as string)).catch((e) => console.error('brief: no se pudo preparar:', (e as Error).message))
+  }
   return faltan.length
 }
 

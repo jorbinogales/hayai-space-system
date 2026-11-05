@@ -138,7 +138,7 @@ export function FlatFrame({
   onView: (v: ViewMode) => void
   onBack: () => void
   onNew: () => void
-  onProspect: () => void
+  onProspect?: () => void
   eyebrow: string
   title: string
   children: ReactNode
@@ -163,10 +163,12 @@ export function FlatFrame({
                 <Icon name="plus" size={15} />
                 Nuevo cliente
               </button>
-              <button type="button" className="ob-btn" onClick={onProspect}>
-                <Icon name="plus" size={15} />
-                Cliente potencial
-              </button>
+              {onProspect && (
+                <button type="button" className="ob-btn" onClick={onProspect}>
+                  <Icon name="plus" size={15} />
+                  Cliente potencial
+                </button>
+              )}
             </div>
           </div>
         </header>
@@ -278,7 +280,7 @@ const closest = (m: Model) => {
   return null
 }
 
-function OrbitalBody({ model, clients, openId, onPick, onSwitch, onProspect, nextOf }: { model: Model; clients: Lead[]; openId: string | null; onPick: (id: string) => void; onSwitch: (v: ViewMode) => void; onProspect: () => void; nextOf: NextOf }) {
+function OrbitalBody({ model, clients, openId, onPick, onSwitch, onProspect, nextOf }: { model: Model; clients: Lead[]; openId: string | null; onPick: (id: string) => void; onSwitch: (v: ViewMode) => void; onProspect?: () => void; nextOf: NextOf }) {
   const [hover, setHover] = useState<string | null>(null)
   const [focus, setFocus] = useState<string | null>(null)
   const [stageOpen, setStageOpen] = useState<string | null>(null) // etapa desplegada en la lista del lateral
@@ -478,10 +480,12 @@ function OrbitalBody({ model, clients, openId, onPick, onSwitch, onProspect, nex
           <article className="ob-card is-empty">
             <strong>Todavía no hay a quién perseguir</strong>
             <p className="ob-card-note">Cuando registres un cliente potencial aparecerá en la órbita de su etapa.</p>
-            <button type="button" className="ob-open" onClick={onProspect}>
-              Registrar un cliente potencial
-              <Icon name="plus" size={15} />
-            </button>
+            {onProspect && (
+              <button type="button" className="ob-open" onClick={onProspect}>
+                Registrar un cliente potencial
+                <Icon name="plus" size={15} />
+              </button>
+            )}
           </article>
         )}
 
@@ -541,14 +545,14 @@ function OrbitalBody({ model, clients, openId, onPick, onSwitch, onProspect, nex
   )
 }
 
-export function OrbitalView({ clients, stages, openId, onPick, onSwitch, onProspect, nextOf }: { clients: Lead[]; stages: Loaded<PipelineStage[]>; openId: string | null; onPick: (id: string) => void; onSwitch: (v: ViewMode) => void; onProspect: () => void; nextOf: NextOf }) {
+export function OrbitalView({ clients, stages, openId, onPick, onSwitch, onProspect, nextOf }: { clients: Lead[]; stages: Loaded<PipelineStage[]>; openId: string | null; onPick: (id: string) => void; onSwitch: (v: ViewMode) => void; onProspect?: () => void; nextOf: NextOf }) {
   return (
     <StagesGate stages={stages}>
       {(s) => <OrbitalBodyWithModel stages={s} clients={clients} openId={openId} onPick={onPick} onSwitch={onSwitch} onProspect={onProspect} nextOf={nextOf} />}
     </StagesGate>
   )
 }
-function OrbitalBodyWithModel({ stages, clients, ...rest }: { stages: PipelineStage[]; clients: Lead[]; openId: string | null; onPick: (id: string) => void; onSwitch: (v: ViewMode) => void; onProspect: () => void; nextOf: NextOf }) {
+function OrbitalBodyWithModel({ stages, clients, ...rest }: { stages: PipelineStage[]; clients: Lead[]; openId: string | null; onPick: (id: string) => void; onSwitch: (v: ViewMode) => void; onProspect?: () => void; nextOf: NextOf }) {
   const model = useMemo(() => buildModel(stages, clients), [stages, clients])
   return <OrbitalBody model={model} clients={clients} {...rest} />
 }

@@ -19,6 +19,7 @@ import { HttpError, id, text } from '../util.ts'
 import { exec, op } from './common.ts'
 import { clienteDetalle, pagoRegistrar } from './clientes.ts'
 import { propuestaCrear } from './propuestas.ts'
+import { requireModule, tenantCtx, type TenantCtx, tid, withTenant } from '../tenant.ts'
 import { esAccionable, VINCULO_DE_ACCION, feedConvertir, hoyISO, item, masDias, plano, registrarProgramador, visible, type AccionOut } from './feed.ts'
 
 type ItemOut = Awaited<ReturnType<typeof item>>
@@ -106,15 +107,15 @@ async function clienteCtx(clienteId: string): Promise<ClienteCtx> {
   const c = await clienteDetalle(clienteId)
   const [aceptada, tareas, escrito] = await Promise.all([
     pool.query(
-      `SELECT pi.kind, pi.concept, pi.offering_id FROM proposals p JOIN proposal_items pi ON pi.proposal_id = p.id WHERE p.client_id = $1 AND p.status = 'aceptada'`,
-      [clienteId],
+      `SELECT pi.kind, pi.concept, pi.offering_id FROM proposals p JOIN proposal_items pi ON pi.proposal_id = p.id WHERE p.client_id = $1 AND p.tenant_id = $2 AND p.status = 'aceptada'`,
+      [clienteId, tid()],
     ),
-    pool.query(`SELECT t.title FROM tasks t JOIN projects p ON p.id = t.project_id WHERE p.client_id = $1 AND NOT t.done ORDER BY t.created_at DESC LIMIT 40`, [clienteId]),
+    pool.query(`SELECT t.title FROM tasks t JOIN projects p ON p.id = t.project_id WHERE p.client_id = $1 AND t.tenant_id = $2 AND NOT t.done ORDER BY t.created_at DESC LIMIT 40`, [clienteId, tid()]),
     pool.query(
-      `SELECT description AS t FROM projects WHERE client_id = $1 AND archived_at IS NULL
-       UNION ALL SELECT notes FROM clients WHERE id = $1
-       UNION ALL (SELECT summary FROM interactions WHERE client_id = $1 ORDER BY occurred_at DESC LIMIT 30)`,
-      [clienteId],
+      `SELECT description AS t FROM projects WHERE client_id = $1 AND tenant_id = $2 AND archived_at IS NULL
+       UNION ALL SELECT notes FROM clients WHERE id = $1 AND tenant_id = $2
+       UNION ALL (SELECT summary FROM interactions WHERE client_id = $1 AND tenant_id = $2 ORDER BY occurred_at DESC LIMIT 30)`,
+      [clienteId, tid()],
     ),
   ])
   const movimientos: Movimiento[] = c.movimientos.map((m) => ({ fecha: m.fecha, concepto: m.concepto, monto: Number(m.monto), estado: m.estado, tipo: m.tipo, recurrente: RECURRENTE.test(m.concepto) || !!m.serie }))
@@ -142,7 +143,7 @@ async function clienteCtx(clienteId: string): Promise<ClienteCtx> {
 async function contexto(f: ItemOut): Promise<Ctx> {
   const [cliente, ofertas] = await Promise.all([
     f.vinculo.cliente_id ? clienteCtx(f.vinculo.cliente_id) : Promise.resolve(null),
-    pool.query('SELECT id, name, kind, default_monthly, default_setup FROM offerings WHERE active ORDER BY name'),
+    pool.query('SELECT id, name, kind, default_monthly, default_setup FROM offerings WHERE tenant_id = $1 AND active ORDER BY name', [tid()]),
   ])
   return {
     hoy: hoyISO(),
@@ -384,17 +385,18 @@ export function filtrarAcciones(json: unknown, x: Ctx): { acciones: Omit<AccionO
 // ---------- guardar ----------
 async function guardar(itemId: string, v: { acciones?: Omit<AccionOut, 'hecha'>[]; estado: 'listo' | 'error'; error?: string; modelo?: string }) {
   await tx(async (c) => {
-    const cur = (await c.query('SELECT actions FROM feed_items WHERE id = $1 FOR UPDATE', [itemId])).rows[0]
+    const cur = (await c.query('SELECT actions FROM feed_items WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [itemId, tid()])).rows[0]
     if (!cur) return // lo borraron mientras tanto
     // Lo que ya se ejecutó se conserva (es el historial); lo demás se reemplaza por lo nuevo.
     const hechas = ((cur.actions as AccionOut[]) ?? []).filter((a) => a.hecha)
     const nuevas = v.estado === 'listo' ? (v.acciones ?? []) : ((cur.actions as AccionOut[]) ?? []).filter((a) => !a.hecha)
-    await c.query(`UPDATE feed_items SET actions = $2::jsonb, actions_status = $3, actions_at = now(), actions_error = $4, actions_model = COALESCE($5, actions_model) WHERE id = $1`, [
+    await c.query(`UPDATE feed_items SET actions = $2::jsonb, actions_status = $3, actions_at = now(), actions_error = $4, actions_model = COALESCE($5, actions_model) WHERE id = $1 AND tenant_id = $6`, [
       itemId,
       JSON.stringify([...hechas, ...nuevas]),
       v.estado,
       v.error ? v.error.slice(0, 300) : null,
       v.modelo ?? null,
+      tid(),
     ])
   })
 }
@@ -418,20 +420,22 @@ export async function generarAcciones(itemId: string, actorId: string): Promise<
 
 // ---------- cola en segundo plano (no inunda a la IA con una siembra de 50) ----------
 const MAX_SIMULTANEAS = 2
-const cola: { id: string; actorId: string }[] = []
+// La cola es del proceso: cada trabajo lleva el tenant de quien lo pidió y corre dentro de él.
+const cola: { id: string; actorId: string; tenant: TenantCtx }[] = []
 let activas = 0
 function drenar() {
   while (activas < MAX_SIMULTANEAS && cola.length) {
     const t = cola.shift()!
     activas++
-    void generarAcciones(t.id, t.actorId).finally(() => {
+    void withTenant(t.tenant, () => generarAcciones(t.id, t.actorId)).finally(() => {
       activas--
       drenar()
     })
   }
 }
 export function programarAcciones(items: { id: string; actorId: string }[]) {
-  cola.push(...items)
+  const tenant = tenantCtx()
+  cola.push(...items.map((i) => ({ ...i, tenant })))
   drenar()
 }
 registrarProgramador(programarAcciones)
@@ -441,12 +445,12 @@ registrarProgramador(programarAcciones)
 export const feedSugerirAcciones = op(z.strictObject({ id }), async (actor, b) => {
   if (!llmConfig()) throw new HttpError(503, 'No hay un proveedor de IA configurado (DEEPSEEK_API_KEY): no se pueden sugerir acciones')
   await tx(async (c) => {
-    const cur = (await c.query(`SELECT kind, actions_status, actions_at FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id])).rows[0]
+    const cur = (await c.query(`SELECT kind, actions_status, actions_at FROM feed_items f WHERE id = $1 AND tenant_id = $3 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id, tid()])).rows[0]
     if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
     if (!esAccionable(cur.kind)) throw new HttpError(400, 'Solo las oportunidades y las ideas llevan acciones sugeridas')
     // Una petición ya en curso (de menos de 3 minutos) no se duplica: dos toques no gastan dos llamadas.
     if (cur.actions_status === 'pendiente' && cur.actions_at && Date.now() - (cur.actions_at as Date).getTime() < 3 * 60_000) return
-    await c.query(`UPDATE feed_items SET actions_status = 'pendiente', actions_at = now(), actions_error = NULL WHERE id = $1`, [b.id])
+    await c.query(`UPDATE feed_items SET actions_status = 'pendiente', actions_at = now(), actions_error = NULL WHERE id = $1 AND tenant_id = $2`, [b.id, tid()])
     programarAcciones([{ id: b.id, actorId: actor.id }])
   })
   return item(pool, b.id, actor.id)
@@ -466,23 +470,26 @@ export const feedEjecutarAccion = op(
   async (actor, b) => {
     // 1) Se reclama la acción antes de hacer nada: dos socios pulsando a la vez no la ejecutan dos veces.
     const reclamada = await tx(async (c) => {
-      const cur = (await c.query(`SELECT actions FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id])).rows[0]
+      const cur = (await c.query(`SELECT actions FROM feed_items f WHERE id = $1 AND tenant_id = $3 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id, tid()])).rows[0]
       if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
       const lista = cur.actions as AccionOut[]
       const a = lista.find((q) => q.id === b.accion)
       if (!a) throw new HttpError(404, 'Acción no encontrada en este ítem')
       if (a.hecha) throw new HttpError(409, `Esta acción ya la ejecutó ${a.hecha.por}`)
+      // Ejecutar crea datos de otro módulo: el socio debe tenerlo (las conversiones lo comprueban en feedConvertir).
+      if (a.tipo === 'agendar_cobro') requireModule('cobros')
+      if (a.tipo === 'crear_propuesta') requireModule('crm')
       a.hecha = { por: actor.name, el: new Date().toISOString(), ref_id: null }
-      await c.query('UPDATE feed_items SET actions = $2::jsonb WHERE id = $1', [b.id, JSON.stringify(lista)])
+      await c.query('UPDATE feed_items SET actions = $2::jsonb WHERE id = $1 AND tenant_id = $3', [b.id, JSON.stringify(lista), tid()])
       return a
     })
     /** Si falló por otra cosa, la acción vuelve a estar disponible; si «ya no aplica», se quita (un botón que siempre falla no sirve). */
     const soltar = (quitar: boolean) =>
       tx(async (c) => {
-        const cur = (await c.query('SELECT actions FROM feed_items WHERE id = $1 FOR UPDATE', [b.id])).rows[0]
+        const cur = (await c.query('SELECT actions FROM feed_items WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [b.id, tid()])).rows[0]
         if (!cur) return
         const lista = (cur.actions as AccionOut[]).flatMap((q) => (q.id !== b.accion || !q.hecha || q.hecha.ref_id ? [q] : quitar ? [] : [{ ...q, hecha: null }]))
-        await c.query('UPDATE feed_items SET actions = $2::jsonb WHERE id = $1', [b.id, JSON.stringify(lista)])
+        await c.query('UPDATE feed_items SET actions = $2::jsonb WHERE id = $1 AND tenant_id = $3', [b.id, JSON.stringify(lista), tid()])
       }).catch(() => {})
     try {
       const tipo = reclamada.tipo as TipoAccion
@@ -507,14 +514,14 @@ export const feedEjecutarAccion = op(
         resultado = { ref_id: r.id, creado: { tipo: 'propuesta', id: r.id, detalle: r } }
       } else if (tipo === 'agendar_cobro') {
         await exec(pagoRegistrar, actor, { cliente_id: x.cliente!.id, fecha: p.fecha, monto: p.monto, concepto: p.concepto, estado: 'pendiente', ...(p.repetir_meses ? { repetir_meses: p.repetir_meses } : {}) })
-        const ult = (await pool.query(`SELECT id FROM payments WHERE client_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`, [x.cliente!.id])).rows[0]
+        const ult = (await pool.query(`SELECT id FROM payments WHERE client_id = $1 AND tenant_id = $2 ORDER BY created_at DESC, id DESC LIMIT 1`, [x.cliente!.id, tid()])).rows[0]
         resultado = { ref_id: (ult?.id as string) ?? null, creado: { tipo: 'cobro', id: (ult?.id as string) ?? '', detalle: { cliente_id: x.cliente!.id } } }
       }
       await tx(async (c) => {
-        const cur = (await c.query('SELECT actions FROM feed_items WHERE id = $1 FOR UPDATE', [b.id])).rows[0]
+        const cur = (await c.query('SELECT actions FROM feed_items WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [b.id, tid()])).rows[0]
         if (!cur) return
         const lista = (cur.actions as AccionOut[]).map((q) => (q.id === b.accion ? { ...q, hecha: { por: actor.name, el: new Date().toISOString(), ref_id: resultado.ref_id ?? 'hecho' } } : q))
-        await c.query('UPDATE feed_items SET actions = $2::jsonb WHERE id = $1', [b.id, JSON.stringify(lista)])
+        await c.query('UPDATE feed_items SET actions = $2::jsonb WHERE id = $1 AND tenant_id = $3', [b.id, JSON.stringify(lista), tid()])
       })
       return { item: await item(pool, b.id, actor.id), ejecutada: { id: b.accion, tipo }, creado: resultado.creado }
     } catch (e) {

@@ -16,7 +16,9 @@
 // Usa la misma base de datos y el mismo proveedor que el servidor: DATABASE_URL y GEOCODER = nominatim (por defecto) | mapbox | off
 // (con mapbox, MAPBOX_PUBLIC_TOKEN; GEOCODER_URL / GEOCODER_MIN_MS / GEOCODER_USER_AGENT son opcionales). Funciona igual con cualquiera.
 // En producción: `railway run npm run feed:geocodificar` o POST /api/v1/feed/geocodificar (hace lo mismo en segundo plano).
+// Multitenant: trabaja sobre UN tenant, `--tenant <slug>` (por defecto hayai).
 import { pool } from './db.ts'
+import { enterTenant, tenantBySlug } from './tenant.ts'
 import { rellenarUbicaciones, rellenarZonas } from './feedGeo.ts'
 import { crearGeocoder, estadoGeocoder, respaldoNominatim, type Geocoder } from './geocode.ts'
 import { medir } from './feedGeoMedir.ts'
@@ -27,6 +29,12 @@ const val = (n: string) => {
   const i = args.indexOf(`--${n}`)
   return i >= 0 ? args[i + 1] : undefined
 }
+const tenant = await tenantBySlug(val('tenant') ?? 'hayai')
+if (!tenant) {
+  console.error(`No hay un tenant activo con slug "${val('tenant') ?? 'hayai'}" (--tenant <slug>)`)
+  process.exit(2)
+}
+enterTenant(tenant)
 const limite = val('limite') ? Number(val('limite')) : undefined
 if (limite !== undefined && (!Number.isInteger(limite) || limite < 1)) {
   console.error('--limite debe ser un entero positivo')
@@ -64,6 +72,7 @@ if (flag('medir')) {
   }
   console.log('\nMedición: no se guardó nada en el feed.')
   await pool.end()
+  await new Promise((r) => setTimeout(r, 50)) // Windows: salir con sockets aún cerrándose aborta node (UV_HANDLE_CLOSING)
   process.exit(0)
 }
 
@@ -91,6 +100,7 @@ if (flag('mejorar-zona')) {
   console.log(`Mejorados a calle o local: ${z.mejorados} · siguen en zona: ${z.sin_mejora} · errores de red: ${z.errores} · por probar: ${z.pendientes}`)
   if (z.zonas_mapbox === 0) console.log('No hay pines de zona buscados con Mapbox: nada que mejorar (los que busca Nominatim ya son su mejor resultado).')
   await pool.end()
+  await new Promise((r) => setTimeout(r, 50)) // Windows: salir con sockets aún cerrándose aborta node (UV_HANDLE_CLOSING)
   process.exit(0)
 }
 

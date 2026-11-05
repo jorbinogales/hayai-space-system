@@ -60,6 +60,8 @@ export interface World {
   items: Item[]
   /** planeta resaltado (hover) en el Home */
   hot: HotKey | null
+  /** planetas que el socio no tiene en el espacio activo: no se dibujan ni se pueden tocar (el núcleo sigue visible, solo deja de abrir el Hub) */
+  locked: Set<HotKey>
   /** pantalla destino (null = Home) */
   key: WarpDest | null
   /** 1 = viajando hacia la pantalla, 0 = hacia el Home */
@@ -100,6 +102,7 @@ export function createWorld(initial: WarpDest | null): World {
     ctx: null,
     items: [],
     hot: null,
+    locked: new Set(),
     key: initial,
     target: initial ? 1 : 0,
     wp: initial ? 1 : 0,
@@ -236,7 +239,7 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
   world.pick = (cx, cy) => {
     const rect = ctx.renderer.domElement.getBoundingClientRect()
     ray.setFromCamera(new THREE.Vector2(((cx - rect.left) / rect.width) * 2 - 1, -((cy - rect.top) / rect.height) * 2 + 1), camera)
-    const hit = ray.intersectObjects(bodies, false)[0]
+    const hit = ray.intersectObjects(bodies.filter((_, i) => !world.locked.has(i < items.length ? items[i].p.key : 'hub')), false)[0]
     if (!hit) return null
     const i = bodies.indexOf(hit.object)
     return i < items.length ? items[i].p.key : 'hub'
@@ -299,7 +302,7 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
         const ringOp = isKey ? 0.55 * (1 - clamp01(wp * 2)) : (0.55 + it.hot * 0.4) * fo
         ;(it.ringA.material as THREE.LineBasicMaterial).opacity = ringOp
         it.dot.scale.setScalar(isKey ? Math.max(0.001, 1 - clamp01(wp * 2)) : 1)
-        it.anchor.visible = isKey || fo > 0.01
+        it.anchor.visible = (isKey || fo > 0.01) && !world.locked.has(p.key)
 
         if (it.rim) {
           const o = isKey ? e : 0

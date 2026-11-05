@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { assertFresh, stamp } from '../concurrency.ts'
 import { pool, tx } from '../db.ts'
 import { HttpError, id, isoDate, money, text } from '../util.ts'
+import { tid } from '../tenant.ts'
 import { CATEGORIES, filters, op, pageShape, paged, r2, todayISO } from './common.ts'
 
 const SELECT = `SELECT e.id, e.updated_at, e.date, e.concept, e.amount, e.category, e.scope, e.client_id, e.project_id,
@@ -31,7 +32,7 @@ const categoria = z.enum(CATEGORIES, `Categoría inválida (${CATEGORIES.join(',
 const ambito = z.enum(['general', 'cliente', 'proyecto'], 'Ámbito inválido (general, cliente o proyecto)')
 
 async function gasto(expenseId: string) {
-  const r = (await pool.query(`${SELECT} WHERE e.id = $1`, [expenseId])).rows[0]
+  const r = (await pool.query(`${SELECT} WHERE e.id = $1 AND e.tenant_id = $2`, [expenseId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Gasto no encontrado')
   return out(r)
 }
@@ -44,7 +45,7 @@ async function checkRef(scope: string, refId: string | null) {
   }
   if (!refId) throw new HttpError(400, `referencia_id: indica el ${scope} del gasto`)
   const table = scope === 'cliente' ? 'clients' : 'projects'
-  if (!(await pool.query(`SELECT 1 FROM ${table} WHERE id = $1`, [refId])).rowCount)
+  if (!(await pool.query(`SELECT 1 FROM ${table} WHERE id = $1 AND tenant_id = $2`, [refId, tid()])).rowCount)
     throw new HttpError(404, scope === 'cliente' ? 'Cliente no encontrado' : 'Proyecto no encontrado')
 }
 
@@ -58,7 +59,7 @@ export const gastosListar = op(
     ...pageShape,
   }),
   async (_a, i) => {
-    const f = filters()
+    const f = filters('e.tenant_id')
     if (i.desde) f.add('e.date >= ?', i.desde)
     if (i.hasta) f.add('e.date <= ?', i.hasta)
     if (i.categoria) f.add('e.category = ?', i.categoria)
@@ -88,8 +89,8 @@ export const gastoRegistrar = op(
   async (actor, b) => {
     await checkRef(b.ambito, b.referencia_id ?? null)
     const { rows } = await pool.query(
-      `INSERT INTO expenses (date, concept, amount, category, scope, client_id, project_id, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      `INSERT INTO expenses (date, concept, amount, category, scope, client_id, project_id, created_by, tenant_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
       [
         b.fecha ?? todayISO(),
         b.concepto,
@@ -99,6 +100,7 @@ export const gastoRegistrar = op(
         b.ambito === 'cliente' ? b.referencia_id : null,
         b.ambito === 'proyecto' ? b.referencia_id : null,
         actor.id,
+        tid(),
       ],
     )
     return gasto(rows[0].id)
@@ -118,7 +120,7 @@ export const gastoActualizar = op(
     })
     .refine((v) => Object.entries(v).some(([k, x]) => k !== 'id' && x !== undefined), 'Envía al menos un campo a modificar'),
   async (_a, b) => {
-    const cur = (await pool.query('SELECT scope, client_id, project_id FROM expenses WHERE id = $1', [b.id])).rows[0]
+    const cur = (await pool.query('SELECT scope, client_id, project_id FROM expenses WHERE id = $1 AND tenant_id = $2', [b.id, tid()])).rows[0]
     if (!cur) throw new HttpError(404, 'Gasto no encontrado')
 
     // Ámbito y referencia finales: si cambia el ámbito sin dar referencia, la anterior ya no sirve.
@@ -132,8 +134,8 @@ export const gastoActualizar = op(
       await c.query(
         `UPDATE expenses SET date = COALESCE($2, date), concept = COALESCE($3, concept), amount = COALESCE($4, amount),
            category = COALESCE($5, category), scope = $6, client_id = $7, project_id = $8
-         WHERE id = $1`,
-        [b.id, b.fecha ?? null, b.concepto ?? null, b.monto ?? null, b.categoria ?? null, scope, scope === 'cliente' ? ref : null, scope === 'proyecto' ? ref : null],
+         WHERE id = $1 AND tenant_id = $9`,
+        [b.id, b.fecha ?? null, b.concepto ?? null, b.monto ?? null, b.categoria ?? null, scope, scope === 'cliente' ? ref : null, scope === 'proyecto' ? ref : null, tid()],
       )
     })
     return gasto(b.id)

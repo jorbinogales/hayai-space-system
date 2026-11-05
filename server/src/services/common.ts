@@ -2,10 +2,11 @@
 // su esquema de entrada (zod) y la funcion que la ejecuta. La API REST /api/v1 y las herramientas MCP la usan tal cual,
 // asi que validan y se comportan igual por los dos lados.
 import { z } from 'zod'
+import { tid } from '../tenant.ts'
 import { parse } from '../util.ts'
 
 /** Socio al que se atribuye lo que se escriba (el dueño de la llave de API). */
-export type Actor = { id: string; name: string; via?: string }
+export type Actor = { id: string; name: string; via?: string; role?: string }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyObject = z.ZodObject<any, any>
@@ -63,10 +64,13 @@ export const paged = <T>(data: T[], total: number, page: number, per_page: numbe
   meta: { page, per_page, total, ...extra },
 })
 
-/** Arma un WHERE con parametros posicionales ($1, $2...) sin concatenar valores en el SQL. */
-export function filters() {
-  const sql: string[] = []
-  const params: unknown[] = []
+/**
+ * Arma un WHERE con parametros posicionales ($1, $2...) sin concatenar valores en el SQL. Arranca SIEMPRE filtrando por el tenant en
+ * curso en la columna `tenantCol` (p. ej. 'p.tenant_id'): un listado no puede olvidarse del tenant.
+ */
+export function filters(tenantCol: string) {
+  const sql: string[] = [`${tenantCol} = $1`]
+  const params: unknown[] = [tid()]
   return {
     /** cond lleva un unico "?" donde va el valor, p. ej. add('p.date >= ?', desde) */
     add(cond: string, value: unknown) {
@@ -77,7 +81,7 @@ export function filters() {
     raw(cond: string) {
       sql.push(cond)
     },
-    where: () => (sql.length ? `WHERE ${sql.join(' AND ')}` : ''),
+    where: () => `WHERE ${sql.join(' AND ')}`,
     params: () => [...params],
     page(per: number, page: number) {
       return {

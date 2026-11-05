@@ -4,6 +4,7 @@ import { assertFresh, stamp } from '../concurrency.ts'
 import { pool, tx } from '../db.ts'
 import { userByName } from '../socios.ts'
 import { HttpError, id, isoDate, text } from '../util.ts'
+import { tid } from '../tenant.ts'
 import { type Actor, archivadosParam, boolFlag, filters, op, pageShape, paged } from './common.ts'
 
 // clients va con LEFT JOIN: un proyecto interno no tiene cliente.
@@ -37,13 +38,13 @@ const yes = (v: boolean | 'true' | 'false') => v === true || v === 'true'
 
 /** El hito debe existir y ser del MISMO proyecto que la tarea. */
 async function milestoneOf(c: { query: typeof pool.query }, milestoneId: string, projectId: string) {
-  const m = (await c.query('SELECT project_id FROM project_milestones WHERE id = $1', [milestoneId])).rows[0]
+  const m = (await c.query('SELECT project_id FROM project_milestones WHERE id = $1 AND tenant_id = $2', [milestoneId, tid()])).rows[0]
   if (!m) throw new HttpError(404, 'Hito no encontrado')
   if (m.project_id !== projectId) throw new HttpError(400, 'El hito es de otro proyecto')
 }
 
 async function tarea(taskId: string) {
-  const r = (await pool.query(`${SELECT} WHERE t.id = $1`, [taskId])).rows[0]
+  const r = (await pool.query(`${SELECT} WHERE t.id = $1 AND t.tenant_id = $2`, [taskId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Tarea no encontrada')
   return out(r)
 }
@@ -70,7 +71,7 @@ export const tareasListar = op(
       if (i.interno !== undefined) g.raw(yes(i.interno) ? 'p.client_id IS NULL' : 'p.client_id IS NOT NULL')
       if (i.responsable) g.add('lower(COALESCE(au.name, po.name)) = lower(?)', i.responsable)
     }
-    const base = filters()
+    const base = filters('t.tenant_id')
     scope(base)
     hide(base)
     // Los contadores respetan el proyecto pedido pero no el estado, para ver "n pendientes / m completadas".
@@ -79,7 +80,7 @@ export const tareasListar = op(
        ${FROM_FILTER} ${base.where()}`,
       base.params(),
     )
-    const f = filters()
+    const f = filters('t.tenant_id')
     scope(f)
     if (i.estado) f.add('t.done = ?', i.estado === 'completada')
     hide(f)
@@ -97,18 +98,19 @@ export const tareaVer = op(z.strictObject({ id }), (_a, i) => tarea(i.id))
 export const tareaCrear = op(
   z.strictObject({ titulo: text(160), proyecto_id: id, hito_id: id.nullish(), vence: isoDate.nullish(), responsable: text(40).nullish() }),
   async (actor, b) => {
-    const project = (await pool.query('SELECT name, client_id FROM projects WHERE id = $1', [b.proyecto_id])).rows[0]
+    const project = (await pool.query('SELECT name, client_id FROM projects WHERE id = $1 AND tenant_id = $2', [b.proyecto_id, tid()])).rows[0]
     if (!project) throw new HttpError(404, 'Proyecto no encontrado')
     const taskId = await tx(async (c) => {
       if (b.hito_id) await milestoneOf(c, b.hito_id, b.proyecto_id)
       const assignee = b.responsable ? (await userByName(c, b.responsable)).id : null
-      const { rows } = await c.query('INSERT INTO tasks (project_id, milestone_id, title, due_date, created_by, assignee_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id', [
+      const { rows } = await c.query('INSERT INTO tasks (project_id, milestone_id, title, due_date, created_by, assignee_id, tenant_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id', [
         b.proyecto_id,
         b.hito_id ?? null,
         b.titulo,
         b.vence ?? null,
         actor.id,
         assignee,
+        tid(),
       ])
       // El aviso nombra al dueño de la llave (actor.name), venga de donde venga la peticion.
       await recordActivity(c, { kind: 'tarea_nueva', actorId: actor.id, subject: b.titulo, detail: project.name, clientId: project.client_id, projectId: b.proyecto_id, taskId: rows[0].id, via: actor.via })
@@ -126,8 +128,8 @@ export async function actualizarTarea(actor: Actor, b: { id: string; titulo?: st
     const cur = (
       await c.query(
         `SELECT t.done, t.title, t.assignee_id, COALESCE(au.name, po.name) AS resp_name, p.id AS project_id, p.name AS project, p.client_id
-         FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN users au ON au.id = t.assignee_id JOIN users po ON po.id = p.owner_id WHERE t.id = $1 FOR UPDATE OF t`,
-        [b.id],
+         FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN users au ON au.id = t.assignee_id JOIN users po ON po.id = p.owner_id WHERE t.id = $1 AND t.tenant_id = $2 FOR UPDATE OF t`,
+        [b.id, tid()],
       )
     ).rows[0]
     if (!cur) throw new HttpError(404, 'Tarea no encontrada')
@@ -141,8 +143,8 @@ export async function actualizarTarea(actor: Actor, b: { id: string; titulo?: st
          done = COALESCE($2::boolean, done),
          done_at = CASE WHEN $2::boolean IS NULL THEN done_at WHEN $2::boolean THEN COALESCE(done_at, now()) ELSE NULL END,
          due_date = CASE WHEN $3::boolean THEN $4::date ELSE due_date END
-       WHERE id = $1`,
-      [b.id, b.estado === undefined ? null : b.estado === 'completada', b.vence !== undefined, b.vence ?? null, b.titulo ?? null, b.hito_id !== undefined, b.hito_id ?? null, b.responsable !== undefined, assignee],
+       WHERE id = $1 AND tenant_id = $10`,
+      [b.id, b.estado === undefined ? null : b.estado === 'completada', b.vence !== undefined, b.vence ?? null, b.titulo ?? null, b.hito_id !== undefined, b.hito_id ?? null, b.responsable !== undefined, assignee, tid()],
     )
     if (b.estado === 'completada' && !cur.done)
       await recordActivity(c, { kind: 'tarea_completada', actorId: actor.id, subject: b.titulo ?? cur.title, detail: cur.project, clientId: cur.client_id, projectId: cur.project_id, taskId: b.id, via: actor.via })
@@ -153,8 +155,8 @@ export async function actualizarTarea(actor: Actor, b: { id: string; titulo?: st
     if (b.responsable !== undefined) {
       const nuevo = (
         await c.query(
-          `SELECT COALESCE(au.name, po.name) AS resp_name FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN users au ON au.id = t.assignee_id JOIN users po ON po.id = p.owner_id WHERE t.id = $1`,
-          [b.id],
+          `SELECT COALESCE(au.name, po.name) AS resp_name FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN users au ON au.id = t.assignee_id JOIN users po ON po.id = p.owner_id WHERE t.id = $1 AND t.tenant_id = $2`,
+          [b.id, tid()],
         )
       ).rows[0]?.resp_name as string | undefined
       if (nuevo && nuevo !== cur.resp_name)

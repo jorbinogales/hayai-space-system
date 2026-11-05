@@ -3,6 +3,7 @@
 // popups. Todo en memoria, como el resto de listas: se vacia al cerrar sesion.
 import { useSyncExternalStore } from 'react'
 import { api } from './api'
+import { activeTenantId } from './tenant'
 import { loadClients } from './store'
 import { loadProjects } from './projectData'
 import { loadTasks } from './taskData'
@@ -180,7 +181,10 @@ function receive(e: Activity) {
 function connect() {
   window.clearTimeout(retryTimer)
   es?.close()
-  es = new EventSource(lastId ? `/api/events?desde_id=${lastId}` : '/api/events')
+  // EventSource no manda cabeceras: el espacio de trabajo va en la query (el servidor lo valida igual que X-Tenant-Id)
+  const q = new URLSearchParams({ tenant: activeTenantId() ?? '' })
+  if (lastId) q.set('desde_id', String(lastId))
+  es = new EventSource(`/api/events?${q}`)
   es.addEventListener('actividad', (m) => {
     set({ online: true })
     receive(JSON.parse((m as MessageEvent<string>).data) as Activity)

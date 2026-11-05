@@ -1,9 +1,11 @@
 // Gestion de llaves de API desde la terminal.
-//   npm run apikey -- create --user Leandro --name growi [--scopes read,write,delete]   (por defecto: read,write)
+//   npm run apikey -- create --user Leandro --name growi [--scopes read,write,delete] [--tenant hayai]   (por defecto: read,write; tenant hayai)
+//   La llave es de UN tenant: el dueño debe ser ADMIN o miembro de ese tenant (y en cada llamada se vuelve a comprobar).
 //   npm run apikey -- list
 //   npm run apikey -- revoke <prefijo|id>
 // En el VPS:  docker compose -f docker-compose.prod.yml exec app node_modules/.bin/tsx server/src/apikey-cli.ts create --user Leandro --name growi
-import { pool } from './db.ts'
+import { ALL_TENANTS, pool } from './db.ts'
+import { resolveAccess } from './tenant.ts'
 import { generateApiKey, SCOPES, type Scope } from './v1/apiKey.ts'
 
 const [cmd, ...rest] = process.argv.slice(2)
@@ -31,18 +33,24 @@ try {
       console.error(`Permisos inválidos. Usa una lista de: ${SCOPES.join(', ')}`)
       process.exitCode = 1
     } else {
-      const u = (await pool.query('SELECT id, name FROM users WHERE lower(name) = lower($1) AND active', [user])).rows[0]
+      const slug = flag('tenant')?.trim() ?? 'hayai'
+      const u = (await pool.query('SELECT id, name, role FROM users WHERE lower(name) = lower($1) AND active', [user])).rows[0]
+      const t = (await pool.query('SELECT id FROM tenants WHERE slug = $1 AND active', [slug])).rows[0]
       if (!u) {
         console.error(`No existe un socio activo llamado "${user}".`)
         process.exitCode = 1
+      } else if (!t || !(await resolveAccess(u, t.id))) {
+        console.error(`"${u.name}" no tiene acceso al tenant "${slug}" (o no existe / está desactivado).`)
+        process.exitCode = 1
       } else {
         const k = generateApiKey()
-        await pool.query('INSERT INTO api_keys (user_id, name, prefix, key_hash, scopes) VALUES ($1, $2, $3, $4, $5)', [
+        await pool.query('INSERT INTO api_keys (tenant_id, user_id, name, prefix, key_hash, scopes) VALUES ($6, $1, $2, $3, $4, $5)', [
           u.id,
           name,
           k.prefix,
           k.hash,
           scopes,
+          t.id,
         ])
         console.log(`Llave creada para ${u.name} (${name}) con permisos: ${scopes.join(', ')}. Lo que haga con ella queda atribuido a ${u.name}.\n`)
         console.log(`  ${k.key}\n`)
@@ -51,8 +59,8 @@ try {
     }
   } else if (cmd === 'list') {
     const { rows } = await pool.query(
-      `SELECT k.id, k.name, k.prefix, k.scopes, u.name AS socio, k.created_at, k.last_used_at, k.revoked_at
-       FROM api_keys k JOIN users u ON u.id = k.user_id ORDER BY k.created_at`,
+      `SELECT k.id, k.tenant_id, k.name, k.prefix, k.scopes, u.name AS socio, k.created_at, k.last_used_at, k.revoked_at
+       FROM api_keys k JOIN users u ON u.id = k.user_id ORDER BY k.created_at ${ALL_TENANTS}`,
     )
     if (!rows.length) console.log('Sin llaves.')
     for (const r of rows)
@@ -66,7 +74,7 @@ try {
     } else {
       const { rows } = await pool.query(
         `UPDATE api_keys SET revoked_at = now()
-         WHERE revoked_at IS NULL AND (prefix = $1 OR id::text = $1) RETURNING prefix, name`,
+         WHERE revoked_at IS NULL AND (prefix = $1 OR id::text = $1) ${ALL_TENANTS} RETURNING prefix, name`,
         [ref],
       )
       if (!rows.length) {

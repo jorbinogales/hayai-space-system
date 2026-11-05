@@ -5,12 +5,16 @@
 //  - Si Graph falla, el lead queda 'error' y se reintenta con espera creciente (hasta MAX_ATTEMPTS); nada se pierde.
 //  - Duplicados (mismo telefono o email que un cliente existente) NO crean otro cliente: se anota en su bitacora.
 //  - No crea proyecto ni tarea: solo el cliente potencial (origen meta_ads, etiqueta "Meta Ads"), su bitacora y el aviso.
+//  - Multitenant: la pagina de Meta conectada es de HAYAI: los leads caen en el tenant META_LEADS_TENANT (slug, por defecto hayai).
+//    Cada lead guarda su tenant_id y se procesa (y reintenta) dentro de ese tenant.
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import express, { Router } from 'express'
 import { z } from 'zod'
 import { recordActivity } from './activity.ts'
 import { applyClientPatch, type ClientPatch, entryStage, fichaShape, loadStages } from './crm.ts'
-import { pool, tx } from './db.ts'
+import { ALL_TENANTS, pool, tx } from './db.ts'
+import { tenantMembers } from './socios.ts'
+import { tenantById, tenantBySlug, tid, withTenant } from './tenant.ts'
 import { HttpError } from './util.ts'
 
 const MAX_ATTEMPTS = 6
@@ -50,14 +54,14 @@ export function leadsOf(body: unknown): LeadRef[] {
   return out
 }
 
-/** Guarda los leads nuevos (los repetidos se ignoran) y devuelve los ids que hay que procesar. */
+/** Guarda los leads nuevos en el tenant en curso (los repetidos se ignoran) y devuelve los ids que hay que procesar. */
 export async function storeLeads(leads: LeadRef[]): Promise<string[]> {
   if (!leads.length) return []
   const { rows } = await pool.query(
-    `INSERT INTO meta_leads (leadgen_id, page_id, form_id, ad_id)
-     SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[])
+    `INSERT INTO meta_leads (tenant_id, leadgen_id, page_id, form_id, ad_id)
+     SELECT $5, * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[])
      ON CONFLICT (leadgen_id) DO NOTHING RETURNING leadgen_id`,
-    [leads.map((l) => l.leadgen_id), leads.map((l) => l.page_id), leads.map((l) => l.form_id), leads.map((l) => l.ad_id)],
+    [leads.map((l) => l.leadgen_id), leads.map((l) => l.page_id), leads.map((l) => l.form_id), leads.map((l) => l.ad_id), tid()],
   )
   return rows.map((r) => r.leadgen_id as string)
 }
@@ -66,14 +70,15 @@ export async function storeLeads(leads: LeadRef[]): Promise<string[]> {
 /** Elis, Jorbi y Leandro por defecto; META_LEADS_OWNER (nombres separados por coma) permite sumar o cambiar. */
 async function pickOwner(): Promise<{ id: string; name: string }> {
   const names = (process.env.META_LEADS_OWNER ?? 'Elis,Jorbi,Leandro').split(',').map((n) => n.trim()).filter(Boolean)
-  const { rows } = await pool.query('SELECT id, name FROM users WHERE active ORDER BY name')
+  const rows = await tenantMembers(pool) // solo socios del tenant del lead
   const pool_ = names.map((n) => rows.find((u) => u.name.toLowerCase() === n.toLowerCase())).filter(Boolean) as { id: string; name: string }[]
   const candidates = pool_.length ? pool_ : (rows as { id: string; name: string }[])
   if (!candidates.length) throw new HttpError(500, 'No hay socios activos para asignar el lead')
   // Reparto equitativo: el que menos leads de Meta lleva (empate: el primero de la lista).
   const counts = (
-    await pool.query(`SELECT created_by, count(*)::int AS n FROM clients WHERE lead_source = 'meta_ads' AND created_by = ANY($1::uuid[]) GROUP BY created_by`, [
+    await pool.query(`SELECT created_by, count(*)::int AS n FROM clients WHERE tenant_id = $2 AND lead_source = 'meta_ads' AND created_by = ANY($1::uuid[]) GROUP BY created_by`, [
       candidates.map((c) => c.id),
+      tid(),
     ])
   ).rows
   const n = (id: string) => counts.find((c) => c.created_by === id)?.n ?? 0
@@ -134,10 +139,16 @@ export function mapLead(g: Graph) {
 }
 
 // ---------- procesar un lead ----------
-/** Crea el cliente potencial (o anota el duplicado) y avisa. Idempotente: un lead ya procesado no se vuelve a procesar. */
+/** Crea el cliente potencial (o anota el duplicado) y avisa, dentro del tenant del lead. Idempotente: un lead ya procesado no se vuelve a procesar. */
 export async function processLead(leadgenId: string): Promise<'procesado' | 'duplicado' | 'omitido'> {
-  const row = (await pool.query(`SELECT status FROM meta_leads WHERE leadgen_id = $1`, [leadgenId])).rows[0]
+  const row = (await pool.query(`SELECT status, tenant_id FROM meta_leads WHERE leadgen_id = $1`, [leadgenId])).rows[0]
   if (!row || row.status === 'procesado' || row.status === 'duplicado') return 'omitido'
+  const t = await tenantById(row.tenant_id)
+  if (!t) return 'omitido'
+  return withTenant(t, () => processLeadIn(leadgenId))
+}
+
+async function processLeadIn(leadgenId: string): Promise<'procesado' | 'duplicado' | 'omitido'> {
   try {
     const g = await fetchLead(leadgenId)
     const { name, ficha } = mapLead(g)
@@ -149,46 +160,48 @@ export async function processLead(leadgenId: string): Promise<'procesado' | 'dup
 
     const result = await tx(async (c) => {
       // Bloquea la fila del lead: dos procesos a la vez no lo crean dos veces.
-      const cur = (await c.query('SELECT status FROM meta_leads WHERE leadgen_id = $1 FOR UPDATE', [leadgenId])).rows[0]
+      const cur = (await c.query('SELECT status FROM meta_leads WHERE leadgen_id = $1 AND tenant_id = $2 FOR UPDATE', [leadgenId, tid()])).rows[0]
       if (!cur || cur.status === 'procesado' || cur.status === 'duplicado') return null
       const dup = (
         await c.query(
           `SELECT id, name FROM clients
-           WHERE ($1::text <> '' AND length(regexp_replace(coalesce(phone, ''), '\\D', '', 'g')) >= 7 AND right(regexp_replace(coalesce(phone, ''), '\\D', '', 'g'), 10) = right($1, 10))
-              OR ($2::text IS NOT NULL AND lower(email) = $2)
+           WHERE tenant_id = $3 AND (($1::text <> '' AND length(regexp_replace(coalesce(phone, ''), '\\D', '', 'g')) >= 7 AND right(regexp_replace(coalesce(phone, ''), '\\D', '', 'g'), 10) = right($1, 10))
+              OR ($2::text IS NOT NULL AND lower(email) = $2))
            ORDER BY created_at LIMIT 1`,
-          [phone, email ?? null],
+          [phone, email ?? null, tid()],
         )
       ).rows[0]
       const setLead = (status: string, clientId: string) =>
         c.query(
           `UPDATE meta_leads SET status = $2, client_id = $3, error = NULL, processed_at = now(), attempts = attempts + 1, raw = $4::jsonb,
              campaign_id = $5, campaign_name = $6, adset_id = $7, adset_name = $8, ad_id = COALESCE($9, ad_id), ad_name = $10, form_id = COALESCE($11, form_id)
-           WHERE leadgen_id = $1`,
-          [leadgenId, status, clientId, JSON.stringify(g), g.campaign_id ?? null, g.campaign_name ?? null, g.adset_id ?? null, g.adset_name ?? null, g.ad_id ?? null, g.ad_name ?? null, g.form_id ?? null],
+           WHERE leadgen_id = $1 AND tenant_id = $12`,
+          [leadgenId, status, clientId, JSON.stringify(g), g.campaign_id ?? null, g.campaign_name ?? null, g.adset_id ?? null, g.adset_name ?? null, g.ad_id ?? null, g.ad_name ?? null, g.form_id ?? null, tid()],
         )
 
       if (dup) {
-        await c.query(`INSERT INTO interactions (client_id, kind, summary, created_by) VALUES ($1, 'nota', $2, $3)`, [
+        await c.query(`INSERT INTO interactions (tenant_id, client_id, kind, summary, created_by) VALUES ($4, $1, 'nota', $2, $3)`, [
           dup.id,
           `Volvió a llegar por Meta Ads${g.campaign_name ? ` (campaña ${g.campaign_name})` : ''}: mismo teléfono o email. No se creó otro cliente.`,
           owner.id,
+          tid(),
         ])
         await setLead('duplicado', dup.id)
         return 'duplicado' as const
       }
 
       const { rows } = await c.query(
-        `INSERT INTO clients (name, avatar, created_by, is_prospect, pipeline_stage, probability, stage_changed_at)
-         VALUES ($1, $2, $3, true, $4, $5, now()) RETURNING id`,
-        [name, AVATARS[Math.floor(Math.random() * AVATARS.length)], owner.id, entry.key, entry.probability],
+        `INSERT INTO clients (tenant_id, name, avatar, created_by, is_prospect, pipeline_stage, probability, stage_changed_at)
+         VALUES ($6, $1, $2, $3, true, $4, $5, now()) RETURNING id`,
+        [name, AVATARS[Math.floor(Math.random() * AVATARS.length)], owner.id, entry.key, entry.probability, tid()],
       )
       const clientId = rows[0].id as string
       await applyClientPatch(c, owner.id, clientId, ficha as ClientPatch, 'meta')
-      await c.query(`INSERT INTO interactions (client_id, kind, summary, created_by) VALUES ($1, 'nota', $2, $3)`, [
+      await c.query(`INSERT INTO interactions (tenant_id, client_id, kind, summary, created_by) VALUES ($4, $1, 'nota', $2, $3)`, [
         clientId,
         `Lead de Meta Ads asignado a ${owner.name}${g.campaign_name ? `. Campaña: ${g.campaign_name}` : ''}`,
         owner.id,
+        tid(),
       ])
       await setLead('procesado', clientId)
       await recordActivity(c, { kind: 'lead_meta', actorId: owner.id, subject: name, detail: `Responsable: ${owner.name}`, clientId, via: 'meta' })
@@ -199,8 +212,8 @@ export async function processLead(leadgenId: string): Promise<'procesado' | 'dup
     const msg = (e as Error).message.slice(0, 300)
     // Espera creciente (2, 8, 18... minutos); pasado el maximo queda en 'error' sin mas intentos para revisarlo a mano.
     await pool.query(
-      `UPDATE meta_leads SET status = 'error', error = $2, attempts = attempts + 1, next_attempt_at = now() + make_interval(mins => (LEAST(attempts + 1, 6) * LEAST(attempts + 1, 6) * 2)::int) WHERE leadgen_id = $1`,
-      [leadgenId, msg],
+      `UPDATE meta_leads SET status = 'error', error = $2, attempts = attempts + 1, next_attempt_at = now() + make_interval(mins => (LEAST(attempts + 1, 6) * LEAST(attempts + 1, 6) * 2)::int) WHERE leadgen_id = $1 AND tenant_id = $3`,
+      [leadgenId, msg, tid()],
     )
     console.error(`meta: lead ${leadgenId}:`, msg)
     return 'omitido'
@@ -210,7 +223,7 @@ export async function processLead(leadgenId: string): Promise<'procesado' | 'dup
 /** Reintenta los leads recibidos o con error cuya espera ya paso. */
 export async function processPending(): Promise<number> {
   const { rows } = await pool.query(
-    `SELECT leadgen_id FROM meta_leads WHERE status IN ('recibido', 'error') AND attempts < $1 AND next_attempt_at <= now() ORDER BY received_at LIMIT 20`,
+    `SELECT leadgen_id FROM meta_leads WHERE status IN ('recibido', 'error') AND attempts < $1 AND next_attempt_at <= now() ORDER BY received_at LIMIT 20 ${ALL_TENANTS}`,
     [MAX_ATTEMPTS],
   )
   for (const r of rows) await processLead(r.leadgen_id)
@@ -254,7 +267,10 @@ metaRouter.post('/', express.raw({ type: '*/*', limit: '256kb' }), async (req, r
   } catch {
     throw new HttpError(400, 'JSON inválido')
   }
-  const fresh = await storeLeads(leadsOf(body))
+  const slug = process.env.META_LEADS_TENANT ?? 'hayai'
+  const tenant = await tenantBySlug(slug)
+  if (!tenant) throw new HttpError(503, `Meta: no hay un tenant activo «${slug}» para recibir los leads`)
+  const fresh = await withTenant(tenant, () => storeLeads(leadsOf(body)))
   res.status(200).json({ recibidos: fresh.length }) // Meta exige 200 rapido; el detalle se pide a Graph despues
   for (const id of fresh) void processLead(id)
 })

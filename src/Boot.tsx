@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Blobvatar } from './blob'
-import { changePin, login, lookup, type Known, type Session } from './auth'
+import { adopt, changePin, login, lookup, type Known, type Session } from './auth'
 import { ApiError } from './api'
 import { loadAll } from './data'
 import { reduced } from './warp'
@@ -68,7 +68,7 @@ export default function Boot({ onDone }: { onDone: (s: Session) => void }) {
     setSession(s)
     setBusy(true)
     try {
-      await loadAll() // los datos ya estan cargados cuando se abre la nave
+      if (adopt(s)) await loadAll() // los datos ya estan cargados cuando se abre la nave (sin ningun espacio: la app muestra «sin acceso»)
     } catch {
       setBusy(false)
       return fail('No se pudieron cargar los datos. Intenta de nuevo.', 'name')
@@ -105,14 +105,14 @@ export default function Boot({ onDone }: { onDone: (s: Session) => void }) {
       return
     }
     if (phase === 'newpin') {
-      if (pin === INITIAL_PIN) return fail('La nueva clave no puede ser 000000.')
+      if (pin === INITIAL_PIN) return fail('Tu código de 6 dígitos no puede ser 000000.')
       setFirst(pin)
       return setPhase('confirm')
     }
     // confirm
     if (pin !== first) {
       setFirst('')
-      return fail('Las claves no coinciden. Crea la nueva clave otra vez.', 'newpin')
+      return fail('Los códigos no coinciden. Define tu código de 6 dígitos otra vez.', 'newpin')
     }
     setBusy(true)
     try {
@@ -121,7 +121,7 @@ export default function Boot({ onDone }: { onDone: (s: Session) => void }) {
       await finish(s)
     } catch (e) {
       setBusy(false)
-      fail(e instanceof ApiError ? e.message : 'No se pudo guardar la clave.', 'newpin')
+      fail(e instanceof ApiError ? e.message : 'No se pudo guardar tu código.', 'newpin')
     }
   }
 
@@ -144,7 +144,7 @@ export default function Boot({ onDone }: { onDone: (s: Session) => void }) {
   }
 
   const step = phase === 'boot' ? 1 : phase === 'name' ? 2 : phase === 'granted' ? 4 : 3
-  const title = phase === 'confirm' ? 'Confirma tu nueva clave' : phase === 'newpin' ? 'Crea tu nueva clave de 6 dígitos' : 'Ingresa tu clave'
+  const title = phase === 'confirm' ? 'Confirma tu código de 6 dígitos' : phase === 'newpin' ? 'Define tu código de 6 dígitos' : 'Ingresa tu clave'
 
   return (
     <div className={`boot slice-in${leaving ? ' is-leaving' : ''}`} role="dialog" aria-label="Acceso a la nave HAYAI">
@@ -226,7 +226,7 @@ export default function Boot({ onDone }: { onDone: (s: Session) => void }) {
             </div>
             {phase === 'newpin' && (
               <p className="boot-note sl" style={{ '--i': 2 } as React.CSSProperties}>
-                Entraste con la clave inicial. Por seguridad, crea una clave nueva para continuar.
+                Es tu primer inicio de sesión: entraste con el código inicial (000000). Define ahora tu código de 6 dígitos; será el que uses desde ahora.
               </p>
             )}
             <p className="boot-sub sl" style={{ '--i': 3 } as React.CSSProperties}>

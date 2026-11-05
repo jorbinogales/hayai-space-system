@@ -2,6 +2,7 @@
 // los ítems del feed, las busca con el proveedor y cuenta cuántas se resuelven y con qué precisión. NO escribe nada: ni datos.geo ni el
 // ítem (los resultados de Mapbox no se guardan en una medición). Idempotente y sin efectos; se puede correr cuando se quiera.
 import { pool } from './db.ts'
+import { tid } from './tenant.ts'
 import { direccionDe } from './feedGeo.ts'
 import { consultasDe, GeocoderError, type Geocoder, type Precision } from './geocode.ts'
 
@@ -25,7 +26,7 @@ export type Medicion = {
 const pct = (n: number, d: number) => (d ? Math.round((n / d) * 1000) / 10 : null)
 
 export async function medir(prov: Geocoder, o: { tipo?: string; limite?: number; progreso?: (titulo: string, r: ResultadoMedida) => void } = {}): Promise<Medicion> {
-  const rows = (await pool.query(`SELECT id, title, data FROM feed_items WHERE ($1::text IS NULL OR kind = $1) ORDER BY found_at DESC, id`, [o.tipo ?? null])).rows
+  const rows = (await pool.query(`SELECT id, title, data FROM feed_items WHERE tenant_id = $2 AND ($1::text IS NULL OR kind = $1) ORDER BY found_at DESC, id`, [o.tipo ?? null, tid()])).rows
   const m: Medicion = {
     proveedor: prov.nombre,
     evaluados: 0,

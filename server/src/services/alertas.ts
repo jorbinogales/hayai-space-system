@@ -2,7 +2,8 @@
 // pagar la cuota o reprogramar el seguimiento las quita solas. Solo se guarda quien leyo cada una (notification_reads).
 // Vencida = cuota pendiente con fecha anterior a hoy (hora de Caracas). Se excluyen clientes archivados (Finanzas sigue contandolos).
 import { z } from 'zod'
-import { pool, tx } from '../db.ts'
+import { ALL_TENANTS, pool, tx } from '../db.ts'
+import { hasModule, tid } from '../tenant.ts'
 import { COLD_DAYS, daysBetween, loadStages } from '../crm.ts'
 import { dayISO, op, pageShape, paged, r2, todayISO } from './common.ts'
 import { feedAlertas } from './feed.ts'
@@ -33,27 +34,35 @@ type Alerta = {
 
 const dias = (n: number) => `${n} ${n === 1 ? 'día' : 'días'}`
 
-/** Todas las alertas vigentes y si `userId` ya las leyo. Primero lo mas grave: cuotas vencidas (las mas viejas arriba), luego seguimientos. */
+/**
+ * Todas las alertas vigentes del tenant en curso y si `userId` ya las leyo. Primero lo mas grave: cuotas vencidas (las mas viejas arriba),
+ * luego seguimientos. Cada tipo exige su modulo: cuotas = cobros, seguimientos = clientes, feed = feed; la actualizacion es para todos.
+ */
 async function calcular(userId: string): Promise<Alerta[]> {
   const hoy = todayISO()
+  const none = { rows: [] as Record<string, never>[] }
   const [cuotas, seguimientos, leidas, version, feed] = await Promise.all([
-    pool.query(
-      `SELECT p.id, p.client_id, c.name AS client, p.date, p.concept, p.amount, p.series_index, p.series_total
-       FROM payments p JOIN clients c ON c.id = p.client_id
-       WHERE p.status = 'pendiente' AND p.date < $1::date AND NOT c.is_prospect AND c.archived_at IS NULL
-       ORDER BY p.date, p.created_at, p.id`,
-      [hoy],
-    ),
-    pool.query(
-      `SELECT c.id, c.name AS client, c.next_action, c.next_action_date,
-              (SELECT u.name FROM projects pr JOIN users u ON u.id = pr.owner_id
-               WHERE pr.client_id = c.id AND pr.archived_at IS NULL ORDER BY pr.created_at LIMIT 1) AS owner
-       FROM clients c
-       WHERE c.next_action_date <= $1::date AND c.archived_at IS NULL AND c.pipeline_stage IS DISTINCT FROM 'perdido'
-       ORDER BY c.next_action_date, c.created_at, c.id`,
-      [hoy],
-    ),
-    pool.query('SELECT key FROM notification_reads WHERE user_id = $1', [userId]),
+    hasModule('cobros')
+      ? pool.query(
+          `SELECT p.id, p.client_id, c.name AS client, p.date, p.concept, p.amount, p.series_index, p.series_total
+           FROM payments p JOIN clients c ON c.id = p.client_id
+           WHERE p.tenant_id = $2 AND p.status = 'pendiente' AND p.date < $1::date AND NOT c.is_prospect AND c.archived_at IS NULL
+           ORDER BY p.date, p.created_at, p.id`,
+          [hoy, tid()],
+        )
+      : none,
+    hasModule('clientes')
+      ? pool.query(
+          `SELECT c.id, c.name AS client, c.next_action, c.next_action_date,
+                  (SELECT u.name FROM projects pr JOIN users u ON u.id = pr.owner_id
+                   WHERE pr.client_id = c.id AND pr.archived_at IS NULL ORDER BY pr.created_at LIMIT 1) AS owner
+           FROM clients c
+           WHERE c.tenant_id = $2 AND c.next_action_date <= $1::date AND c.archived_at IS NULL AND c.pipeline_stage IS DISTINCT FROM 'perdido'
+           ORDER BY c.next_action_date, c.created_at, c.id`,
+          [hoy, tid()],
+        )
+      : none,
+    pool.query('SELECT key FROM notification_reads WHERE user_id = $1 AND tenant_id = $2', [userId, tid()]),
     // Aviso de actualización: la versión más alta, ya anunciada y reciente. Es para TODOS los socios (la lectura es por socio).
     pool.query(
       `SELECT v.version, v.title, v.announced_at FROM app_versions v
@@ -61,7 +70,7 @@ async function calcular(userId: string): Promise<Alerta[]> {
        ORDER BY (string_to_array(v.version, '.'))[1]::int DESC, (string_to_array(v.version, '.'))[2]::int DESC, (string_to_array(v.version, '.'))[3]::int DESC LIMIT 1`,
       [ACTUALIZACION_DIAS],
     ),
-    feedAlertas(userId),
+    hasModule('feed') ? feedAlertas(userId) : [],
   ])
   const read = new Set<string>(leidas.rows.map((r) => r.key))
   const out: Alerta[] = []
@@ -170,11 +179,11 @@ export const notificacionesLeer = op(
     const vigentes = new Set((await calcular(actor.id)).map((a) => a.clave))
     const claves = b.todas ? [...vigentes] : [...new Set(b.claves!)].filter((k) => vigentes.has(k))
     await tx(async (c) => {
-      await c.query('DELETE FROM notification_reads WHERE read_at < now() - make_interval(days => $1)', [LECTURAS_DIAS])
+      await c.query(`DELETE FROM notification_reads WHERE read_at < now() - make_interval(days => $1) ${ALL_TENANTS}`, [LECTURAS_DIAS])
       if (claves.length)
         await c.query(
-          `INSERT INTO notification_reads (user_id, key) SELECT $1, k FROM unnest($2::text[]) AS k ON CONFLICT (user_id, key) DO UPDATE SET read_at = now()`,
-          [actor.id, claves],
+          `INSERT INTO notification_reads (user_id, tenant_id, key) SELECT $1, $3, k FROM unnest($2::text[]) AS k ON CONFLICT (user_id, tenant_id, key) DO UPDATE SET read_at = now()`,
+          [actor.id, claves, tid()],
         )
     })
     const sinLeer = (await calcular(actor.id)).filter((a) => !a.leida).length
@@ -189,7 +198,8 @@ export const pipelineResumen = op(z.strictObject({}), async () => {
   const { rows } = await pool.query(
     `SELECT c.id, c.name, c.pipeline_stage AS stage, c.est_value, c.probability, c.created_at, c.next_action_date,
             (SELECT max(i.occurred_at) FROM interactions i WHERE i.client_id = c.id AND i.kind <> 'etapa') AS last_contact
-     FROM clients c WHERE c.pipeline_stage IS NOT NULL AND c.archived_at IS NULL ORDER BY c.created_at, c.id`,
+     FROM clients c WHERE c.tenant_id = $1 AND c.pipeline_stage IS NOT NULL AND c.archived_at IS NULL ORDER BY c.created_at, c.id`,
+    [tid()],
   )
   const cents = (n: number | null) => Math.round((n ?? 0) * 100)
   const etapas = stages.map((st) => {

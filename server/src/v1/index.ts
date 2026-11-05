@@ -24,6 +24,7 @@ import { ofertaActualizar, ofertaCrear, ofertaDesactivar, ofertasListar, propues
 import { tareaActualizar, tareaCrear, tareasListar, tareaVer } from '../services/tareas.ts'
 import { MK_RUTAS } from '../services/marketingRutas.ts'
 import { conflictGuard } from '../concurrency.ts'
+import { moduleGate, V1_MODULES, V1_SUBMODULES } from '../tenant.ts'
 import { HttpError } from '../util.ts'
 import { apiKeyAuth, keyRateLimit, requireScope, SCOPE_LABEL, type Scope } from './apiKey.ts'
 
@@ -79,6 +80,7 @@ v1Router.use((_req, res, next) => {
   next()
 })
 v1Router.use(apiKeyAuth, keyRateLimit())
+v1Router.use(moduleGate(V1_MODULES, V1_SUBMODULES)) // el módulo de cada ruta, con los permisos del dueño de la llave en su tenant
 v1Router.use(versionHeader) // X-Hayai-Version: el agente ve si el sistema se actualizó sin preguntar
 // El comprobante viaja en base64 (hasta 4 MB de imagen): solo esa ruta admite un cuerpo grande.
 v1Router.post('/pagos/:id/comprobante', jsonOnly, express.json({ limit: '6mb' }))
@@ -104,6 +106,7 @@ v1Router.get('/me', (req, res) => {
   const k = req.apiKey!
   res.json({
     usuario: { id: req.user!.id, nombre: req.user!.name },
+    tenant: { id: req.tenant!.id, nombre: req.tenant!.name, slug: req.tenant!.slug, modulos: req.tenant!.modules },
     llave: { nombre: k.name, prefijo: k.prefix, permisos: k.scopes.map((x: Scope) => ({ permiso: x, descripcion: SCOPE_LABEL[x] })) },
   })
 })

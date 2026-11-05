@@ -3,6 +3,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { Db } from './db.ts'
+import { tid } from './tenant.ts'
 
 export type ChargeRow = { d: string; c: string; a: number; s: string; sid: string | null; si: number | null; st: number | null }
 
@@ -41,8 +42,8 @@ export async function insertCharges(c: Db, clientId: string, userId: string, row
   if (!rows.length) return
   await c.query(
     // un cobro que nace cobrado lo recibió quien lo registra (se puede cambiar a mano después)
-    `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, series_id, series_index, series_total, created_at, received_by, received_by_source)
-     SELECT $1, t.d, t.c, t.a, 'pago', t.s, $10::uuid, t.sid, t.si, t.st, now() + t.n * interval '1 microsecond',
+    `INSERT INTO payments (tenant_id, client_id, date, concept, amount, kind, status, created_by, series_id, series_index, series_total, created_at, received_by, received_by_source)
+     SELECT $11, $1, t.d, t.c, t.a, 'pago', t.s, $10::uuid, t.sid, t.si, t.st, now() + t.n * interval '1 microsecond',
             CASE WHEN t.s = 'cobrado' THEN $10::uuid END, CASE WHEN t.s = 'cobrado' THEN 'manual' END
      FROM unnest($2::date[], $3::text[], $4::numeric[], $5::text[], $6::uuid[], $7::smallint[], $8::smallint[], $9::bigint[])
           AS t(d, c, a, s, sid, si, st, n)`,
@@ -57,6 +58,7 @@ export async function insertCharges(c: Db, clientId: string, userId: string, row
       rows.map((x) => x.st),
       rows.map((_, i) => i + 1),
       userId,
+      tid(),
     ],
   )
 }
@@ -65,10 +67,10 @@ export async function insertCharges(c: Db, clientId: string, userId: string, row
 export async function insertItems(c: Db, clientId: string, items: { concept: string; amount: number }[]) {
   if (!items.length) return
   await c.query(
-    `INSERT INTO client_items (client_id, concept, amount, created_at)
-     SELECT $1, t.c, t.a, now() + t.n * interval '1 microsecond'
+    `INSERT INTO client_items (tenant_id, client_id, concept, amount, created_at)
+     SELECT $4, $1, t.c, t.a, now() + t.n * interval '1 microsecond'
      FROM unnest($2::text[], $3::numeric[]) WITH ORDINALITY AS t(c, a, n)`,
-    [clientId, items.map((i) => i.concept), items.map((i) => i.amount)],
+    [clientId, items.map((i) => i.concept), items.map((i) => i.amount), tid()],
   )
 }
 

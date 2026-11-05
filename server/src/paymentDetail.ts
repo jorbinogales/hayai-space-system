@@ -4,6 +4,7 @@
 import { z } from 'zod'
 import type { Db } from './db.ts'
 import { userByName } from './socios.ts'
+import { tid } from './tenant.ts'
 import { HttpError, isoDate, text } from './util.ts'
 
 export const METHODS = ['transferencia', 'pago_movil', 'efectivo', 'zelle', 'otro'] as const
@@ -53,7 +54,7 @@ function splitBank(p: Detalle): Detalle {
  */
 export async function writeDetalle(c: Db, paymentId: string, raw: Detalle, opts: { amountChanged?: boolean } = {}): Promise<void> {
   const p = splitBank(raw)
-  const cur = (await c.query('SELECT amount, date, amount_bs, exchange_rate, rate_date FROM payments WHERE id = $1', [paymentId])).rows[0]
+  const cur = (await c.query('SELECT amount, date, amount_bs, exchange_rate, rate_date FROM payments WHERE id = $1 AND tenant_id = $2', [paymentId, tid()])).rows[0]
   if (!cur) throw new HttpError(404, 'Pago no encontrado')
   const usd = Number(cur.amount)
   let monto: number | null = cur.amount_bs == null ? null : Number(cur.amount_bs)
@@ -97,8 +98,8 @@ export async function writeDetalle(c: Db, paymentId: string, raw: Detalle, opts:
     if (p.referencia) {
       const dup = (
         await c.query(
-          `SELECT p.date, cl.name FROM payments p JOIN clients cl ON cl.id = p.client_id WHERE lower(p.bank_reference) = lower($1) AND p.id <> $2 LIMIT 1`,
-          [p.referencia, paymentId],
+          `SELECT p.date, cl.name FROM payments p JOIN clients cl ON cl.id = p.client_id WHERE p.tenant_id = $3 AND lower(p.bank_reference) = lower($1) AND p.id <> $2 LIMIT 1`,
+          [p.referencia, paymentId, tid()],
         )
       ).rows[0]
       if (dup) throw new HttpError(409, `La referencia ${p.referencia} ya está registrada en un cobro de ${dup.name} (${dup.date}). ¿Es el mismo pago?`)
@@ -120,7 +121,10 @@ export async function writeDetalle(c: Db, paymentId: string, raw: Detalle, opts:
       set('received_by_source', 'manual')
     }
   }
-  if (sets.length) await c.query(`UPDATE payments SET ${sets.join(', ')} WHERE id = $1`, args)
+  if (sets.length) {
+    const t = args.push(tid())
+    await c.query(`UPDATE payments SET ${sets.join(', ')} WHERE id = $1 AND tenant_id = $${t}`, args)
+  }
 }
 
 /** Columnas del detalle (con el socio que recibió y si hay comprobante) para armar la forma pública. */

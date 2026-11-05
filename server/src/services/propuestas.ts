@@ -8,6 +8,7 @@ import { pool, tx } from '../db.ts'
 import { proposalTotals, syncEstValue } from '../crm.ts'
 import { vincular } from '../feedLinks.ts'
 import { HttpError, id, text } from '../util.ts'
+import { tid } from '../tenant.ts'
 import { op, r2 } from './common.ts'
 
 const KINDS = ['mensualidad', 'extra_mensual', 'extra_unico'] as const
@@ -35,12 +36,12 @@ const precio = z
   .refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, 'Máximo 2 decimales')
 
 export const ofertasListar = op(z.strictObject({ incluir_inactivas: z.boolean().default(false) }), async (_a, i) => {
-  const { rows } = await pool.query(`${OFERTA_SELECT} ${i.incluir_inactivas ? '' : 'WHERE active'} ORDER BY active DESC, name, id`)
+  const { rows } = await pool.query(`${OFERTA_SELECT} WHERE tenant_id = $1 ${i.incluir_inactivas ? '' : 'AND active'} ORDER BY active DESC, name, id`, [tid()])
   return { data: rows.map(ofertaOut) }
 })
 
 const ofertaVer = async (offerId: string) => {
-  const r = (await pool.query(`${OFERTA_SELECT} WHERE id = $1`, [offerId])).rows[0]
+  const r = (await pool.query(`${OFERTA_SELECT} WHERE id = $1 AND tenant_id = $2`, [offerId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Oferta no encontrada')
   return ofertaOut(r)
 }
@@ -64,8 +65,8 @@ export const ofertaCrear = op(
   async (_a, b) => {
     try {
       const { rows } = await pool.query(
-        `INSERT INTO offerings (key, name, kind, default_monthly, default_setup, description) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-        [b.clave, b.nombre, b.tipo, b.mensualidad_sugerida ?? null, b.instalacion_sugerida ?? null, b.descripcion ?? null],
+        `INSERT INTO offerings (tenant_id, key, name, kind, default_monthly, default_setup, description) VALUES ($7, $1, $2, $3, $4, $5, $6) RETURNING id`,
+        [b.clave, b.nombre, b.tipo, b.mensualidad_sugerida ?? null, b.instalacion_sugerida ?? null, b.descripcion ?? null, tid()],
       )
       return ofertaVer(rows[0].id)
     } catch (e) {
@@ -94,7 +95,7 @@ export const ofertaActualizar = op(
          default_setup = CASE WHEN $6::boolean THEN $7::numeric ELSE default_setup END,
          description = CASE WHEN $8::boolean THEN $9::text ELSE description END,
          active = COALESCE($10, active)
-       WHERE id = $1`,
+       WHERE id = $1 AND tenant_id = $11`,
       [
         b.id,
         b.nombre ?? null,
@@ -106,6 +107,7 @@ export const ofertaActualizar = op(
         b.descripcion !== undefined,
         b.descripcion ?? null,
         b.activa ?? null,
+        tid(),
       ],
     )
     if (!rowCount) throw new HttpError(404, 'Oferta no encontrada')
@@ -115,7 +117,7 @@ export const ofertaActualizar = op(
 
 /** "Eliminar" una oferta la desactiva: las propuestas que ya la usan conservan su texto y precio. */
 export const ofertaDesactivar = op(z.strictObject({ id }), async (_a, b) => {
-  const { rowCount } = await pool.query('UPDATE offerings SET active = false WHERE id = $1', [b.id])
+  const { rowCount } = await pool.query('UPDATE offerings SET active = false WHERE id = $1 AND tenant_id = $2', [b.id, tid()])
   if (!rowCount) throw new HttpError(404, 'Oferta no encontrada')
   return ofertaVer(b.id)
 })
@@ -140,7 +142,7 @@ async function resolveItems(items: ItemIn[]): Promise<ItemRow[]> {
   const ids = [...new Set(items.flatMap((i) => (i.oferta_id ? [i.oferta_id] : [])))]
   const offers = new Map<string, { name: string; monthly: number | null; setup: number | null; active: boolean }>()
   if (ids.length) {
-    const { rows } = await pool.query('SELECT id, name, default_monthly, default_setup, active FROM offerings WHERE id = ANY($1::uuid[])', [ids])
+    const { rows } = await pool.query('SELECT id, name, default_monthly, default_setup, active FROM offerings WHERE id = ANY($1::uuid[]) AND tenant_id = $2', [ids, tid()])
     for (const r of rows) offers.set(r.id, { name: r.name, monthly: r.default_monthly, setup: r.default_setup, active: r.active })
   }
   return items.map((i, n) => {
@@ -157,17 +159,17 @@ async function resolveItems(items: ItemIn[]): Promise<ItemRow[]> {
 
 async function insertItems(c: { query: typeof pool.query }, proposalId: string, items: ItemRow[]) {
   await c.query(
-    `INSERT INTO proposal_items (proposal_id, kind, concept, qty, unit_price, offering_id, position)
-     SELECT $1, t.k, t.c, t.q, t.p, t.o, t.n
+    `INSERT INTO proposal_items (tenant_id, proposal_id, kind, concept, qty, unit_price, offering_id, position)
+     SELECT $8, $1, t.k, t.c, t.q, t.p, t.o, t.n
      FROM unnest($2::text[], $3::text[], $4::smallint[], $5::numeric[], $6::uuid[], $7::smallint[]) AS t(k, c, q, p, o, n)`,
-    [proposalId, items.map((i) => i.kind), items.map((i) => i.concept), items.map((i) => i.qty), items.map((i) => i.unit_price), items.map((i) => i.offering_id), items.map((i) => i.position)],
+    [proposalId, items.map((i) => i.kind), items.map((i) => i.concept), items.map((i) => i.qty), items.map((i) => i.unit_price), items.map((i) => i.offering_id), items.map((i) => i.position), tid()],
   )
 }
 
 const PROPUESTA_SELECT = `SELECT p.id, p.client_id, p.version, p.status, p.notes, p.presented_at, p.created_at, p.updated_at, u.name AS author
   FROM proposals p JOIN users u ON u.id = p.created_by`
 
-/** Propuestas con sus items (2 consultas, sin N+1). */
+/** Propuestas con sus items (2 consultas, sin N+1). `where` debe filtrar por p.tenant_id. */
 export async function propuestasPor(where: string, args: unknown[]) {
   const { rows } = await pool.query(`${PROPUESTA_SELECT} ${where} ORDER BY p.version DESC, p.id`, args)
   if (!rows.length) return []
@@ -175,8 +177,8 @@ export async function propuestasPor(where: string, args: unknown[]) {
     await pool.query(
       `SELECT i.id, i.proposal_id, i.kind, i.concept, i.qty, i.unit_price, i.offering_id, o.name AS offering
        FROM proposal_items i LEFT JOIN offerings o ON o.id = i.offering_id
-       WHERE i.proposal_id = ANY($1::uuid[]) ORDER BY i.position, i.id`,
-      [rows.map((r) => r.id)],
+       WHERE i.proposal_id = ANY($1::uuid[]) AND i.tenant_id = $2 ORDER BY i.position, i.id`,
+      [rows.map((r) => r.id), tid()],
     )
   ).rows
   return rows.map((r) => {
@@ -210,14 +212,14 @@ export async function propuestasPor(where: string, args: unknown[]) {
 }
 
 async function una(proposalId: string) {
-  const p = (await propuestasPor('WHERE p.id = $1', [proposalId]))[0]
+  const p = (await propuestasPor('WHERE p.id = $1 AND p.tenant_id = $2', [proposalId, tid()]))[0]
   if (!p) throw new HttpError(404, 'Propuesta no encontrada')
   return p
 }
 
 export const propuestasListar = op(z.strictObject({ cliente_id: id }), async (_a, i) => {
-  if (!(await pool.query('SELECT 1 FROM clients WHERE id = $1', [i.cliente_id])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
-  return { data: await propuestasPor('WHERE p.client_id = $1', [i.cliente_id]) }
+  if (!(await pool.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2', [i.cliente_id, tid()])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
+  return { data: await propuestasPor('WHERE p.client_id = $1 AND p.tenant_id = $2', [i.cliente_id, tid()]) }
 })
 
 export const propuestaVer = op(z.strictObject({ id }), (_a, i) => una(i.id))
@@ -227,15 +229,15 @@ export const propuestaCrear = op(
   async (actor, b) => {
     const items = await resolveItems(b.items)
     const proposalId = await tx(async (c) => {
-      const client = (await c.query('SELECT is_prospect FROM clients WHERE id = $1 FOR UPDATE', [b.cliente_id])).rows[0]
+      const client = (await c.query('SELECT is_prospect FROM clients WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [b.cliente_id, tid()])).rows[0]
       if (!client) throw new HttpError(404, 'Cliente no encontrado')
       // Un cliente activo también puede tener propuesta (una ampliación o upsell): ahí no toca su valor estimado de pipeline.
       // Una version nueva reemplaza a la viva anterior (la negociacion queda como historia).
-      await c.query(`UPDATE proposals SET status = 'reemplazada' WHERE client_id = $1 AND status IN ('borrador', 'presentada')`, [b.cliente_id])
-      const version = (await c.query('SELECT COALESCE(max(version), 0) + 1 AS v FROM proposals WHERE client_id = $1', [b.cliente_id])).rows[0].v
+      await c.query(`UPDATE proposals SET status = 'reemplazada' WHERE client_id = $1 AND tenant_id = $2 AND status IN ('borrador', 'presentada')`, [b.cliente_id, tid()])
+      const version = (await c.query('SELECT COALESCE(max(version), 0) + 1 AS v FROM proposals WHERE client_id = $1 AND tenant_id = $2', [b.cliente_id, tid()])).rows[0].v
       const { rows } = await c.query(
-        `INSERT INTO proposals (client_id, version, status, notes, created_by) VALUES ($1, $2, 'borrador', $3, $4) RETURNING id`,
-        [b.cliente_id, version, b.notas ?? null, actor.id],
+        `INSERT INTO proposals (tenant_id, client_id, version, status, notes, created_by) VALUES ($5, $1, $2, 'borrador', $3, $4) RETURNING id`,
+        [b.cliente_id, version, b.notas ?? null, actor.id, tid()],
       )
       await insertItems(c, rows[0].id, items)
       if (client.is_prospect) await syncEstValue(c, b.cliente_id)
@@ -255,17 +257,17 @@ export const propuestaActualizar = op(
     const items = b.items ? await resolveItems(b.items) : null
     await tx(async (c) => {
       await assertFresh(c, 'proposals', b.id)
-      const cur = (await c.query('SELECT client_id, status FROM proposals WHERE id = $1 FOR UPDATE', [b.id])).rows[0]
+      const cur = (await c.query('SELECT client_id, status FROM proposals WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [b.id, tid()])).rows[0]
       if (!cur) throw new HttpError(404, 'Propuesta no encontrada')
       if (!['borrador', 'presentada'].includes(cur.status))
         throw new HttpError(409, `Una propuesta ${cur.status} ya no se edita: crea una versión nueva`)
-      if (b.notas !== undefined) await c.query('UPDATE proposals SET notes = $2 WHERE id = $1', [b.id, b.notas])
+      if (b.notas !== undefined) await c.query('UPDATE proposals SET notes = $2 WHERE id = $1 AND tenant_id = $3', [b.id, b.notas, tid()])
       if (items) {
-        await c.query('DELETE FROM proposal_items WHERE proposal_id = $1', [b.id])
+        await c.query('DELETE FROM proposal_items WHERE proposal_id = $1 AND tenant_id = $2', [b.id, tid()])
         await insertItems(c, b.id, items)
-        await c.query('UPDATE proposals SET updated_at = now() WHERE id = $1', [b.id])
+        await c.query('UPDATE proposals SET updated_at = now() WHERE id = $1 AND tenant_id = $2', [b.id, tid()])
       }
-      if ((await c.query('SELECT is_prospect FROM clients WHERE id = $1', [cur.client_id])).rows[0]?.is_prospect) await syncEstValue(c, cur.client_id)
+      if ((await c.query('SELECT is_prospect FROM clients WHERE id = $1 AND tenant_id = $2', [cur.client_id, tid()])).rows[0]?.is_prospect) await syncEstValue(c, cur.client_id)
     })
     return una(b.id)
   },

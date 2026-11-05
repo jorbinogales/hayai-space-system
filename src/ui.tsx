@@ -1,5 +1,6 @@
 import { Blobvatar } from './blob'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useTenant } from './tenant'
 import { Chat } from './Chat'
 import { Notifications } from './Notifications'
 import { Search } from './SearchPalette'
@@ -41,6 +42,7 @@ const PATHS = {
   pin: 'M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21ZM12 12a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z',
   map: 'M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2ZM9 4v14M15 6v14',
   list: 'M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01',
+  chevron: 'm6 9 6 6 6-6',
   calendar: 'M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2ZM16 2v4M8 2v4M3 10h18',
 }
 export type IconName = keyof typeof PATHS
@@ -53,19 +55,97 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   )
 }
 
-export function Topbar({ user, onLogout, onProfile, onIntegrations, onVault }: { user?: { name: string; avatar: string }; onLogout?: () => void; onProfile?: () => void; onIntegrations?: () => void; onVault?: () => void }) {
+/** Espacio de trabajo activo, en el menu principal: con varios se despliega para cambiar; con uno solo es solo el nombre. */
+function TenantSwitch({ onSwitch }: { onSwitch: (id: string) => void }) {
+  const { tenants, active } = useTenant()
+  const [open, setOpen] = useState(false)
+  const wrap = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const out = (e: PointerEvent) => !wrap.current?.contains(e.target as Node) && setOpen(false)
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
+    document.addEventListener('pointerdown', out)
+    window.addEventListener('keydown', esc)
+    return () => {
+      document.removeEventListener('pointerdown', out)
+      window.removeEventListener('keydown', esc)
+    }
+  }, [open])
+  const name = active?.name ?? 'Sin espacio de trabajo'
+  if (tenants.length < 2)
+    return (
+      <div className="tn">
+        <span className="tn-btn is-static" title="Espacio de trabajo">
+          <i aria-hidden="true" />
+          <span>{name}</span>
+        </span>
+      </div>
+    )
+  return (
+    <div className="tn" ref={wrap}>
+      <button type="button" className="tn-btn" aria-haspopup="menu" aria-expanded={open} aria-label={`Espacio de trabajo: ${name}. Cambiar`} onClick={() => setOpen((o) => !o)}>
+        <i aria-hidden="true" />
+        <span>{name}</span>
+        <Icon name="chevron" size={14} />
+      </button>
+      {open && (
+        <div className="tn-menu" role="menu" aria-label="Espacios de trabajo">
+          <small>Espacio de trabajo</small>
+          {tenants.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={t.id === active?.id}
+              className={t.id === active?.id ? 'is-on' : ''}
+              onClick={() => {
+                setOpen(false)
+                if (t.id !== active?.id) onSwitch(t.id)
+              }}
+            >
+              <span>{t.name}</span>
+              <em>{t.modules.length === 1 ? '1 módulo' : `${t.modules.length} módulos`}</em>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function Topbar({
+  user,
+  onLogout,
+  onProfile,
+  onIntegrations,
+  onVault,
+  onAdmin,
+  onTenant,
+}: {
+  user?: { name: string; avatar: string; role?: 'ADMIN' | 'SOCIO' }
+  onLogout?: () => void
+  onProfile?: () => void
+  onIntegrations?: () => void
+  onVault?: () => void
+  onAdmin?: () => void
+  onTenant?: (id: string) => void
+}) {
   const [menu, setMenu] = useState(false)
+  const { can, tenants, active } = useTenant()
   return (
     <header className="topbar">
       <div className="mark">
-        <p className="mark-word">HAYAI</p>
-        <p className="mark-tag">TODO ESTÁ CONECTADO</p>
+        <div>
+          <p className="mark-word">HAYAI</p>
+          <p className="mark-tag">TODO ESTÁ CONECTADO</p>
+        </div>
+        {user && onTenant && <TenantSwitch onSwitch={onTenant} />}
       </div>
       <div className="tools">
         {user && (
           <>
             <Search />
-            <Chat />
+            {can('chat') && <Chat />}
             <Notifications />
           </>
         )}
@@ -80,6 +160,31 @@ export function Topbar({ user, onLogout, onProfile, onIntegrations, onVault }: {
                   <small>Astronauta</small>
                   {user.name}
                 </p>
+                {/* en pantallas estrechas el selector del encabezado no cabe: el espacio de trabajo se elige aquí */}
+                {onTenant && (
+                  <div className="acct-tn" role="group" aria-label="Espacio de trabajo">
+                    <small>Espacio de trabajo</small>
+                    {tenants.length < 2 ? (
+                      <b>{active?.name ?? 'Sin espacio de trabajo'}</b>
+                    ) : (
+                      tenants.map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={t.id === active?.id}
+                          className={t.id === active?.id ? 'is-on' : ''}
+                          onClick={() => {
+                            setMenu(false)
+                            if (t.id !== active?.id) onTenant(t.id)
+                          }}
+                        >
+                          {t.name}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
                 <button
                   role="menuitem"
                   onClick={() => {
@@ -89,24 +194,39 @@ export function Topbar({ user, onLogout, onProfile, onIntegrations, onVault }: {
                 >
                   Mi perfil
                 </button>
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setMenu(false)
-                    onIntegrations?.()
-                  }}
-                >
-                  Integraciones
-                </button>
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setMenu(false)
-                    onVault?.()
-                  }}
-                >
-                  Papelera y archivo
-                </button>
+                {can('integraciones') && (
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setMenu(false)
+                      onIntegrations?.()
+                    }}
+                  >
+                    Integraciones
+                  </button>
+                )}
+                {can('papelera') && (
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setMenu(false)
+                      onVault?.()
+                    }}
+                  >
+                    Papelera y archivo
+                  </button>
+                )}
+                {user.role === 'ADMIN' && (
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setMenu(false)
+                      onAdmin?.()
+                    }}
+                  >
+                    Administración
+                  </button>
+                )}
                 <button
                   role="menuitem"
                   onClick={() => {

@@ -8,7 +8,8 @@
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import { recordActivity } from './activity.ts'
-import { pool, tx } from './db.ts'
+import { ALL_TENANTS, pool, tx } from './db.ts'
+import { tenantById, tid, withTenant } from './tenant.ts'
 import { HttpError } from './util.ts'
 
 const TIMEOUT_MS = Number(process.env.SYSTEMS_TIMEOUT_MS) || 10_000
@@ -71,11 +72,11 @@ export type CheckResult = { estado: 'arriba' | 'caido' | 'desconocido'; codigo: 
 
 /** Verifica un sistema ahora y guarda el resultado. Devuelve el estado resultante (tras confirmar un fallo con un 2.º intento). */
 export async function checkSystem(systemId: string): Promise<CheckResult> {
-  const s = (await pool.query('SELECT id, name, client_id, check_url, prod_url, app_url FROM systems WHERE id = $1', [systemId])).rows[0]
+  const s = (await pool.query('SELECT id, name, client_id, check_url, prod_url, app_url FROM systems WHERE id = $1 AND tenant_id = $2', [systemId, tid()])).rows[0]
   if (!s) throw new HttpError(404, 'Sistema no encontrado')
   const url = (s.check_url ?? s.prod_url ?? s.app_url) as string | null
   if (!url) {
-    await pool.query(`UPDATE systems SET status = 'desconocido', last_check_at = now(), last_error = 'Sin URL para verificar', last_code = NULL, last_ms = NULL WHERE id = $1`, [systemId])
+    await pool.query(`UPDATE systems SET status = 'desconocido', last_check_at = now(), last_error = 'Sin URL para verificar', last_code = NULL, last_ms = NULL WHERE id = $1 AND tenant_id = $2`, [systemId, tid()])
     return { estado: 'desconocido', codigo: null, ms: null, error: 'Sin URL para verificar', cambio: false }
   }
   let r = await probe(url)
@@ -88,15 +89,15 @@ export async function checkSystem(systemId: string): Promise<CheckResult> {
 }
 
 const record = (systemId: string, r: Probe) =>
-  pool.query('INSERT INTO system_checks (system_id, ok, code, ms, error) VALUES ($1, $2, $3, $4, $5)', [systemId, r.ok, r.code, r.ms, r.error])
+  pool.query('INSERT INTO system_checks (tenant_id, system_id, ok, code, ms, error) VALUES ($6, $1, $2, $3, $4, $5)', [systemId, r.ok, r.code, r.ms, r.error, tid()])
 
 async function apply(systemId: string, r: Probe): Promise<CheckResult> {
   await record(systemId, r)
   return tx(async (c) => {
     const cur = (
       await c.query(
-        `SELECT s.name, s.client_id, s.status, s.fail_streak, s.created_by, cl.name AS client FROM systems s JOIN clients cl ON cl.id = s.client_id WHERE s.id = $1 FOR UPDATE OF s`,
-        [systemId],
+        `SELECT s.name, s.client_id, s.status, s.fail_streak, s.created_by, cl.name AS client FROM systems s JOIN clients cl ON cl.id = s.client_id WHERE s.id = $1 AND s.tenant_id = $2 FOR UPDATE OF s`,
+        [systemId, tid()],
       )
     ).rows[0]
     if (!cur) throw new HttpError(404, 'Sistema no encontrado')
@@ -106,8 +107,8 @@ async function apply(systemId: string, r: Probe): Promise<CheckResult> {
     await c.query(
       `UPDATE systems SET status = $2, status_since = CASE WHEN $3::boolean THEN now() ELSE status_since END, last_check_at = now(),
          last_ok_at = CASE WHEN $4::boolean THEN now() ELSE last_ok_at END, last_code = $5, last_ms = $6, last_error = $7,
-         fail_streak = CASE WHEN $4::boolean THEN 0 ELSE fail_streak + 1 END WHERE id = $1`,
-      [systemId, next, changed, r.ok, r.code, r.ms, r.error],
+         fail_streak = CASE WHEN $4::boolean THEN 0 ELSE fail_streak + 1 END WHERE id = $1 AND tenant_id = $8`,
+      [systemId, next, changed, r.ok, r.code, r.ms, r.error, tid()],
     )
     // Aviso solo al CAMBIAR: caída confirmada, o recuperación de una caída (arrancar en "arriba" no avisa).
     if (changed && (next === 'caido' || cur.status === 'caido'))
@@ -119,23 +120,26 @@ async function apply(systemId: string, r: Probe): Promise<CheckResult> {
         clientId: cur.client_id as string,
         via: 'monitor',
       })
-    await c.query(`DELETE FROM system_checks WHERE at < now() - make_interval(days => $1)`, [KEEP_DAYS])
+    await c.query(`DELETE FROM system_checks WHERE at < now() - make_interval(days => $1) ${ALL_TENANTS}`, [KEEP_DAYS])
     return { estado: next, codigo: r.code, ms: r.ms, error: r.error, cambio: changed }
   })
 }
 
 let running = false
-/** Verifica todos los sistemas activos con monitoreo (de a 3 en paralelo). */
+/** Verifica todos los sistemas activos con monitoreo de todos los tenants activos (de a 3 en paralelo), cada uno en su tenant. */
 export async function checkAll(): Promise<number> {
   if (running) return 0
   running = true
   try {
-    const ids = (await pool.query(`SELECT id FROM systems WHERE active AND monitor ORDER BY created_at`)).rows.map((r) => r.id as string)
+    const ids = (
+      await pool.query(`SELECT s.id, s.tenant_id FROM systems s JOIN tenants t ON t.id = s.tenant_id WHERE t.active AND s.active AND s.monitor ORDER BY s.created_at ${ALL_TENANTS}`)
+    ).rows as { id: string; tenant_id: string }[]
     let i = 0
     const worker = async () => {
       while (i < ids.length) {
-        const id = ids[i++]
-        await checkSystem(id).catch((e) => console.error('systems:', id, (e as Error).message))
+        const { id, tenant_id } = ids[i++]
+        const t = await tenantById(tenant_id)
+        if (t) await withTenant(t, () => checkSystem(id)).catch((e) => console.error('systems:', id, (e as Error).message))
       }
     }
     await Promise.all([worker(), worker(), worker()])

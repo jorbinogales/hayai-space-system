@@ -10,6 +10,7 @@ import { seedIfEmpty } from './seed.ts'
 import { seedReceiverDocuments } from './services/cobros.ts'
 import { announceCurrentVersion } from './services/versiones.ts'
 import { startSystemsWorker, stopSystemsWorker } from './systems.ts'
+import { tenantBySlug, withTenant } from './tenant.ts'
 
 const port = Number(process.env.PORT ?? 3001)
 
@@ -20,7 +21,9 @@ try {
   process.exit(1)
 }
 
-await seedReceiverDocuments().catch((e) => console.error('receptores: no se pudo sembrar el mapeo de documentos:', (e as Error).message))
+// El mapeo de documentos del entorno es de HAYAI.
+const hayai = await tenantBySlug('hayai')
+if (hayai) await withTenant(hayai, () => seedReceiverDocuments()).catch((e) => console.error('receptores: no se pudo sembrar el mapeo de documentos:', (e as Error).message))
 
 // Con el LISTEN ya arriba, para que las pestañas conectadas reciban el aviso en vivo; si no, lo ven al reconectar (Last-Event-ID).
 const announce = () => announceCurrentVersion().then((v) => v && console.log(`Aviso de actualización: v${v}`)).catch((e) => console.error('versión: no se pudo anunciar:', (e as Error).message))

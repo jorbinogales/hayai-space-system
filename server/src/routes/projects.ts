@@ -5,6 +5,8 @@ import { sendToTrash } from '../trash.ts'
 import { projectIcon, projectStateOut } from '../services/common.ts'
 import { actualizarProyecto } from '../services/proyectos.ts'
 import { HttpError, id, idParam, isoDate, parse, text } from '../util.ts'
+import { memberIdByName } from '../socios.ts'
+import { tid } from '../tenant.ts'
 
 // client puede ser null: un proyecto interno no tiene cliente.
 export const PROJECT_SELECT = `SELECT p.id, p.name, p.description, p.icon, u.name AS owner, c.name AS client, p.client_id AS "clientId", p.updated_at AS "updatedAt",
@@ -27,22 +29,22 @@ const newProject = z.object({
 export const projectsRouter = Router()
 
 projectsRouter.get('/', async (_req, res) => {
-  const { rows } = await pool.query(`${PROJECT_SELECT} ORDER BY p.created_at, p.id`)
+  const { rows } = await pool.query(`${PROJECT_SELECT} WHERE p.tenant_id = $1 ORDER BY p.created_at, p.id`, [tid()])
   res.json(rows)
 })
 
 projectsRouter.post('/', async (req, res) => {
   const b = parse(newProject, req.body)
-  const owner = (await pool.query('SELECT id FROM users WHERE lower(name) = lower($1) AND active', [b.owner])).rows[0]
-  if (!owner) throw new HttpError(404, 'Responsable no encontrado')
-  if (b.clientId && !(await pool.query('SELECT 1 FROM clients WHERE id = $1', [b.clientId])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
+  const ownerId = await memberIdByName(pool, b.owner)
+  if (!ownerId) throw new HttpError(404, 'Responsable no encontrado')
+  if (b.clientId && !(await pool.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2', [b.clientId, tid()])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
 
   const { rows } = await pool.query(
-    `INSERT INTO projects (name, description, icon, client_id, owner_id, status, due_date, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-    [b.name, b.description ?? null, b.icon, b.clientId ?? null, owner.id, b.status, b.due ?? null, req.user!.id],
+    `INSERT INTO projects (tenant_id, name, description, icon, client_id, owner_id, status, due_date, created_by)
+     VALUES ($9, $1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [b.name, b.description ?? null, b.icon, b.clientId ?? null, ownerId, b.status, b.due ?? null, req.user!.id, tid()],
   )
-  res.status(201).json((await pool.query(`${PROJECT_SELECT} WHERE p.id = $1`, [rows[0].id])).rows[0])
+  res.status(201).json((await pool.query(`${PROJECT_SELECT} WHERE p.id = $1 AND p.tenant_id = $2`, [rows[0].id, tid()])).rows[0])
 })
 
 const editProject = z
@@ -66,9 +68,9 @@ projectsRouter.delete('/:id', async (req, res) => {
 for (const [action, value] of [['archive', 'now()'], ['unarchive', 'NULL']] as const) {
   projectsRouter.post(`/:id/${action}`, async (req, res) => {
     const projectId = idParam(req.params.id)
-    const { rowCount } = await pool.query(`UPDATE projects SET archived_at = ${value} WHERE id = $1`, [projectId])
+    const { rowCount } = await pool.query(`UPDATE projects SET archived_at = ${value} WHERE id = $1 AND tenant_id = $2`, [projectId, tid()])
     if (!rowCount) throw new HttpError(404, 'Proyecto no encontrado')
-    res.json((await pool.query(`${PROJECT_SELECT} WHERE p.id = $1`, [projectId])).rows[0])
+    res.json((await pool.query(`${PROJECT_SELECT} WHERE p.id = $1 AND p.tenant_id = $2`, [projectId, tid()])).rows[0])
   })
 }
 
@@ -78,10 +80,10 @@ projectsRouter.patch('/:id', async (req, res) => {
   const b = parse(editProject, req.body)
   let ownerId: string | null = null
   if (b.owner !== undefined) {
-    ownerId = (await pool.query('SELECT id FROM users WHERE lower(name) = lower($1) AND active', [b.owner])).rows[0]?.id
+    ownerId = await memberIdByName(pool, b.owner)
     if (!ownerId) throw new HttpError(404, 'Responsable no encontrado')
   }
-  if (b.clientId && !(await pool.query('SELECT 1 FROM clients WHERE id = $1', [b.clientId])).rowCount)
+  if (b.clientId && !(await pool.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2', [b.clientId, tid()])).rowCount)
     throw new HttpError(404, 'Cliente no encontrado')
 
   await actualizarProyecto({
@@ -94,5 +96,5 @@ projectsRouter.patch('/:id', async (req, res) => {
     estado: b.status === undefined ? undefined : projectStateOut(b.status),
     entrega: b.due,
   })
-  res.json((await pool.query(`${PROJECT_SELECT} WHERE p.id = $1`, [projectId])).rows[0])
+  res.json((await pool.query(`${PROJECT_SELECT} WHERE p.id = $1 AND p.tenant_id = $2`, [projectId, tid()])).rows[0])
 })

@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { pool, tx } from '../db.ts'
 import { GUION_MAX, guionDe, limpiarGuion, versionesDe, type GuionOut, type Version } from '../feedGuion.ts'
 import { HttpError, id } from '../util.ts'
+import { tid } from '../tenant.ts'
 import { op } from './common.ts'
 import { item, visible } from './feed.ts'
 
@@ -43,7 +44,7 @@ async function guardar(
   nueva: (vigente: Version, original: Version) => { contenido: string; tipo: 'edicion' | 'restablecido' },
 ) {
   await tx(async (c) => {
-    if (!(await c.query(`SELECT 1 FROM feed_items f WHERE f.id = $1 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id])).rowCount) throw new HttpError(404, 'Ítem del feed no encontrado')
+    if (!(await c.query(`SELECT 1 FROM feed_items f WHERE f.id = $1 AND f.tenant_id = $3 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id, tid()])).rowCount) throw new HttpError(404, 'Ítem del feed no encontrado')
     const vs = await versionesDe(c, b.id)
     const vigente = vs[0]
     const original = vs.find((v) => v.tipo === 'original')
@@ -55,8 +56,8 @@ async function guardar(
       })
     const n = nueva(vigente, original)
     await c.query(
-      `INSERT INTO feed_guion_versiones (item_id, nro, contenido, tipo, editado_por, base_nro) VALUES ($1, $2, $3, $4, $5, $6)`,
-      [b.id, vigente.nro + 1, n.contenido, n.tipo, actor.id, b.base ?? vigente.nro],
+      `INSERT INTO feed_guion_versiones (tenant_id, item_id, nro, contenido, tipo, editado_por, base_nro) VALUES ($7, $1, $2, $3, $4, $5, $6)`,
+      [b.id, vigente.nro + 1, n.contenido, n.tipo, actor.id, b.base ?? vigente.nro, tid()],
     )
   })
   return detalle(b.id, actor.id)

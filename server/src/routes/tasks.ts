@@ -5,6 +5,7 @@ import { exec } from '../services/common.ts'
 import { tareaActualizar, tareaCrear } from '../services/tareas.ts'
 import { sendToTrash } from '../trash.ts'
 import { id, idParam, isoDate, parse, text } from '../util.ts'
+import { tid } from '../tenant.ts'
 
 // owner = quien la creó; responsable = quien la lleva (el asignado y, sin asignar, el
 // responsable del proyecto — la misma regla que la API v1 y el MCP). La web antes solo
@@ -16,7 +17,7 @@ export const TASK_SELECT = `SELECT t.id, t.project_id AS "projectId", t.mileston
 export const tasksRouter = Router()
 
 tasksRouter.get('/', async (_req, res) => {
-  const { rows } = await pool.query(`${TASK_SELECT} ORDER BY t.created_at, t.id`)
+  const { rows } = await pool.query(`${TASK_SELECT} WHERE t.tenant_id = $1 ORDER BY t.created_at, t.id`, [tid()])
   res.json(rows)
 })
 
@@ -24,7 +25,7 @@ tasksRouter.get('/', async (_req, res) => {
 tasksRouter.post('/', async (req, res) => {
   const b = parse(z.object({ projectId: id, milestoneId: id.nullish(), title: text(160), due: isoDate.nullish(), responsable: text(40).nullish() }), req.body)
   const t = await exec(tareaCrear, req.user!, { titulo: b.title, proyecto_id: b.projectId, hito_id: b.milestoneId, vence: b.due, responsable: b.responsable ?? undefined })
-  res.status(201).json((await pool.query(`${TASK_SELECT} WHERE t.id = $1`, [t.id])).rows[0])
+  res.status(201).json((await pool.query(`${TASK_SELECT} WHERE t.id = $1 AND t.tenant_id = $2`, [t.id, tid()])).rows[0])
 })
 
 tasksRouter.patch('/:id', async (req, res) => {
@@ -45,7 +46,7 @@ tasksRouter.patch('/:id', async (req, res) => {
     titulo: b.titulo,
     responsable: b.responsable === undefined ? undefined : b.responsable,
   })
-  res.json((await pool.query(`${TASK_SELECT} WHERE t.id = $1`, [taskId])).rows[0])
+  res.json((await pool.query(`${TASK_SELECT} WHERE t.id = $1 AND t.tenant_id = $2`, [taskId, tid()])).rows[0])
 })
 
 tasksRouter.delete('/:id', async (req, res) => {

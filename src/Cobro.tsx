@@ -35,6 +35,7 @@ import { Icon } from './ui'
 import { saveGuarded, useFormGuard } from './updates'
 import { DraftBar } from './UpdateUI'
 import { avatarFor, loadUsers, useUsers } from './users'
+import TenantImg from './TenantImg'
 import './cobro.css'
 
 const msgOf = (e: unknown, fallback: string) => (e instanceof Error ? e.message : fallback)
@@ -787,7 +788,7 @@ export default function Cobro({ id, onClose }: { id: string; onClose: () => void
                   ) : cobro.comprobante ? (
                     <div className="cobro-card cobro-file">
                       <button type="button" className="cobro-thumb" onClick={() => setZoom(true)} aria-label="Ver la imagen del comprobante en grande" disabled={imgBad}>
-                        {imgBad ? <span>No se pudo cargar la imagen</span> : <img src={comprobanteUrl(id, cobro.comprobante.subido_el)} alt={`Comprobante ${cobro.comprobante.nombre}`} onError={() => setImgBad(true)} />}
+                        {imgBad ? <span>No se pudo cargar la imagen</span> : <TenantImg src={comprobanteUrl(id, cobro.comprobante.subido_el)} alt={`Comprobante ${cobro.comprobante.nombre}`} onError={() => setImgBad(true)} />}
                       </button>
                       <div className="cobro-fileinfo">
                         <strong title={cobro.comprobante.nombre}>{cobro.comprobante.nombre}</strong>
@@ -880,7 +881,7 @@ export default function Cobro({ id, onClose }: { id: string; onClose: () => void
             <button type="button" className="x" onClick={() => setZoom(false)} aria-label="Cerrar la imagen" autoFocus>
               <Icon name="close" size={18} />
             </button>
-            <img src={comprobanteUrl(id, cobro.comprobante.subido_el)} alt={`Comprobante ${cobro.comprobante.nombre}`} />
+            <TenantImg src={comprobanteUrl(id, cobro.comprobante.subido_el)} alt={`Comprobante ${cobro.comprobante.nombre}`} />
           </div>
         )}
       </div>

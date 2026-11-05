@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { api } from './api'
 import { createList } from './cache'
+import { can } from './tenant'
 
 export interface Task {
   id: string
@@ -29,7 +30,7 @@ export const useTasks = () => {
 }
 /** Lectura puntual (fuera de React) de una tarea: para llevar al proyecto donde quedó. */
 export const taskNow = (id: string) => tasks.get().find((t) => t.id === id)
-export const loadTasks = async () => tasks.set(await api.get<Task[]>('/tasks'))
+export const loadTasks = async () => void (can('tareas') && tasks.set(await api.get<Task[]>('/tasks')))
 export const resetTasks = () => tasks.set([])
 
 export async function addTask(projectId: string, title: string, due?: string, responsable?: string): Promise<Task> {

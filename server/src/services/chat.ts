@@ -10,6 +10,8 @@ import { notifyChat } from '../activity.ts'
 import { assertFresh, stamp } from '../concurrency.ts'
 import { pool, tx, type Db } from '../db.ts'
 import { sendToTrash } from '../trash.ts'
+import { memberSql, tenantMembers } from '../socios.ts'
+import { tid } from '../tenant.ts'
 import { HttpError, id, text } from '../util.ts'
 import { op } from './common.ts'
 import { fuente } from './feed.ts'
@@ -50,7 +52,7 @@ export type Mensaje = ReturnType<typeof mensajeOut>
 
 /** null si no existe (lo usa el stream en vivo: un mensaje borrado entre el aviso y la lectura no es un error). */
 export async function mensajePorId(db: Db, mensajeId: string): Promise<Mensaje | null> {
-  const r = (await db.query(`${SELECT} WHERE m.id = $1`, [mensajeId])).rows[0]
+  const r = (await db.query(`${SELECT} WHERE m.id = $1 AND m.tenant_id = $2`, [mensajeId, tid()])).rows[0]
   return r ? mensajeOut(r) : null
 }
 async function mensaje(db: Db, mensajeId: string): Promise<Mensaje> {
@@ -62,15 +64,15 @@ async function mensaje(db: Db, mensajeId: string): Promise<Mensaje> {
 // ---------- contadores ----------
 /** El "leído hasta" nace en now() la primera vez que el socio mira el chat: nadie arranca con todo el historial sin leer. */
 async function contadores(db: Db, userId: string) {
-  await db.query('INSERT INTO chat_reads (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [userId])
+  await db.query('INSERT INTO chat_reads (user_id, tenant_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [userId, tid()])
   const r = (
     await db.query(
       `SELECT ${US('r.read_at')} AS leido_hasta,
-         (SELECT count(*)::int FROM chat_messages m WHERE m.author_id <> $1 AND m.created_at > r.read_at) AS sin_leer,
+         (SELECT count(*)::int FROM chat_messages m WHERE m.tenant_id = $2 AND m.author_id <> $1 AND m.created_at > r.read_at) AS sin_leer,
          (SELECT count(*)::int FROM chat_mentions cm JOIN chat_messages m ON m.id = cm.message_id
-           WHERE cm.user_id = $1 AND m.author_id <> $1 AND m.created_at > r.read_at) AS menciones_sin_leer
-       FROM chat_reads r WHERE r.user_id = $1`,
-      [userId],
+           WHERE cm.tenant_id = $2 AND cm.user_id = $1 AND m.author_id <> $1 AND m.created_at > r.read_at) AS menciones_sin_leer
+       FROM chat_reads r WHERE r.user_id = $1 AND r.tenant_id = $2`,
+      [userId, tid()],
     )
   ).rows[0]
   return { sin_leer: r.sin_leer as number, menciones_sin_leer: r.menciones_sin_leer as number, leido_hasta: r.leido_hasta as string }
@@ -87,7 +89,7 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * está inactivo sí es un error (400). Sin repetidos y sin el propio autor.
  */
 async function resolverMenciones(db: Db, autor: string, texto: string, ids: string[] | undefined): Promise<string[]> {
-  const users = (await db.query('SELECT id, name FROM users WHERE active')).rows as { id: string; name: string }[]
+  const users = await tenantMembers(db) // solo se menciona a socios de este tenant
   const out = new Set<string>()
   let resto = texto
   // Los nombres más largos primero: «@Ana María» no se confunde con «@Ana».
@@ -110,7 +112,7 @@ async function resolverMenciones(db: Db, autor: string, texto: string, ids: stri
 }
 
 const guardarMenciones = async (c: Db, mensajeId: string, ids: string[]) => {
-  if (ids.length) await c.query('INSERT INTO chat_mentions (message_id, user_id) SELECT $1, unnest($2::uuid[])', [mensajeId, ids])
+  if (ids.length) await c.query('INSERT INTO chat_mentions (tenant_id, message_id, user_id) SELECT $3, $1, unnest($2::uuid[])', [mensajeId, ids, tid()])
 }
 
 // ---------- listar ----------
@@ -124,8 +126,8 @@ export const chatListar = op(
     })
     .refine((v) => (v.antes_de === undefined) === (v.antes_de_id === undefined), 'antes_de y antes_de_id van juntos (el creado_el y el id del mensaje más viejo que tienes)'),
   async (actor, i) => {
-    const args: unknown[] = []
-    const where = i.antes_de !== undefined ? `WHERE (m.created_at, m.id) < ($${args.push(i.antes_de)}::timestamptz, $${args.push(i.antes_de_id)}::uuid)` : ''
+    const args: unknown[] = [tid()]
+    const where = `WHERE m.tenant_id = $1${i.antes_de !== undefined ? ` AND (m.created_at, m.id) < ($${args.push(i.antes_de)}::timestamptz, $${args.push(i.antes_de_id)}::uuid)` : ''}`
     const rows = (await pool.query(`${SELECT} ${where} ORDER BY m.created_at DESC, m.id DESC LIMIT $${args.push(i.limite + 1)}`, args)).rows
     const hayMas = rows.length > i.limite
     const data = rows.slice(0, i.limite).map(mensajeOut)
@@ -147,7 +149,7 @@ export const chatVer = op(z.strictObject({ id }), (_a, i) => mensaje(pool, i.id)
 
 /** Los astronautas a quienes se puede mencionar (con su id para `menciones`; en el texto basta @Nombre). */
 export const chatUsuarios = op(z.strictObject({}), async () => {
-  const { rows } = await pool.query('SELECT id, name, avatar FROM users WHERE active ORDER BY created_at, name')
+  const { rows } = await pool.query(`SELECT u.id, u.name, u.avatar FROM users u WHERE ${memberSql('u', '$1')} ORDER BY u.created_at, u.name`, [tid()])
   return { data: rows.map((r) => ({ id: r.id as string, nombre: r.name as string, avatar: r.avatar as string })) }
 })
 
@@ -162,12 +164,12 @@ export const chatPublicar = op(
   async (actor, b) => {
     const r = await tx(async (c) => {
       const ins = await c.query(
-        `INSERT INTO chat_messages (author_id, body, source, external_key) VALUES ($1, $2, $3, $4)
-         ON CONFLICT (source, external_key) WHERE external_key IS NOT NULL DO NOTHING RETURNING id`,
-        [actor.id, b.cuerpo, b.fuente, b.clave_externa ?? null],
+        `INSERT INTO chat_messages (tenant_id, author_id, body, source, external_key) VALUES ($5, $1, $2, $3, $4)
+         ON CONFLICT (tenant_id, source, external_key) WHERE external_key IS NOT NULL DO NOTHING RETURNING id`,
+        [actor.id, b.cuerpo, b.fuente, b.clave_externa ?? null, tid()],
       )
       if (!ins.rowCount) {
-        const ya = (await c.query('SELECT id FROM chat_messages WHERE source = $1 AND external_key = $2', [b.fuente, b.clave_externa])).rows[0]
+        const ya = (await c.query('SELECT id FROM chat_messages WHERE source = $1 AND external_key = $2 AND tenant_id = $3', [b.fuente, b.clave_externa, tid()])).rows[0]
         if (!ya) throw new HttpError(409, 'El mensaje cambió mientras se publicaba: vuelve a intentarlo')
         return { m: await mensaje(c, ya.id), creado: false }
       }
@@ -190,13 +192,13 @@ export const chatEditar = op(
   }),
   async (actor, b) => {
     await tx(async (c) => {
-      const cur = (await c.query('SELECT author_id, body FROM chat_messages WHERE id = $1 FOR UPDATE', [b.id])).rows[0]
+      const cur = (await c.query('SELECT author_id, body FROM chat_messages WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [b.id, tid()])).rows[0]
       if (!cur) throw new HttpError(404, 'Mensaje no encontrado')
       if (cur.author_id !== actor.id) throw new HttpError(403, 'Solo el autor puede editar su mensaje')
       await assertFresh(c, 'chat_messages', b.id)
       if (cur.body === b.cuerpo && b.menciones === undefined) return // nada cambió: no se marca como editado
-      await c.query('UPDATE chat_messages SET body = $2, edited_at = now() WHERE id = $1', [b.id, b.cuerpo])
-      await c.query('DELETE FROM chat_mentions WHERE message_id = $1', [b.id])
+      await c.query('UPDATE chat_messages SET body = $2, edited_at = now() WHERE id = $1 AND tenant_id = $3', [b.id, b.cuerpo, tid()])
+      await c.query('DELETE FROM chat_mentions WHERE message_id = $1 AND tenant_id = $2', [b.id, tid()])
       await guardarMenciones(c, b.id, await resolverMenciones(c, actor.id, b.cuerpo, b.menciones))
       await notifyChat(c, 'editado', b.id)
     })
@@ -207,7 +209,7 @@ export const chatEditar = op(
 // ---------- borrar ----------
 /** Solo el autor o un ADMIN. Va a la papelera 30 días (entidad «mensaje») y se restaura con todo y menciones. */
 export const chatBorrar = op(z.strictObject({ id }), async (actor, i) => {
-  const m = (await pool.query('SELECT author_id FROM chat_messages WHERE id = $1', [i.id])).rows[0]
+  const m = (await pool.query('SELECT author_id FROM chat_messages WHERE id = $1 AND tenant_id = $2', [i.id, tid()])).rows[0]
   if (!m) throw new HttpError(404, 'Mensaje no encontrado')
   if (m.author_id !== actor.id) {
     const rol = (await pool.query('SELECT role FROM users WHERE id = $1', [actor.id])).rows[0]?.role
@@ -228,8 +230,8 @@ export const chatMarcarLeido = op(
   async (actor, b) => {
     await contadores(pool, actor.id) // crea la fila la primera vez
     await pool.query(
-      `UPDATE chat_reads SET read_at = greatest(read_at, least(coalesce($2::timestamptz, (SELECT max(created_at) FROM chat_messages), read_at), now())) WHERE user_id = $1`,
-      [actor.id, b.hasta ?? null],
+      `UPDATE chat_reads SET read_at = greatest(read_at, least(coalesce($2::timestamptz, (SELECT max(created_at) FROM chat_messages WHERE tenant_id = $3), read_at), now())) WHERE user_id = $1 AND tenant_id = $3`,
+      [actor.id, b.hasta ?? null, tid()],
     )
     return contadores(pool, actor.id)
   },

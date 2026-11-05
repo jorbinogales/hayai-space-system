@@ -2,6 +2,8 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { pool, tx, type Db } from '../db.ts'
 import { HttpError, idParam, isoDate, money, parse, text } from '../util.ts'
+import { memberIdByName } from '../socios.ts'
+import { tid } from '../tenant.ts'
 import { applyClientPatch, entryStage, loadStages, SOURCES } from '../crm.ts'
 import { moneyLabel, patchPayment } from '../payments.ts'
 import { recordActivity } from '../activity.ts'
@@ -18,6 +20,8 @@ type Movement = { id: string; updatedAt: Date; date: string; concept: string; am
 
 /** 3 consultas y se agrupa en memoria (sin N+1). Con ids, solo esos clientes. */
 export async function loadClients(db: Db, ids?: string[]) {
+  const t = tid()
+  const args = ids ? [t, ids] : [t]
   const [clients, items, moves] = await Promise.all([
     db.query(
       `SELECT c.id, c.name, c.avatar, c.is_prospect, c.archived_at, c.created_at, c.phone, c.email, c.contact_name, c.contact_role, c.address, c.notes,
@@ -28,17 +32,17 @@ export async function loadClients(db: Db, ids?: string[]) {
               (SELECT max(i.occurred_at) FROM interactions i WHERE i.client_id = c.id AND i.kind <> 'etapa') AS last_contact_at,
               -- el ítem del feed del que salió (solo si se creó con «Convertir»): da el enlace a la fuente y el «Devolver al feed»
               (SELECT json_build_object('id', f.id, 'titulo', f.title, 'fuente', f.source, 'fecha', f.found_at)
-                 FROM feed_item_vinculos v JOIN feed_items f ON f.id = v.item_id WHERE v.kind = 'posible_cliente' AND v.ref_id = c.id LIMIT 1) AS del_feed
-       FROM clients c ${ids ? 'WHERE c.id = ANY($1::uuid[])' : ''} ORDER BY c.created_at, c.id`,
-      ids ? [ids] : [],
+                 FROM feed_item_vinculos v JOIN feed_items f ON f.id = v.item_id WHERE v.tenant_id = c.tenant_id AND v.kind = 'posible_cliente' AND v.ref_id = c.id LIMIT 1) AS del_feed
+       FROM clients c WHERE c.tenant_id = $1 ${ids ? 'AND c.id = ANY($2::uuid[])' : ''} ORDER BY c.created_at, c.id`,
+      args,
     ),
     db.query(
-      `SELECT id, client_id, concept, amount FROM client_items ${ids ? 'WHERE client_id = ANY($1::uuid[])' : ''} ORDER BY created_at, id`,
-      ids ? [ids] : [],
+      `SELECT id, client_id, concept, amount FROM client_items WHERE tenant_id = $1 ${ids ? 'AND client_id = ANY($2::uuid[])' : ''} ORDER BY created_at, id`,
+      args,
     ),
     db.query(
-      `SELECT id, client_id, updated_at, date, concept, amount, kind, status, series_id, series_index, series_total FROM payments ${ids ? 'WHERE client_id = ANY($1::uuid[])' : ''} ORDER BY date, created_at, id`,
-      ids ? [ids] : [],
+      `SELECT id, client_id, updated_at, date, concept, amount, kind, status, series_id, series_index, series_total FROM payments WHERE tenant_id = $1 ${ids ? 'AND client_id = ANY($2::uuid[])' : ''} ORDER BY date, created_at, id`,
+      args,
     ),
   ])
   const itemsBy = new Map<string, Item[]>()
@@ -113,18 +117,19 @@ clientsRouter.post('/', async (req, res) => {
   const totalCents = b.items.reduce((s, i) => s + Math.round(i.amount * 100), 0)
 
   const clientId = await tx(async (c) => {
-    const { rows } = await c.query('INSERT INTO clients (name, avatar, created_by) VALUES ($1, $2, $3) RETURNING id', [
+    const { rows } = await c.query('INSERT INTO clients (tenant_id, name, avatar, created_by) VALUES ($4, $1, $2, $3) RETURNING id', [
       b.name,
       b.avatar,
       userId,
+      tid(),
     ])
     const id: string = rows[0].id
     await insertItems(c, id, b.items)
     if (totalCents > 0) {
       await c.query(
-        `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, received_by, received_by_source)
-         VALUES ($1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4, $4, 'manual')`,
-        [id, b.initialDate, totalCents / 100, userId],
+        `INSERT INTO payments (tenant_id, client_id, date, concept, amount, kind, status, created_by, received_by, received_by_source)
+         VALUES ($5, $1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4, $4, 'manual')`,
+        [id, b.initialDate, totalCents / 100, userId, tid()],
       )
     }
     await insertCharges(c, id, userId, b.charges.flatMap(expandCharge))
@@ -152,7 +157,7 @@ clientsRouter.patch('/:id', async (req, res) => {
   )
   const rowCount = await tx(async (c) => {
     await assertFresh(c, 'clients', clientId)
-    return (await c.query('UPDATE clients SET name = COALESCE($2, name), avatar = COALESCE($3, avatar) WHERE id = $1', [clientId, b.name ?? null, b.avatar ?? null])).rowCount
+    return (await c.query('UPDATE clients SET name = COALESCE($2, name), avatar = COALESCE($3, avatar) WHERE id = $1 AND tenant_id = $4', [clientId, b.name ?? null, b.avatar ?? null, tid()])).rowCount
   })
   if (!rowCount) throw new HttpError(404, 'Cliente no encontrado')
   res.json(await clientOr404(pool, clientId))
@@ -168,7 +173,7 @@ clientsRouter.delete('/:id', async (req, res) => {
 for (const [action, value] of [['archive', 'now()'], ['unarchive', 'NULL']] as const) {
   clientsRouter.post(`/:id/${action}`, async (req, res) => {
     const clientId = idParam(req.params.id)
-    const { rowCount } = await pool.query(`UPDATE clients SET archived_at = ${value} WHERE id = $1`, [clientId])
+    const { rowCount } = await pool.query(`UPDATE clients SET archived_at = ${value} WHERE id = $1 AND tenant_id = $2`, [clientId, tid()])
     if (!rowCount) throw new HttpError(404, 'Cliente no encontrado')
     res.json(await clientOr404(pool, clientId))
   })
@@ -182,19 +187,19 @@ clientsRouter.put('/:id/initial', async (req, res) => {
 
   await tx(async (c) => {
     // FOR UPDATE serializa ediciones concurrentes de la misma inicial.
-    if (!(await c.query('SELECT 1 FROM clients WHERE id = $1 FOR UPDATE', [clientId])).rowCount)
+    if (!(await c.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [clientId, tid()])).rowCount)
       throw new HttpError(404, 'Cliente no encontrado')
-    await c.query('DELETE FROM client_items WHERE client_id = $1', [clientId])
+    await c.query('DELETE FROM client_items WHERE client_id = $1 AND tenant_id = $2', [clientId, tid()])
     await insertItems(c, clientId, b.items)
     if (totalCents > 0) {
       await c.query(
-        `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, received_by, received_by_source)
-         VALUES ($1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4, $4, 'manual')
+        `INSERT INTO payments (tenant_id, client_id, date, concept, amount, kind, status, created_by, received_by, received_by_source)
+         VALUES ($5, $1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4, $4, 'manual')
          ON CONFLICT (client_id) WHERE kind = 'inicial' DO UPDATE SET date = EXCLUDED.date, amount = EXCLUDED.amount, status = 'cobrado'`,
-        [clientId, b.date, totalCents / 100, req.user!.id],
+        [clientId, b.date, totalCents / 100, req.user!.id, tid()],
       )
     } else {
-      await c.query("DELETE FROM payments WHERE client_id = $1 AND kind = 'inicial'", [clientId])
+      await c.query("DELETE FROM payments WHERE client_id = $1 AND tenant_id = $2 AND kind = 'inicial'", [clientId, tid()])
     }
   })
   res.json(await clientOr404(pool, clientId))
@@ -246,11 +251,11 @@ clientsRouter.post('/:id/payments', async (req, res) => {
     req.body,
   )
   await tx(async (c) => {
-    if (!(await c.query('SELECT 1 FROM clients WHERE id = $1 FOR UPDATE', [clientId])).rowCount)
+    if (!(await c.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [clientId, tid()])).rowCount)
       throw new HttpError(404, 'Cliente no encontrado')
     await insertCharges(c, clientId, req.user!.id, expandCharge(b))
     if (b.status === 'cobrado') {
-      const name = (await c.query('SELECT name FROM clients WHERE id = $1', [clientId])).rows[0].name as string
+      const name = (await c.query('SELECT name FROM clients WHERE id = $1 AND tenant_id = $2', [clientId, tid()])).rows[0].name as string
       await recordActivity(c, { kind: 'cobro_cobrado', actorId: req.user!.id, subject: name, detail: moneyLabel(b.amount), clientId })
     }
   })
@@ -262,7 +267,7 @@ clientsRouter.post('/:id/convert', async (req, res) => {
   const clientId = idParam(req.params.id)
   // La pantalla actual no pide la fecha de implementacion: si la ficha no la tiene, se asume hoy (Caracas).
   await tx(async (c) => {
-    const { rows } = await c.query(`SELECT implementation_date IS NOT NULL AS has, (now() AT TIME ZONE 'America/Caracas')::date::text AS today FROM clients WHERE id = $1`, [clientId])
+    const { rows } = await c.query(`SELECT implementation_date IS NOT NULL AS has, (now() AT TIME ZONE 'America/Caracas')::date::text AS today FROM clients WHERE id = $1 AND tenant_id = $2`, [clientId, tid()])
     await applyClientPatch(c, req.user!.id, clientId, { etapa: 'ganado', ...(rows[0] && !rows[0].has ? { fecha_implementacion: rows[0].today } : {}) })
   })
   res.json(await clientOr404(pool, clientId))
@@ -270,7 +275,7 @@ clientsRouter.post('/:id/convert', async (req, res) => {
 
 /** Id del cliente dueño de un pago editable (kind='pago'); 404 si no existe, 400 si es la inicial. */
 async function paymentOwner(paymentId: string) {
-  const row = (await pool.query('SELECT client_id, kind FROM payments WHERE id = $1', [paymentId])).rows[0]
+  const row = (await pool.query('SELECT client_id, kind FROM payments WHERE id = $1 AND tenant_id = $2', [paymentId, tid()])).rows[0]
   if (!row) throw new HttpError(404, 'Pago no encontrado')
   if (row.kind === 'inicial') throw new HttpError(400, 'La inicial se edita desde sus ítems')
   return row.client_id as string
@@ -313,27 +318,28 @@ export const prospectsRouter = Router()
 prospectsRouter.post('/', async (req, res) => {
   const b = parse(newProspect, req.body)
   const userId = req.user!.id
-  const owner = (await pool.query('SELECT id FROM users WHERE lower(name) = lower($1) AND active', [b.project.owner])).rows[0]
-  if (!owner) throw new HttpError(404, 'Responsable no encontrado')
+  const ownerId = await memberIdByName(pool, b.project.owner)
+  if (!ownerId) throw new HttpError(404, 'Responsable no encontrado')
 
   const ids = await tx(async (c) => {
     // Entra al pipeline en la primera etapa abierta (potencial, 10 %), contando desde ahora.
     const entry = entryStage(await loadStages(c))
     const client = await c.query(
-      `INSERT INTO clients (name, avatar, is_prospect, pipeline_stage, probability, stage_changed_at, created_by, lead_source, utm_source)
-       VALUES ($1, $2, true, $3, $4, now(), $5, $6, $7) RETURNING id`,
-      [b.name, b.avatar, entry.key, entry.probability, userId, b.source, b.utmSource ?? null],
+      `INSERT INTO clients (tenant_id, name, avatar, is_prospect, pipeline_stage, probability, stage_changed_at, created_by, lead_source, utm_source)
+       VALUES ($8, $1, $2, true, $3, $4, now(), $5, $6, $7) RETURNING id`,
+      [b.name, b.avatar, entry.key, entry.probability, userId, b.source, b.utmSource ?? null, tid()],
     )
     const project = await c.query(
-      `INSERT INTO projects (name, icon, client_id, owner_id, status, due_date, created_by)
-       VALUES ($1, $2, $3, $4, 'planeacion', $5, $6) RETURNING id`,
-      [b.project.name, b.project.icon, client.rows[0].id, owner.id, b.project.due ?? null, userId],
+      `INSERT INTO projects (tenant_id, name, icon, client_id, owner_id, status, due_date, created_by)
+       VALUES ($7, $1, $2, $3, $4, 'planeacion', $5, $6) RETURNING id`,
+      [b.project.name, b.project.icon, client.rows[0].id, ownerId, b.project.due ?? null, userId, tid()],
     )
-    const task = await c.query('INSERT INTO tasks (project_id, title, due_date, created_by) VALUES ($1, $2, $3, $4) RETURNING id', [
+    const task = await c.query('INSERT INTO tasks (tenant_id, project_id, title, due_date, created_by) VALUES ($5, $1, $2, $3, $4) RETURNING id', [
       project.rows[0].id,
       b.visit.title ?? `Visita a ${b.name}`,
       b.visit.date ?? null,
       userId,
+      tid(),
     ])
     // Un solo aviso para todo el alta (cliente + proyecto + visita): "añadió un cliente potencial", no tres.
     await recordActivity(c, { kind: 'posible_nuevo', actorId: userId, subject: b.name, clientId: client.rows[0].id })
@@ -342,8 +348,8 @@ prospectsRouter.post('/', async (req, res) => {
 
   const [client, project, task] = await Promise.all([
     clientOr404(pool, ids.client),
-    pool.query(`${PROJECT_SELECT} WHERE p.id = $1`, [ids.project]),
-    pool.query(`${TASK_SELECT} WHERE t.id = $1`, [ids.task]),
+    pool.query(`${PROJECT_SELECT} WHERE p.id = $1 AND p.tenant_id = $2`, [ids.project, tid()]),
+    pool.query(`${TASK_SELECT} WHERE t.id = $1 AND t.tenant_id = $2`, [ids.task, tid()]),
   ])
   res.status(201).json({ client, project: project.rows[0], task: task.rows[0] })
 })

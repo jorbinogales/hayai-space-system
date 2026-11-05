@@ -3,6 +3,8 @@
 // Se llama DENTRO de la transaccion del cambio: el INSERT y el pg_notify se confirman (o se deshacen) con el. Asi no hay
 // avisos de algo que no paso, ni algo que pasa sin aviso.
 import type { Pool, PoolClient } from 'pg'
+import { ALL_TENANTS } from './db.ts'
+import { tid } from './tenant.ts'
 
 export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'tarea_reasignada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido', 'lead_meta', 'acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado', 'version_nueva', 'feed_nuevo'] as const
 export type ActivityKind = (typeof KINDS)[number]
@@ -17,10 +19,10 @@ export const isSystemKind = (k: string) => (SYSTEM_KINDS as readonly string[]).i
 export const INTERNAL_ACTIVITY_SQL = "((a.client_id IS NULL AND a.kind NOT IN ('lead_meta', 'feed_nuevo')) OR a.kind IN ('acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado', 'version_nueva'))"
 
 export const CHANNEL = 'activity'
-/** Canal del chat interno: el payload es JSON { op: 'nuevo' | 'editado' | 'borrado', id }. Se avisa DENTRO de la transaccion del cambio. */
+/** Canal del chat interno: el payload es JSON { op: 'nuevo' | 'editado' | 'borrado', id, tenant_id }. Se avisa DENTRO de la transaccion del cambio. */
 export const CHAT_CHANNEL = 'chat'
 export const notifyChat = (db: Pool | PoolClient, op: 'nuevo' | 'editado' | 'borrado', id: string) =>
-  db.query('SELECT pg_notify($1, $2)', [CHAT_CHANNEL, JSON.stringify({ op, id })])
+  db.query('SELECT pg_notify($1, $2)', [CHAT_CHANNEL, JSON.stringify({ op, id, tenant_id: tid() })])
 /** Canal de las vistas de proyecto: lo dispara un trigger (migracion 026) al confirmarse un cambio en el proyecto, sus hitos, su checklist o sus tareas. */
 export const PROYECTO_CHANNEL = 'proyecto'
 const RETENTION_DAYS = 60
@@ -41,11 +43,11 @@ export type ActivityInput = {
 
 export async function recordActivity(db: Pool | PoolClient, a: ActivityInput): Promise<number> {
   // Limpieza oportunista, sin tareas programadas (como la papelera).
-  await db.query(`DELETE FROM activity WHERE created_at < now() - make_interval(days => $1)`, [RETENTION_DAYS])
+  await db.query(`DELETE FROM activity WHERE created_at < now() - make_interval(days => $1) ${ALL_TENANTS}`, [RETENTION_DAYS])
   const { rows } = await db.query(
-    `INSERT INTO activity (kind, actor_id, client_id, project_id, task_id, subject, detail, via)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-    [a.kind, a.actorId, a.clientId ?? null, a.projectId ?? null, a.taskId ?? null, a.subject, a.detail ?? null, a.via ?? 'web'],
+    `INSERT INTO activity (tenant_id, kind, actor_id, client_id, project_id, task_id, subject, detail, via)
+     VALUES ($9, $1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [a.kind, a.actorId, a.clientId ?? null, a.projectId ?? null, a.taskId ?? null, a.subject, a.detail ?? null, a.via ?? 'web', tid()],
   )
   await db.query('SELECT pg_notify($1, $2)', [CHANNEL, String(rows[0].id)])
   return Number(rows[0].id)

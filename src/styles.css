@@ -1965,3 +1965,42 @@ fieldset > .seg { margin-bottom: 12px; }
 .g-sum .new { margin-top: 0; }
 .finances.deep .overlay { opacity: 0; pointer-events: none; transition: opacity 0.45s ease; }
 @media (max-width: 700px) { .g-sum { justify-content: flex-start; } }
+
+/* ---------- espacio de trabajo (tenant): selector del menú principal y estados sin acceso ---------- */
+.mark { display: flex; align-items: flex-start; gap: 22px; }
+.tn { position: relative; margin-top: -3px; }
+.acct-tn { display: none; margin: 0 0 10px; gap: 6px; }
+.acct-tn b { font-size: 0.9rem; color: #ffd27a; }
+.acct-tn button.is-on { background: rgba(239, 157, 37, 0.34); box-shadow: inset 0 0 0 1px var(--amber); }
+@media (max-width: 999px) {
+  .tn { display: none; }
+  .acct-tn { display: grid; }
+}
+.tn-btn { display: inline-flex; align-items: center; gap: 8px; max-width: min(240px, 60vw); min-height: 32px; padding: 0 12px 0 10px; border: 0; border-radius: 999px; background: var(--night); color: #f4ebdd; font: 600 0.78rem / 1 var(--sans); letter-spacing: 0.04em; cursor: pointer; box-shadow: 0 0 0 1px rgba(239, 157, 37, 0.25); transition: background var(--t-hover) var(--ease); }
+.tn-btn:hover { background: #2c2218; }
+.tn-btn.is-static { cursor: default; }
+.tn-btn.is-static:hover { background: var(--night); }
+.tn-btn i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 8px rgba(239, 157, 37, 0.8); }
+.tn-btn span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tn-btn svg { flex: none; color: #ffd27a; }
+.tn-btn:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.tn-menu { position: absolute; left: 0; top: calc(100% + 8px); z-index: 20; display: grid; gap: 6px; min-width: 220px; max-width: min(320px, calc(100vw - 32px)); max-height: 60dvh; overflow-y: auto; padding: 12px; border-radius: 16px; background: linear-gradient(180deg, rgba(34, 27, 19, 0.98), rgba(22, 17, 11, 0.98)); color: #f4ebdd; box-shadow: 0 20px 40px -18px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(239, 157, 37, 0.2); animation: panelIn var(--t-panel) var(--ease); }
+.tn-menu small { font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; color: rgba(244, 235, 221, 0.6); font-weight: 500; }
+.tn-menu button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 9px 12px; border: 0; border-radius: 10px; background: rgba(239, 157, 37, 0.1); color: #ffd27a; font: inherit; font-weight: 600; cursor: pointer; text-align: left; }
+.tn-menu button:hover { background: rgba(239, 157, 37, 0.3); }
+.tn-menu button.is-on { background: rgba(239, 157, 37, 0.28); box-shadow: inset 0 0 0 1px var(--amber); }
+.tn-menu button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tn-menu button em { flex: none; font-style: normal; font-size: 0.72rem; font-weight: 500; color: rgba(244, 235, 221, 0.6); }
+.tn-menu button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+/* sobre pantallas oscuras el selector sigue leyéndose: es una píldora de noche con borde ámbar */
+
+.na { position: absolute; inset: 0; z-index: 25; display: grid; place-items: center; padding: 96px 20px 24px; background: radial-gradient(70% 70% at 55% 30%, #ebe0cf 0%, #e1d0b9 55%, #cdb597 100%); color: var(--ink); text-align: center; }
+.na > div { display: grid; gap: 12px; justify-items: center; max-width: 440px; }
+.na h2 { margin: 0; font: 600 1.7rem / 1.15 var(--display); }
+.na p { margin: 0; color: var(--ink-2); font-size: 0.96rem; line-height: 1.5; }
+.na .primary, .na .ghost { margin-top: 6px; }
+.na .na-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.na.is-load { background: rgba(235, 224, 207, 0.9); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+.na .na-spin { width: 34px; height: 34px; border-radius: 50%; border: 3px solid rgba(22, 17, 11, 0.12); border-top-color: var(--amber); animation: na-spin 0.8s linear infinite; }
+@keyframes na-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .na .na-spin { animation-duration: 3s; } }

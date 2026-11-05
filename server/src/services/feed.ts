@@ -14,6 +14,7 @@ import { stamp } from '../concurrency.ts'
 import { SOURCES, esquemaCobro, fichaShape, normalizeSocialUrl } from '../crm.ts'
 import { pool, tx, type Db } from '../db.ts'
 import { HttpError, id, text } from '../util.ts'
+import { requireModule, tid } from '../tenant.ts'
 import { boolFlag, exec, filters, op, pageShape, paged, TZ, type Actor } from './common.ts'
 import { llmConfig } from '../llm.ts'
 import { VINCULO_TABLA, type Vinculo } from '../feedLinks.ts'
@@ -203,14 +204,14 @@ export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
   if (!items.length) return items
   const links = (
     await db.query(
-      `SELECT l.item_id, l.kind, l.ref_id, l.created_at, u.name AS por FROM feed_item_vinculos l JOIN users u ON u.id = l.created_by WHERE l.item_id = ANY($1::uuid[]) AND l.ref_id IS NOT NULL`,
-      [items.map((i) => i.id)],
+      `SELECT l.item_id, l.kind, l.ref_id, l.created_at, u.name AS por FROM feed_item_vinculos l JOIN users u ON u.id = l.created_by WHERE l.item_id = ANY($1::uuid[]) AND l.tenant_id = $2 AND l.ref_id IS NOT NULL`,
+      [items.map((i) => i.id), tid()],
     )
   ).rows
   const existe = new Set<string>()
   for (const tabla of new Set(Object.values(VINCULO_TABLA))) {
     const refs = [...new Set(links.filter((l) => VINCULO_TABLA[l.kind as Vinculo] === tabla).map((l) => l.ref_id as string))]
-    if (refs.length) for (const r of (await db.query(`SELECT id FROM ${tabla} WHERE id = ANY($1::uuid[])`, [refs])).rows) existe.add(r.id as string)
+    if (refs.length) for (const r of (await db.query(`SELECT id FROM ${tabla} WHERE id = ANY($1::uuid[]) AND tenant_id = $2`, [refs, tid()])).rows) existe.add(r.id as string)
   }
   const vivos = links.filter((l) => existe.has(l.ref_id as string))
   const idDatos = (i: ItemOut) => (typeof i.datos.cliente_id === 'string' && UUID.test(i.datos.cliente_id) ? i.datos.cliente_id : null)
@@ -219,9 +220,9 @@ export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
   const nombres = [...new Set(items.flatMap((i) => nombreDatos(i) ?? []).map(plano))]
   const cl = (
     await db.query(
-      `SELECT id, name, is_prospect, archived_at FROM clients WHERE id = ANY($1::uuid[])
-         OR (archived_at IS NULL AND (fold(name) = ANY(SELECT fold(x) FROM unnest($2::text[]) x) OR fold(btrim(split_part(name, ' - ', 1))) = ANY(SELECT fold(x) FROM unnest($2::text[]) x)))`,
-      [ids, nombres],
+      `SELECT id, name, is_prospect, archived_at FROM clients WHERE tenant_id = $3 AND (id = ANY($1::uuid[])
+         OR (archived_at IS NULL AND (fold(name) = ANY(SELECT fold(x) FROM unnest($2::text[]) x) OR fold(btrim(split_part(name, ' - ', 1))) = ANY(SELECT fold(x) FROM unnest($2::text[]) x))))`,
+      [ids, nombres, tid()],
     )
   ).rows
   const porId = new Map(cl.map((c) => [c.id as string, c]))
@@ -247,7 +248,7 @@ export async function enriquecer(db: Db, items: ItemOut[]): Promise<ItemOut[]> {
 }
 
 export async function item(db: Db, itemId: string, userId: string) {
-  const r = (await db.query(`${SELECT('$2')} WHERE f.id = $1 AND ${visible('$2')}`, [itemId, userId])).rows[0]
+  const r = (await db.query(`${SELECT('$2')} WHERE f.id = $1 AND f.tenant_id = $3 AND ${visible('$2')}`, [itemId, userId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Ítem del feed no encontrado')
   return (await enriquecer(db, [itemOut(r)]))[0]
 }
@@ -271,7 +272,7 @@ type Filtro = { [K in keyof typeof filtroShape]?: z.infer<(typeof filtroShape)[K
 
 /** WHERE de los filtros + visibilidad. Devuelve el marcador del socio que mira (siempre el parámetro siguiente a los de los filtros). */
 function filtrar(i: Filtro) {
-  const g = filters()
+  const g = filters('f.tenant_id')
   if (i.visibilidad) g.add('f.visibility = ?', i.visibilidad)
   if (i.tipo) g.add('f.kind = ?', i.tipo)
   if (i.estado) g.add(`${MI_ESTADO} = ?`, i.estado)
@@ -288,11 +289,11 @@ function filtrar(i: Filtro) {
 /** Contadores del socio (no dependen del filtro): sirven para el «N nuevos» y para armar los filtros, en la lista y en el mapa. */
 async function contadores(actor: Actor) {
   const [porEstado, porTipo, fuentes, categorias, extra] = await Promise.all([
-    pool.query(`SELECT ${MI_ESTADO} AS e, count(*)::int AS n FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY 1`, [actor.id]),
-    pool.query(`SELECT f.kind, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY f.kind`, [actor.id]),
-    pool.query(`SELECT f.source, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')} GROUP BY f.source ORDER BY 3 DESC, 2 DESC, 1`, [actor.id]),
-    pool.query(`SELECT f.category, count(*)::int AS n FROM feed_items f WHERE f.category IS NOT NULL AND ${visible('$1')} GROUP BY f.category ORDER BY 2 DESC, 1`, [actor.id]),
-    pool.query(`SELECT count(*) FILTER (WHERE COALESCE(mu.saved, false))::int AS guardados, count(*) FILTER (WHERE f.category IS NULL)::int AS sin_categoria FROM feed_items f ${joinMi('$1')} WHERE ${visible('$1')}`, [actor.id]),
+    pool.query(`SELECT ${MI_ESTADO} AS e, count(*)::int AS n FROM feed_items f ${joinMi('$1')} WHERE f.tenant_id = $2 AND ${visible('$1')} GROUP BY 1`, [actor.id, tid()]),
+    pool.query(`SELECT f.kind, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} WHERE f.tenant_id = $2 AND ${visible('$1')} GROUP BY f.kind`, [actor.id, tid()]),
+    pool.query(`SELECT f.source, count(*)::int AS n, count(*) FILTER (WHERE ${MI_ESTADO} = 'nuevo')::int AS nuevos FROM feed_items f ${joinMi('$1')} WHERE f.tenant_id = $2 AND ${visible('$1')} GROUP BY f.source ORDER BY 3 DESC, 2 DESC, 1`, [actor.id, tid()]),
+    pool.query(`SELECT f.category, count(*)::int AS n FROM feed_items f WHERE f.tenant_id = $2 AND f.category IS NOT NULL AND ${visible('$1')} GROUP BY f.category ORDER BY 2 DESC, 1`, [actor.id, tid()]),
+    pool.query(`SELECT count(*) FILTER (WHERE COALESCE(mu.saved, false))::int AS guardados, count(*) FILTER (WHERE f.category IS NULL)::int AS sin_categoria FROM feed_items f ${joinMi('$1')} WHERE f.tenant_id = $2 AND ${visible('$1')}`, [actor.id, tid()]),
   ])
   const por_estado = Object.fromEntries(ESTADOS.map((e) => [e, 0])) as Record<string, number>
   for (const r of porEstado.rows) por_estado[r.e] = r.n
@@ -385,22 +386,22 @@ type Resultado = { item: ReturnType<typeof itemOut>; creado: boolean }
 /** Inserta un ítem (o devuelve el que ya existía con esa fuente y clave). No avisa: avisar es cosa de quien publicó el lote completo. */
 async function insertar(c: Db, actor: Actor, b: Item): Promise<Resultado> {
   const ins = await c.query(
-    `INSERT INTO feed_items (title, summary, kind, source, external_key, published_by, data, found_at, category, visibility)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, COALESCE($8::timestamptz, now()), $9, $10)
-     ON CONFLICT (source, external_key) WHERE external_key IS NOT NULL DO NOTHING RETURNING id`,
-    [b.titulo, b.resumen ?? null, b.tipo, b.fuente, b.clave_externa ?? null, actor.id, JSON.stringify(b.datos ?? {}), b.fecha ?? null, b.categoria ?? null, b.visibilidad ?? 'equipo'],
+    `INSERT INTO feed_items (title, summary, kind, source, external_key, published_by, data, found_at, category, visibility, tenant_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, COALESCE($8::timestamptz, now()), $9, $10, $11)
+     ON CONFLICT (tenant_id, source, external_key) WHERE external_key IS NOT NULL DO NOTHING RETURNING id`,
+    [b.titulo, b.resumen ?? null, b.tipo, b.fuente, b.clave_externa ?? null, actor.id, JSON.stringify(b.datos ?? {}), b.fecha ?? null, b.categoria ?? null, b.visibilidad ?? 'equipo', tid()],
   )
   if (ins.rowCount) {
     // Oportunidades e ideas: sus acciones sugeridas se generan en segundo plano (si hay IA); mientras tanto el ítem sale «pendiente».
-    if (esAccionable(b.tipo) && llmConfig()) await c.query(`UPDATE feed_items SET actions_status = 'pendiente', actions_at = now() WHERE id = $1`, [ins.rows[0].id])
+    if (esAccionable(b.tipo) && llmConfig()) await c.query(`UPDATE feed_items SET actions_status = 'pendiente', actions_at = now() WHERE id = $1 AND tenant_id = $2`, [ins.rows[0].id, tid()])
     await sembrarGuion(c, ins.rows[0].id, b.datos ?? {}, actor.id) // el guión publicado es la versión 1 (original, inmutable)
     return { item: await item(c, ins.rows[0].id, actor.id), creado: true }
   }
-  const ya = (await c.query('SELECT id, visibility, published_by FROM feed_items WHERE source = $1 AND external_key = $2', [b.fuente, b.clave_externa])).rows[0]
+  const ya = (await c.query('SELECT id, visibility, published_by FROM feed_items WHERE source = $1 AND external_key = $2 AND tenant_id = $3', [b.fuente, b.clave_externa, tid()])).rows[0]
   // Esa clave ya es de un ítem privado de otro socio: no se le muestra ni se le confirma que existe su contenido.
   if (ya.visibility === 'privado' && ya.published_by !== actor.id) throw new HttpError(409, 'Esa clave_externa ya está en uso en esa fuente: usa otra')
   // Volver a publicar lo mismo no duplica; solo le pone la categoría si todavía no tenía (así se completan los ya publicados).
-  if (b.categoria) await c.query('UPDATE feed_items SET category = $2 WHERE id = $1 AND category IS NULL', [ya.id, b.categoria])
+  if (b.categoria) await c.query('UPDATE feed_items SET category = $2 WHERE id = $1 AND tenant_id = $3 AND category IS NULL', [ya.id, b.categoria, tid()])
   return { item: await item(c, ya.id, actor.id), creado: false }
 }
 
@@ -448,7 +449,7 @@ export const feedPublicar = op(
         if (!previos.has(k))
           previos.set(
             k,
-            (await c.query(`SELECT count(*)::int AS n FROM feed_items WHERE source = $1 AND kind = $2 AND created_at > now() - make_interval(mins => $3)`, [it.fuente, it.tipo, AVISO_AGRUPA_MIN])).rows[0].n,
+            (await c.query(`SELECT count(*)::int AS n FROM feed_items WHERE tenant_id = $4 AND source = $1 AND kind = $2 AND created_at > now() - make_interval(mins => $3)`, [it.fuente, it.tipo, AVISO_AGRUPA_MIN, tid()])).rows[0].n,
           )
       }
       const out: Resultado[] = []
@@ -486,13 +487,13 @@ export const feedMarcar = op(
   async (actor, b) => {
     if (b.motivo && b.estado !== 'descartado') throw new HttpError(400, 'motivo solo aplica al descartar')
     await tx(async (c) => {
-      const cur = (await c.query(`SELECT status FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR SHARE`, [b.id, actor.id])).rows[0]
+      const cur = (await c.query(`SELECT status FROM feed_items f WHERE id = $1 AND tenant_id = $3 AND ${visible('$2')} FOR SHARE`, [b.id, actor.id, tid()])).rows[0]
       if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
       if (cur.status === 'convertido') throw new HttpError(409, 'Este ítem ya se convirtió en algo real: no cambia de estado')
       await c.query(
-        `INSERT INTO feed_item_usuarios (item_id, user_id, status, discard_reason) VALUES ($1, $2, $3, $4)
+        `INSERT INTO feed_item_usuarios (tenant_id, item_id, user_id, status, discard_reason) VALUES ($5, $1, $2, $3, $4)
          ON CONFLICT (item_id, user_id) DO UPDATE SET status = EXCLUDED.status, discard_reason = EXCLUDED.discard_reason, updated_at = now()`,
-        [b.id, actor.id, b.estado === 'nuevo' ? null : b.estado, b.estado === 'descartado' ? (b.motivo ?? null) : null],
+        [b.id, actor.id, b.estado === 'nuevo' ? null : b.estado, b.estado === 'descartado' ? (b.motivo ?? null) : null, tid()],
       )
     })
     return item(pool, b.id, actor.id)
@@ -502,11 +503,11 @@ export const feedMarcar = op(
 /** Guardar (o quitar de guardados) un ítem: es un marcador personal, sirve también en los ya convertidos. */
 export const feedGuardar = op(z.strictObject({ id, guardado: z.boolean('guardado debe ser true o false').default(true) }), async (actor, b) => {
   await tx(async (c) => {
-    if (!(await c.query(`SELECT 1 FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR SHARE`, [b.id, actor.id])).rowCount) throw new HttpError(404, 'Ítem del feed no encontrado')
+    if (!(await c.query(`SELECT 1 FROM feed_items f WHERE id = $1 AND tenant_id = $3 AND ${visible('$2')} FOR SHARE`, [b.id, actor.id, tid()])).rowCount) throw new HttpError(404, 'Ítem del feed no encontrado')
     await c.query(
-      `INSERT INTO feed_item_usuarios (item_id, user_id, saved) VALUES ($1, $2, $3)
+      `INSERT INTO feed_item_usuarios (tenant_id, item_id, user_id, saved) VALUES ($4, $1, $2, $3)
        ON CONFLICT (item_id, user_id) DO UPDATE SET saved = EXCLUDED.saved, updated_at = now()`,
-      [b.id, actor.id, b.guardado],
+      [b.id, actor.id, b.guardado, tid()],
     )
   })
   return item(pool, b.id, actor.id)
@@ -552,7 +553,7 @@ export const feedContacto = op(z.strictObject({ id, instagram: z.string('instagr
   const url = b.instagram ? instagramUrl(b.instagram) : null
   if (b.instagram && !url) throw new HttpError(400, 'Instagram inválido (usa https://instagram.com/usuario o @usuario)')
   await tx(async (c) => {
-    const cur = (await c.query(`SELECT data FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id])).rows[0]
+    const cur = (await c.query(`SELECT data FROM feed_items f WHERE id = $1 AND tenant_id = $3 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id, tid()])).rows[0]
     if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
     const d: Record<string, unknown> = { ...(cur.data as Record<string, unknown>) }
     if (esRec(d.contacto)) {
@@ -563,7 +564,7 @@ export const feedContacto = op(z.strictObject({ id, instagram: z.string('instagr
     if (Array.isArray(d.urls)) d.urls = d.urls.filter((u) => !(typeof u === 'string' && /instagram\.com/i.test(u)))
     if (url) d.instagram = url
     d.contacto_manual = { ...(esRec(d.contacto_manual) ? d.contacto_manual : {}), instagram: { valor: url, por: actor.name, el: new Date().toISOString() } }
-    await c.query('UPDATE feed_items SET data = $2::jsonb, updated_at = now() WHERE id = $1', [b.id, JSON.stringify(d)])
+    await c.query('UPDATE feed_items SET data = $2::jsonb, updated_at = now() WHERE id = $1 AND tenant_id = $3', [b.id, JSON.stringify(d), tid()])
   })
   return item(pool, b.id, actor.id)
 })
@@ -586,7 +587,7 @@ export const feedUbicacion = op(
     const manual = b.lat !== undefined && b.lng !== undefined
     if (manual && !enVenezuela(b.lat!, b.lng!)) throw new HttpError(400, 'Ese punto queda fuera de Venezuela: revisa lat y lng')
     await tx(async (c) => {
-      const cur = (await c.query(`SELECT data FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id])).rows[0]
+      const cur = (await c.query(`SELECT data FROM feed_items f WHERE id = $1 AND tenant_id = $3 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id, tid()])).rows[0]
       if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
       let data = { ...((cur.data ?? {}) as Record<string, unknown>) }
       if (b.direccion) data.donde = b.direccion
@@ -595,7 +596,7 @@ export const feedUbicacion = op(
         // Otra dirección: lo calculado de la anterior ya no vale (tampoco unas coordenadas que trajera quien publicó).
         for (const k of ['geo', 'lat', 'lng', 'latitud', 'longitud']) delete data[k]
       }
-      await c.query('UPDATE feed_items SET data = $2::jsonb WHERE id = $1', [b.id, JSON.stringify(data)])
+      await c.query('UPDATE feed_items SET data = $2::jsonb WHERE id = $1 AND tenant_id = $3', [b.id, JSON.stringify(data), tid()])
     })
     if (!manual) await geocodificarItem(pool, b.id, { forzar: true })
     return item(pool, b.id, actor.id)
@@ -717,7 +718,8 @@ const convertirShape = z.strictObject({
 async function proyectoInterno(actor: Actor): Promise<string> {
   const r = (
     await pool.query(
-      `SELECT id FROM projects WHERE client_id IS NULL AND archived_at IS NULL AND status IN ('activo', 'entrega', 'planeacion') ORDER BY (status = 'activo') DESC, created_at, id LIMIT 1`,
+      `SELECT id FROM projects WHERE tenant_id = $1 AND client_id IS NULL AND archived_at IS NULL AND status IN ('activo', 'entrega', 'planeacion') ORDER BY (status = 'activo') DESC, created_at, id LIMIT 1`,
+      [tid()],
     )
   ).rows[0]
   if (r) return r.id as string
@@ -730,8 +732,8 @@ async function proyectoDeLaTarea(actor: Actor, clienteId: string | null): Promis
   if (clienteId) {
     const r = (
       await pool.query(
-        `SELECT id FROM projects WHERE client_id = $1 AND archived_at IS NULL AND status IN ('activo', 'entrega', 'planeacion') ORDER BY (status = 'activo') DESC, created_at, id LIMIT 1`,
-        [clienteId],
+        `SELECT id FROM projects WHERE client_id = $1 AND tenant_id = $2 AND archived_at IS NULL AND status IN ('activo', 'entrega', 'planeacion') ORDER BY (status = 'activo') DESC, created_at, id LIMIT 1`,
+        [clienteId, tid()],
       )
     ).rows[0]
     if (r) return r.id as string
@@ -746,20 +748,24 @@ export const masDias = (iso: string, n: number) => {
 }
 const ETIQUETA: Record<Vinculo, string> = { posible_cliente: 'el cliente potencial', cliente: 'el cliente', tarea: 'la tarea', proyecto: 'el proyecto', propuesta: 'la propuesta', seguimiento: 'el seguimiento', contenido: 'la pieza de contenido' }
 
+/** Convertir crea algo de otro módulo: quien convierte debe tenerlo en este tenant. */
+const MODULO_DE: Record<(typeof CONVERSIONES)[number], 'crm' | 'tareas' | 'proyectos' | 'marketing'> = { posible_cliente: 'crm', cliente: 'crm', tarea: 'tareas', seguimiento: 'tareas', proyecto: 'proyectos', contenido: 'marketing' }
+
 export const feedConvertir = op(convertirShape, async (actor, b) => {
+  requireModule(MODULO_DE[b.a])
   // Se reclama la clase ANTES de crear nada: dos socios tocando "Convertir" a la vez no duplican el cliente o la tarea.
   const antes = await tx(async (c) => {
-    const cur = (await c.query(`SELECT status FROM feed_items f WHERE id = $1 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id])).rows[0]
+    const cur = (await c.query(`SELECT status FROM feed_items f WHERE id = $1 AND tenant_id = $3 AND ${visible('$2')} FOR UPDATE`, [b.id, actor.id, tid()])).rows[0]
     if (!cur) throw new HttpError(404, 'Ítem del feed no encontrado')
-    const prev = (await c.query('SELECT ref_id, created_at FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])).rows[0]
+    const prev = (await c.query('SELECT ref_id, created_at FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2 AND tenant_id = $3', [b.id, b.a, tid()])).rows[0]
     if (prev) {
-      const viva = prev.ref_id ? (await c.query(`SELECT 1 FROM ${VINCULO_TABLA[b.a]} WHERE id = $1`, [prev.ref_id])).rowCount : Date.now() - (prev.created_at as Date).getTime() < 120_000
+      const viva = prev.ref_id ? (await c.query(`SELECT 1 FROM ${VINCULO_TABLA[b.a]} WHERE id = $1 AND tenant_id = $2`, [prev.ref_id, tid()])).rowCount : Date.now() - (prev.created_at as Date).getTime() < 120_000
       if (viva) throw new HttpError(409, `Ya se creó ${ETIQUETA[b.a]} desde este ítem`)
-      await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a]) // lo creado ya no existe (papelera) o el intento quedó a medias
+      await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2 AND tenant_id = $3', [b.id, b.a, tid()]) // lo creado ya no existe (papelera) o el intento quedó a medias
     }
-    await c.query('INSERT INTO feed_item_vinculos (item_id, kind, created_by) VALUES ($1, $2, $3)', [b.id, b.a, actor.id])
+    await c.query('INSERT INTO feed_item_vinculos (tenant_id, item_id, kind, created_by) VALUES ($4, $1, $2, $3)', [b.id, b.a, actor.id, tid()])
     if (cur.status !== 'convertido')
-      await c.query(`UPDATE feed_items SET status = 'convertido', converted_to = $2, discard_reason = NULL, status_by = $3, status_at = now() WHERE id = $1`, [b.id, b.a, actor.id])
+      await c.query(`UPDATE feed_items SET status = 'convertido', converted_to = $2, discard_reason = NULL, status_by = $3, status_at = now() WHERE id = $1 AND tenant_id = $4`, [b.id, b.a, actor.id, tid()])
     return cur.status as string
   })
   const f = await item(pool, b.id, actor.id)
@@ -810,7 +816,7 @@ export const feedConvertir = op(convertirShape, async (actor, b) => {
     } else if (b.a === 'contenido') {
       // Una idea del feed pasa al tablero de Contenido (columna «Idea»). Si salió de una keyword, la pieza hereda su keyword.
       const kw = str(f.datos.keyword_id)
-      const keywordId = kw && z.uuid().safeParse(kw).success && (await pool.query('SELECT 1 FROM mk_keywords WHERE id = $1', [kw])).rowCount ? kw : null
+      const keywordId = kw && z.uuid().safeParse(kw).success && (await pool.query('SELECT 1 FROM mk_keywords WHERE id = $1 AND tenant_id = $2', [kw, tid()])).rowCount ? kw : null
       const resp = b.responsable ? await userByName(pool, b.responsable) : { id: actor.id }
       const nuevo = await insertContenido(pool, {
         titulo: cortar(b.titulo ?? f.titulo, 160),
@@ -821,7 +827,7 @@ export const feedConvertir = op(convertirShape, async (actor, b) => {
         feed_item_id: b.id,
         created_by: actor.id,
       })
-      if (keywordId) await pool.query(`UPDATE mk_keywords SET estado = 'en_contenido', updated_at = now() WHERE id = $1 AND estado = 'por_atacar'`, [keywordId])
+      if (keywordId) await pool.query(`UPDATE mk_keywords SET estado = 'en_contenido', updated_at = now() WHERE id = $1 AND tenant_id = $2 AND estado = 'por_atacar'`, [keywordId, tid()])
       creado = { id: nuevo }
     } else {
       creado = (await exec(proyectoCrear, actor, {
@@ -831,15 +837,15 @@ export const feedConvertir = op(convertirShape, async (actor, b) => {
         ...(b.responsable ? { responsable: b.responsable } : {}),
       })) as { id: string }
     }
-    await pool.query('UPDATE feed_item_vinculos SET ref_id = $3, created_at = now() WHERE item_id = $1 AND kind = $2', [b.id, b.a, creado.id])
-    await pool.query('UPDATE feed_items SET converted_id = $2 WHERE id = $1 AND converted_to = $3', [b.id, creado.id, b.a])
+    await pool.query('UPDATE feed_item_vinculos SET ref_id = $3, created_at = now() WHERE item_id = $1 AND kind = $2 AND tenant_id = $4', [b.id, b.a, creado.id, tid()])
+    await pool.query('UPDATE feed_items SET converted_id = $2 WHERE id = $1 AND converted_to = $3 AND tenant_id = $4', [b.id, creado.id, b.a, tid()])
     return { item: await item(pool, b.id, actor.id), creado: { tipo: b.a, id: creado.id, detalle: creado } }
   } catch (e) {
     // No se pudo crear (validación, 404...): el ítem vuelve a como estaba para poder reintentar con otros datos.
     await tx(async (c) => {
-      await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2 AND ref_id IS NULL', [b.id, b.a])
-      if (antes !== 'convertido' && !(await c.query('SELECT 1 FROM feed_item_vinculos WHERE item_id = $1', [b.id])).rowCount)
-        await c.query(`UPDATE feed_items SET status = $2, converted_to = NULL, converted_id = NULL, status_by = NULL, status_at = NULL WHERE id = $1`, [b.id, antes])
+      await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2 AND tenant_id = $3 AND ref_id IS NULL', [b.id, b.a, tid()])
+      if (antes !== 'convertido' && !(await c.query('SELECT 1 FROM feed_item_vinculos WHERE item_id = $1 AND tenant_id = $2', [b.id, tid()])).rowCount)
+        await c.query(`UPDATE feed_items SET status = $2, converted_to = NULL, converted_id = NULL, status_by = NULL, status_at = NULL WHERE id = $1 AND tenant_id = $3`, [b.id, antes, tid()])
     })
     throw e
   }
@@ -857,45 +863,46 @@ export const feedDeshacer = op(
     devolver: z.boolean('devolver debe ser true o false').optional(),
   }),
   async (actor, b) => {
-  if (!(await pool.query(`SELECT 1 FROM feed_items f WHERE id = $1 AND ${visible('$2')}`, [b.id, actor.id])).rowCount) throw new HttpError(404, 'Ítem del feed no encontrado')
-  const l = (await pool.query('SELECT ref_id, created_by, created_at FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])).rows[0]
+  const T = tid()
+  if (!(await pool.query(`SELECT 1 FROM feed_items f WHERE id = $1 AND tenant_id = $3 AND ${visible('$2')}`, [b.id, actor.id, T])).rowCount) throw new HttpError(404, 'Ítem del feed no encontrado')
+  const l = (await pool.query('SELECT ref_id, created_by, created_at FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2 AND tenant_id = $3', [b.id, b.a, T])).rows[0]
   if (!l || !l.ref_id) throw new HttpError(404, 'No hay nada que deshacer en este ítem')
   if (b.devolver) {
     if (b.a !== 'posible_cliente') throw new HttpError(400, 'Solo se puede devolver al feed un cliente potencial')
-    const c = (await pool.query('SELECT is_prospect FROM clients WHERE id = $1', [l.ref_id])).rows[0]
+    const c = (await pool.query('SELECT is_prospect FROM clients WHERE id = $1 AND tenant_id = $2', [l.ref_id, T])).rows[0]
     if (!c) throw new HttpError(404, 'Ese cliente potencial ya no existe')
     if (!c.is_prospect) throw new HttpError(409, 'Ya es cliente: no se puede devolver al feed')
   } else {
     if (l.created_by !== actor.id) throw new HttpError(403, 'Solo quien lo creó puede deshacerlo')
     if (Date.now() - (l.created_at as Date).getTime() > DESHACER_SEG * 1000) throw new HttpError(409, 'Ya pasó el tiempo para deshacer: elimínalo desde su pantalla')
   }
-  if (b.a === 'posible_cliente' && (await pool.query(`SELECT 1 FROM feed_item_vinculos WHERE item_id = $1 AND kind = 'cliente'`, [b.id])).rowCount)
+  if (b.a === 'posible_cliente' && (await pool.query(`SELECT 1 FROM feed_item_vinculos WHERE item_id = $1 AND tenant_id = $2 AND kind = 'cliente'`, [b.id, T])).rowCount)
     throw new HttpError(409, 'Primero deshaz la promoción a cliente')
   const via = actor.via ?? 'web'
   if (b.a === 'posible_cliente') await sendToTrash('cliente', l.ref_id, actor.id, via)
   else if (b.a === 'cliente') {
-    if ((await pool.query(`SELECT 1 FROM proposals WHERE client_id = $1 AND status = 'aceptada'`, [l.ref_id])).rowCount)
+    if ((await pool.query(`SELECT 1 FROM proposals WHERE client_id = $1 AND tenant_id = $2 AND status = 'aceptada'`, [l.ref_id, T])).rowCount)
       throw new HttpError(409, 'Esa promoción cerró una propuesta y generó cobros: se revierte desde el cliente')
     await exec(clienteActualizar, actor, { id: l.ref_id, estado: 'potencial' })
   } else if (b.a === 'tarea' || b.a === 'seguimiento') await sendToTrash('tarea', l.ref_id, actor.id, via)
-  else if (b.a === 'contenido') await pool.query('UPDATE mk_contenidos SET archived_at = now(), updated_at = now() WHERE id = $1', [l.ref_id]) // el tablero no usa la papelera: se archiva
+  else if (b.a === 'contenido') await pool.query('UPDATE mk_contenidos SET archived_at = now(), updated_at = now() WHERE id = $1 AND tenant_id = $2', [l.ref_id, T]) // el tablero no usa la papelera: se archiva
   else await sendToTrash('proyecto', l.ref_id, actor.id, via)
   await tx(async (c) => {
-    await c.query('SELECT 1 FROM feed_items WHERE id = $1 FOR UPDATE', [b.id])
-    await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, b.a])
+    await c.query('SELECT 1 FROM feed_items WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [b.id, T])
+    await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2 AND tenant_id = $3', [b.id, b.a, T])
     if (b.devolver) {
       // El cliente potencial se llevó a la papelera sus proyectos, tareas y propuestas: esos vínculos del ítem ya no apuntan a nada.
-      for (const v of (await c.query('SELECT kind, ref_id FROM feed_item_vinculos WHERE item_id = $1 AND ref_id IS NOT NULL', [b.id])).rows)
-        if (!(await c.query(`SELECT 1 FROM ${VINCULO_TABLA[v.kind as Vinculo]} WHERE id = $1`, [v.ref_id])).rowCount) await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2', [b.id, v.kind])
+      for (const v of (await c.query('SELECT kind, ref_id FROM feed_item_vinculos WHERE item_id = $1 AND tenant_id = $2 AND ref_id IS NOT NULL', [b.id, T])).rows)
+        if (!(await c.query(`SELECT 1 FROM ${VINCULO_TABLA[v.kind as Vinculo]} WHERE id = $1 AND tenant_id = $2`, [v.ref_id, T])).rowCount) await c.query('DELETE FROM feed_item_vinculos WHERE item_id = $1 AND kind = $2 AND tenant_id = $3', [b.id, v.kind, T])
     }
-    const otro = (await c.query('SELECT kind, ref_id FROM feed_item_vinculos WHERE item_id = $1 AND ref_id IS NOT NULL ORDER BY created_at, kind LIMIT 1', [b.id])).rows[0]
-    if (otro) await c.query(`UPDATE feed_items SET converted_to = $2, converted_id = $3 WHERE id = $1`, [b.id, otro.kind, otro.ref_id])
-    else await c.query(`UPDATE feed_items SET status = 'nuevo', converted_to = NULL, converted_id = NULL, status_by = NULL, status_at = NULL WHERE id = $1`, [b.id])
+    const otro = (await c.query('SELECT kind, ref_id FROM feed_item_vinculos WHERE item_id = $1 AND tenant_id = $2 AND ref_id IS NOT NULL ORDER BY created_at, kind LIMIT 1', [b.id, T])).rows[0]
+    if (otro) await c.query(`UPDATE feed_items SET converted_to = $2, converted_id = $3 WHERE id = $1 AND tenant_id = $4`, [b.id, otro.kind, otro.ref_id, T])
+    else await c.query(`UPDATE feed_items SET status = 'nuevo', converted_to = NULL, converted_id = NULL, status_by = NULL, status_at = NULL WHERE id = $1 AND tenant_id = $2`, [b.id, T])
     // Una acción sugerida que ya se ejecutó pero cuyo resultado se deshizo vuelve a estar disponible (su botón no queda «hecho» sin nada detrás).
-    const quedan = new Set((await c.query('SELECT kind FROM feed_item_vinculos WHERE item_id = $1', [b.id])).rows.map((r) => r.kind as string))
-    const acts = (await c.query('SELECT actions FROM feed_items WHERE id = $1', [b.id])).rows[0]?.actions as { tipo: string; hecha: unknown }[] | undefined
+    const quedan = new Set((await c.query('SELECT kind FROM feed_item_vinculos WHERE item_id = $1 AND tenant_id = $2', [b.id, T])).rows.map((r) => r.kind as string))
+    const acts = (await c.query('SELECT actions FROM feed_items WHERE id = $1 AND tenant_id = $2', [b.id, T])).rows[0]?.actions as { tipo: string; hecha: unknown }[] | undefined
     if (acts?.some((a) => a.hecha && VINCULO_DE_ACCION[a.tipo] && !quedan.has(VINCULO_DE_ACCION[a.tipo])))
-      await c.query('UPDATE feed_items SET actions = $2::jsonb WHERE id = $1', [b.id, JSON.stringify(acts.map((a) => (a.hecha && VINCULO_DE_ACCION[a.tipo] && !quedan.has(VINCULO_DE_ACCION[a.tipo]) ? { ...a, hecha: null } : a)))])
+      await c.query('UPDATE feed_items SET actions = $2::jsonb WHERE id = $1 AND tenant_id = $3', [b.id, JSON.stringify(acts.map((a) => (a.hecha && VINCULO_DE_ACCION[a.tipo] && !quedan.has(VINCULO_DE_ACCION[a.tipo]) ? { ...a, hecha: null } : a))), T])
   })
   return { item: await item(pool, b.id, actor.id), deshecho: b.a }
   },
@@ -906,8 +913,8 @@ export async function feedResumen(userId: string) {
   const r = (
     await pool.query(
       `SELECT count(*) FILTER (WHERE f.status <> 'convertido' AND mu.status IS NULL)::int AS nuevos, count(*)::int AS total
-       FROM feed_items f LEFT JOIN feed_item_usuarios mu ON mu.item_id = f.id AND mu.user_id = $1 WHERE ${visible('$1')}`,
-      [userId],
+       FROM feed_items f LEFT JOIN feed_item_usuarios mu ON mu.item_id = f.id AND mu.user_id = $1 WHERE f.tenant_id = $2 AND ${visible('$1')}`,
+      [userId, tid()],
     )
   ).rows[0]
   return { nuevos: r.nuevos as number, total: r.total as number }
@@ -918,8 +925,8 @@ export async function feedAlertas(userId: string): Promise<{ clave: string; fech
   const { rows } = await pool.query(
     `SELECT f.id, f.title, f.kind, f.source, f.found_at, f.created_at, to_char(f.created_at AT TIME ZONE $1, 'YYYY-MM-DD') AS dia
      FROM feed_items f LEFT JOIN feed_item_usuarios mu ON mu.item_id = f.id AND mu.user_id = $4
-     WHERE ${visible('$4')} AND f.status = 'nuevo' AND mu.status IS NULL AND f.kind = ANY($2::text[]) AND f.created_at > now() - make_interval(days => $3) ORDER BY f.created_at DESC, f.id`,
-    [TZ, TIPOS_AVISO, AVISO_DIAS, userId],
+     WHERE f.tenant_id = $5 AND ${visible('$4')} AND f.status = 'nuevo' AND mu.status IS NULL AND f.kind = ANY($2::text[]) AND f.created_at > now() - make_interval(days => $3) ORDER BY f.created_at DESC, f.id`,
+    [TZ, TIPOS_AVISO, AVISO_DIAS, userId, tid()],
   )
   const grupos = new Map<string, typeof rows>()
   for (const r of rows) grupos.set(`${r.kind}|${r.source}|${r.dia}`, [...(grupos.get(`${r.kind}|${r.source}|${r.dia}`) ?? []), r])
@@ -940,7 +947,7 @@ export async function feedAlertas(userId: string): Promise<{ clave: string; fech
  * (cliente, tarea, proyecto, pieza de contenido) NO se toca: solo pierde el vínculo. Un privado de otro socio no existe para quien lo intenta: 404.
  */
 export const feedBorrar = op(z.strictObject({ id }), async (actor, b) => {
-  const r = (await pool.query(`DELETE FROM feed_items f WHERE id = $1 AND ${visible('$2')} RETURNING id, title`, [b.id, actor.id])).rows[0]
+  const r = (await pool.query(`DELETE FROM feed_items f WHERE id = $1 AND tenant_id = $3 AND ${visible('$2')} RETURNING id, title`, [b.id, actor.id, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Ítem del feed no encontrado')
   return { id: r.id as string, titulo: r.title as string, eliminado: true as const }
 })

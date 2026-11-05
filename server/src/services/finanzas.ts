@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { pool } from '../db.ts'
+import { tid } from '../tenant.ts'
 import { cents, op, todayISO } from './common.ts'
 
 // Port al servidor de src/finance.ts (la web lo calcula en el navegador). Diferencias a proposito:
@@ -20,11 +21,12 @@ export const finanzasResumen = op(
     const inPeriod = (d: string) => i.periodo === 'todo' || d.startsWith(prefijo)
 
     const [clientes, pagos, gastos] = await Promise.all([
-      pool.query('SELECT id, name, is_prospect, archived_at IS NOT NULL AS archived FROM clients ORDER BY created_at, id'),
-      pool.query('SELECT client_id, date, amount, status FROM payments'),
+      pool.query('SELECT id, name, is_prospect, archived_at IS NOT NULL AS archived FROM clients WHERE tenant_id = $1 ORDER BY created_at, id', [tid()]),
+      pool.query('SELECT client_id, date, amount, status FROM payments WHERE tenant_id = $1', [tid()]),
       pool.query(
         `SELECT e.date, e.amount, e.client_id, p.client_id AS project_client
-         FROM expenses e LEFT JOIN projects p ON p.id = e.project_id`,
+         FROM expenses e LEFT JOIN projects p ON p.id = e.project_id WHERE e.tenant_id = $1`,
+        [tid()],
       ),
     ])
 

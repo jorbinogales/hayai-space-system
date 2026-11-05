@@ -150,6 +150,12 @@ export function requirePinChanged(req: Request, res: Response, next: NextFunctio
   next()
 }
 
+/** Solo ADMIN (users.role leído de la BD en requireSession, nunca del cliente). */
+export function requireAdmin(req: Request, _res: Response, next: NextFunction) {
+  if (req.user?.role !== 'ADMIN') throw new HttpError(403, 'Solo un administrador puede hacer esto', { codigo: 'solo_admin' })
+  next()
+}
+
 // ---------- límite por IP en memoria ----------
 // ponytail: un solo proceso; con varias instancias, mover el contador a la BD.
 const hits = new Map<string, { n: number; reset: number }>()

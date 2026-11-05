@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type { NextFunction, Request, Response } from 'express'
 import { pool } from '../db.ts'
+import { resolveAccess, withTenant } from '../tenant.ts'
 import { HttpError } from '../util.ts'
 
 export const KEY_PREFIX = 'hy_'
@@ -55,6 +56,8 @@ function assertNotBlocked(ip: string | undefined) {
 /**
  * Autentica con el header X-API-Key. Deja en req.user al socio dueño de la llave (las escrituras se le atribuyen).
  * No acepta la cookie de sesion de la web: una llave y una sesion son cosas distintas.
+ * Multitenant: cada llave es de UN tenant (api_keys.tenant_id). En cada llamada se vuelve a comprobar que el tenant siga activo y que
+ * el dueño siga entrando a él (ADMIN o miembro); los módulos son los del dueño en ese tenant (los exige cada ruta). Sin acceso: 403.
  */
 export async function apiKeyAuth(req: Request, _res: Response, next: NextFunction) {
   assertNotBlocked(req.ip)
@@ -67,25 +70,30 @@ export async function apiKeyAuth(req: Request, _res: Response, next: NextFunctio
   if (!key.startsWith(KEY_PREFIX) || key.length > 200) throw reject()
 
   const { rows } = await pool.query(
-    `SELECT k.id AS key_id, k.name AS key_name, k.prefix, k.scopes, u.id, u.name, u.avatar, u.role
+    `SELECT k.id AS key_id, k.name AS key_name, k.prefix, k.scopes, k.tenant_id, u.id, u.name, u.avatar, u.role
      FROM api_keys k JOIN users u ON u.id = k.user_id
      WHERE k.key_hash = $1 AND k.revoked_at IS NULL AND u.active`,
     [hashKey(key)],
   )
   const r = rows[0]
   if (!r) throw reject()
+  // last_used_at como mucho una vez por minuto (no escribimos en cada llamada); va en paralelo con la comprobación del tenant.
+  const [tenant] = await Promise.all([
+    resolveAccess({ id: r.id, role: r.role }, r.tenant_id),
+    pool
+      .query(
+        `UPDATE api_keys SET last_used_at = now() WHERE id = $1 AND tenant_id = $2 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')`,
+        [r.key_id, r.tenant_id],
+      )
+      .catch(() => {}),
+  ])
+  if (!tenant) throw new HttpError(403, 'El dueño de esta llave ya no tiene acceso a su espacio de trabajo (o está desactivado)', { codigo: 'tenant_sin_acceso' })
 
   const scopes = r.scopes as Scope[]
   req.user = { id: r.id, name: r.name, avatar: r.avatar, role: r.role, mustChangePin: false, scopes, via: `api:${r.key_name}` }
   req.apiKey = { id: r.key_id, name: r.key_name, prefix: r.prefix, scopes }
-  // last_used_at como mucho una vez por minuto: no escribimos en la BD en cada llamada.
-  pool
-    .query(
-      `UPDATE api_keys SET last_used_at = now() WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')`,
-      [r.key_id],
-    )
-    .catch(() => {})
-  next()
+  req.tenant = tenant
+  withTenant(tenant, next)
 }
 
 // ---------- limite por llave (en memoria) ----------

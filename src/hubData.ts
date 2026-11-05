@@ -2,6 +2,7 @@
 // no son listas compartidas, asi que viven en un hook local con recarga manual (y en vivo desde el Hub).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api'
+import { can } from './tenant'
 import type { Activity } from './live'
 
 export interface Carga {
@@ -153,4 +154,5 @@ export function useLoaded<T>(load: () => Promise<T>, deps: unknown[]): Loaded<T>
 
 export const loadHub = () => api.get<HubData>('/hub')
 export const loadFunnel = (dias: number) => api.get<Funnel>(`/marketing/funnel?dias=${dias}`)
-export const loadStages = async () => (await api.get<{ data: PipelineStage[] }>('/pipeline/stages')).data
+/** Etapas del pipeline (módulo crm): sin él no hay etapas que pedir. */
+export const loadStages = async (): Promise<PipelineStage[]> => (can('crm') ? (await api.get<{ data: PipelineStage[] }>('/pipeline/stages')).data : [])

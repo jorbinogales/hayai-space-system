@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { pool } from '../db.ts'
 import { sendToTrash } from '../trash.ts'
 import { HttpError, id, idParam, isoDate, money, parse, text } from '../util.ts'
+import { tid } from '../tenant.ts'
 
 const SELECT = `SELECT e.id, e.date, e.concept, e.amount, e.category, e.scope,
     COALESCE(c.name, p.name) AS ref, COALESCE(e.client_id, e.project_id) AS "refId", u.name AS owner
@@ -25,7 +26,7 @@ const newExpense = z
 export const expensesRouter = Router()
 
 expensesRouter.get('/', async (_req, res) => {
-  const { rows } = await pool.query(`${SELECT} ORDER BY e.date DESC, e.created_at DESC, e.id`)
+  const { rows } = await pool.query(`${SELECT} WHERE e.tenant_id = $1 ORDER BY e.date DESC, e.created_at DESC, e.id`, [tid()])
   res.json(rows)
 })
 
@@ -34,17 +35,17 @@ expensesRouter.post('/', async (req, res) => {
   // El esquema exige client_id solo con scope=cliente, project_id solo con proyecto, y ninguno con general.
   const clientId = b.scope === 'cliente' ? b.refId! : null
   const projectId = b.scope === 'proyecto' ? b.refId! : null
-  if (clientId && !(await pool.query('SELECT 1 FROM clients WHERE id = $1', [clientId])).rowCount)
+  if (clientId && !(await pool.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2', [clientId, tid()])).rowCount)
     throw new HttpError(404, 'Cliente no encontrado')
-  if (projectId && !(await pool.query('SELECT 1 FROM projects WHERE id = $1', [projectId])).rowCount)
+  if (projectId && !(await pool.query('SELECT 1 FROM projects WHERE id = $1 AND tenant_id = $2', [projectId, tid()])).rowCount)
     throw new HttpError(404, 'Proyecto no encontrado')
 
   const { rows } = await pool.query(
-    `INSERT INTO expenses (date, concept, amount, category, scope, client_id, project_id, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-    [b.date, b.concept, b.amount, b.category, b.scope, clientId, projectId, req.user!.id],
+    `INSERT INTO expenses (tenant_id, date, concept, amount, category, scope, client_id, project_id, created_by)
+     VALUES ($9, $1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [b.date, b.concept, b.amount, b.category, b.scope, clientId, projectId, req.user!.id, tid()],
   )
-  res.status(201).json((await pool.query(`${SELECT} WHERE e.id = $1`, [rows[0].id])).rows[0])
+  res.status(201).json((await pool.query(`${SELECT} WHERE e.id = $1 AND e.tenant_id = $2`, [rows[0].id, tid()])).rows[0])
 })
 
 expensesRouter.delete('/:id', async (req, res) => {

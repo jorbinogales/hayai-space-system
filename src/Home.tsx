@@ -12,6 +12,7 @@ import { loadFunnel, loadHub, useLoaded } from './hubData'
 import { CORE_R, PLANETS, type PlanetKey } from './world'
 import { useCosmos } from './Cosmos'
 import { setInternal } from './nav'
+import { useTenant } from './tenant'
 import './hub.css'
 
 /** Líneas de la tarjeta de Marketing, del embudo de los últimos 90 días (mientras carga, un texto neutro). */
@@ -28,11 +29,12 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
   const cards = useRef<(HTMLElement | null)[]>([])
   const mark = useRef<HTMLButtonElement | null>(null)
   const coreCard = useRef<HTMLDivElement | null>(null)
+  const { can } = useTenant() // lo que el socio no tiene en este espacio no aparece
   const sm = summary(useClients())
   const pc = projectCounts(useProjects())
   const expenses = useExpenses()
-  const funnel = useLoaded(() => loadFunnel(90), []).data
-  const hubData = useLoaded(loadHub, []).data
+  const funnel = useLoaded(() => (can('marketing') ? loadFunnel(90) : Promise.resolve(null)), []).data
+  const hubData = useLoaded(() => (can('hub') ? loadHub() : Promise.resolve(null)), []).data
   const tk = taskCounts(useTasks())
   const allClients = useAllClients()
   const fin = yearFinance(allClients, expenses)
@@ -102,14 +104,14 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
   }, [shown])
 
   const open = (k: PlanetKey) => {
-    if (!shown || false) return
+    if (!shown || !can(k)) return
     setHot(null)
     setInternal(false)
     onOpen(k)
   }
 
   const openHub = () => {
-    if (!shown) return
+    if (!shown || !can('hub')) return
     setHot(null)
     setInternal(false)
     onOpen('hub')
@@ -125,6 +127,8 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
   return (
     <main className={`screen layer home${shown ? '' : ' warping'}`}>
       <div className="overlay">
+        {can('hub') && (
+        <>
         <div className={`pcard right core-card${hot === 'hub' ? ' is-hot' : ''}`} ref={coreCard}>
           <button
             className="card"
@@ -166,7 +170,10 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
         >
           HAYAI
         </button>
+        </>
+        )}
         {PLANETS.map((p, i) => {
+          if (!can(p.key)) return null
           const d =
             p.key === 'clientes'
               ? { title: 'Clientes', lines: [`${sm.activos} activos`, `${money(sm.recaudado)} recaudado`, `${money(porCobrar)} por cobrar`] }

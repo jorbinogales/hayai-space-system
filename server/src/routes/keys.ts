@@ -1,10 +1,12 @@
-// Llaves de API propias: cada socio crea y revoca las suyas desde la web (sesion + PIN). Una llave actua como su dueño.
+// Llaves de API propias: cada socio crea y revoca las suyas desde la web (sesion + PIN). Una llave actua como su dueño, en el tenant
+// donde se creó (el de la cabecera X-Tenant-Id): la lista y la revocación son de ese tenant.
 import { Router } from 'express'
 import { z } from 'zod'
 import { checkPin, lockedError } from '../auth.ts'
 import { pool } from '../db.ts'
 import { generateApiKey, SCOPES } from '../v1/apiKey.ts'
 import { HttpError, idParam, parse, text } from '../util.ts'
+import { tid } from '../tenant.ts'
 
 export const keysRouter = Router()
 
@@ -22,7 +24,7 @@ const out = (r: any) => ({
 })
 
 keysRouter.get('/', async (req, res) => {
-  const { rows } = await pool.query(`${KEY_SELECT} WHERE user_id = $1 AND revoked_at IS NULL ORDER BY created_at DESC, id`, [req.user!.id])
+  const { rows } = await pool.query(`${KEY_SELECT} WHERE user_id = $1 AND tenant_id = $2 AND revoked_at IS NULL ORDER BY created_at DESC, id`, [req.user!.id, tid()])
   res.json(rows.map(out))
 })
 
@@ -52,14 +54,14 @@ keysRouter.post('/', async (req, res) => {
     throw new HttpError(403, 'El PIN es incorrecto')
   }
 
-  const active = (await pool.query('SELECT count(*)::int AS n FROM api_keys WHERE user_id = $1 AND revoked_at IS NULL', [me.id])).rows[0].n
+  const active = (await pool.query('SELECT count(*)::int AS n FROM api_keys WHERE user_id = $1 AND tenant_id = $2 AND revoked_at IS NULL', [me.id, tid()])).rows[0].n
   if (active >= MAX_ACTIVE) throw new HttpError(409, `Máximo ${MAX_ACTIVE} llaves activas. Revoca alguna que ya no uses`)
 
   const k = generateApiKey()
   const { rows } = await pool.query(
-    `INSERT INTO api_keys (user_id, name, prefix, key_hash, scopes) VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO api_keys (tenant_id, user_id, name, prefix, key_hash, scopes) VALUES ($6, $1, $2, $3, $4, $5)
      RETURNING id, name, prefix, scopes, created_at, last_used_at`,
-    [me.id, b.name, k.prefix, k.hash, b.scopes],
+    [me.id, b.name, k.prefix, k.hash, b.scopes, tid()],
   )
   // La llave en claro solo viaja en esta respuesta; en la BD queda su hash.
   res.status(201).json({ ...out(rows[0]), key: k.key })
@@ -67,8 +69,8 @@ keysRouter.post('/', async (req, res) => {
 
 keysRouter.delete('/:id', async (req, res) => {
   const { rowCount } = await pool.query(
-    'UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL',
-    [idParam(req.params.id), req.user!.id],
+    'UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND user_id = $2 AND tenant_id = $3 AND revoked_at IS NULL',
+    [idParam(req.params.id), req.user!.id, tid()],
   )
   if (!rowCount) throw new HttpError(404, 'Llave no encontrada')
   res.status(204).end()

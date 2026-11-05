@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import type { IconName } from './ui'
 import { api } from './api'
 import { createList } from './cache'
+import { can } from './tenant'
 import { loadExpenses } from './expenseData'
 import { loadTasks } from './taskData'
 
@@ -41,7 +42,7 @@ export const useProjects = () => {
 }
 /** Lectura puntual (fuera de React) de un proyecto: para comparar con lo recien recargado. */
 export const projectNow = (id: string) => projects.get().find((p) => p.id === id)
-export const loadProjects = async () => projects.set(await api.get<Project[]>('/projects'))
+export const loadProjects = async () => void (can('proyectos') && projects.set(await api.get<Project[]>('/projects')))
 export const resetProjects = () => projects.set([])
 
 export interface ProjectDraft {

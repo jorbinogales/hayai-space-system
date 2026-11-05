@@ -21,6 +21,7 @@ import { Icon, ZoomControls } from './ui'
 import { reduced, useDive } from './warp'
 import { go, hashClientId } from './nav'
 import { loadStages, useLoaded } from './hubData'
+import { useTenant } from './tenant'
 import { FlatFrame, OrbitalView, PipelineView, ViewSwitch, useViewMode, type Lead } from './orbital'
 
 const ANCHOR_LON = -0.5 // longitud (rad) de la posicion destacada, a la izquierda del meridiano central
@@ -186,6 +187,7 @@ export default function Clients({ onBack }: { onBack: () => void }) {
   const [cal, setCal] = useState(false)
   const [invoice, setInvoice] = useState<InvoiceData | null>(null)
   const [prosp, setProsp] = useState(false) // alta de cliente potencial
+  const crm = useTenant().can('crm') // clientes potenciales y pipeline son del módulo crm
   const [edit, setEdit] = useState<string | null>(null) // cliente que se esta editando
   const projects = useProjects()
   const tasks = useTasks()
@@ -387,10 +389,12 @@ export default function Clients({ onBack }: { onBack: () => void }) {
                 <Icon name="plus" size={16} />
                 Nuevo cliente
               </button>
-              <button className="new alt" onClick={() => setProsp(true)}>
-                <Icon name="plus" size={16} />
-                Cliente potencial
-              </button>
+              {crm && (
+                <button className="new alt" onClick={() => setProsp(true)}>
+                  <Icon name="plus" size={16} />
+                  Cliente potencial
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -504,12 +508,12 @@ export default function Clients({ onBack }: { onBack: () => void }) {
             onView={setView}
             onBack={back}
             onNew={() => setForm(true)}
-            onProspect={() => setProsp(true)}
+            onProspect={crm ? () => setProsp(true) : undefined}
             eyebrow={view === 'orbital' ? 'PLANETA VENTAS · VISTA ORBITAL' : 'PLANETA VENTAS · PIPELINE'}
             title={view === 'orbital' ? 'Quién está cerca de cerrar' : 'El camino de cada cliente potencial'}
           >
             {view === 'orbital' ? (
-              <OrbitalView clients={clients as Lead[]} stages={stages} openId={open} onPick={pickLink} onSwitch={setView} onProspect={() => setProsp(true)} nextOf={nextOf} />
+              <OrbitalView clients={clients as Lead[]} stages={stages} openId={open} onPick={pickLink} onSwitch={setView} onProspect={crm ? () => setProsp(true) : undefined} nextOf={nextOf} />
             ) : (
               <PipelineView clients={clients as Lead[]} stages={stages} openId={open} onPick={pickLink} nextOf={nextOf} />
             )}

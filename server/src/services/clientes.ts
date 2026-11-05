@@ -7,6 +7,7 @@ import { applyClientPatch, COLD_DAYS, daysBetween, entryStage, fichaShape, isOpe
 import { moneyLabel, patchPayment } from '../payments.ts'
 import { DETAIL_COLUMNS, DETAIL_JOINS, detalleOut, detalleShape, hasDetalle, METHODS, pickDetalle, writeDetalle } from '../paymentDetail.ts'
 import { HttpError, id, isoDate, money, text } from '../util.ts'
+import { tid } from '../tenant.ts'
 import { archivadosParam, AVATAR_SEEDS, dayISO, filters, op, pageShape, paged, projectStateOut, r2, todayISO } from './common.ts'
 import { interaccionOut } from './interacciones.ts'
 
@@ -96,14 +97,14 @@ export async function clienteDetalle(clientId: string) {
   const c = (await loadClients(pool, [clientId]))[0]
   if (!c) throw new HttpError(404, 'Cliente no encontrado')
   const [{ rows }, recientes, total, propuestas] = await Promise.all([
-    pool.query('SELECT id, name, status, description, due_date FROM projects WHERE client_id = $1 ORDER BY created_at, id', [clientId]),
+    pool.query('SELECT id, name, status, description, due_date FROM projects WHERE client_id = $1 AND tenant_id = $2 ORDER BY created_at, id', [clientId, tid()]),
     pool.query(
       `SELECT i.id, i.client_id, i.kind, i.occurred_at, i.summary, i.meta, u.name AS author
-       FROM interactions i JOIN users u ON u.id = i.created_by WHERE i.client_id = $1 ORDER BY i.occurred_at DESC, i.id LIMIT 10`,
-      [clientId],
+       FROM interactions i JOIN users u ON u.id = i.created_by WHERE i.client_id = $1 AND i.tenant_id = $2 ORDER BY i.occurred_at DESC, i.id LIMIT 10`,
+      [clientId, tid()],
     ),
-    pool.query('SELECT count(*)::int AS n FROM interactions WHERE client_id = $1', [clientId]),
-    propuestasPor('WHERE p.client_id = $1', [clientId]),
+    pool.query('SELECT count(*)::int AS n FROM interactions WHERE client_id = $1 AND tenant_id = $2', [clientId, tid()]),
+    propuestasPor('WHERE p.client_id = $1 AND p.tenant_id = $2', [clientId, tid()]),
   ])
   return {
     ...resumen(c),
@@ -142,7 +143,7 @@ export const clientesListar = op(
     ...pageShape,
   }),
   async (_a, i) => {
-    const f = filters()
+    const f = filters('tenant_id')
     if (i.estado) f.add('is_prospect = ?', i.estado === 'potencial')
     if (i.etapa) f.add('pipeline_stage = ?', resolveStage(await loadStages(pool), i.etapa).key)
     if (i.archivados === 'excluir') f.raw('archived_at IS NULL')
@@ -153,12 +154,13 @@ export const clientesListar = op(
       pool.query(`SELECT id FROM clients ${f.where()} ORDER BY created_at, id ${clause}`, args),
       // Mismos totales que la cabecera de Clientes en la web: solo clientes activos y no archivados (los potenciales no cuentan).
       pool.query(
-        `SELECT (SELECT count(*)::int FROM clients WHERE NOT is_prospect AND archived_at IS NULL) AS activos,
-                (SELECT count(*)::int FROM clients WHERE is_prospect AND archived_at IS NULL) AS potenciales,
-                (SELECT count(*)::int FROM clients WHERE archived_at IS NOT NULL) AS archivados,
+        `SELECT (SELECT count(*)::int FROM clients WHERE tenant_id = $1 AND NOT is_prospect AND archived_at IS NULL) AS activos,
+                (SELECT count(*)::int FROM clients WHERE tenant_id = $1 AND is_prospect AND archived_at IS NULL) AS potenciales,
+                (SELECT count(*)::int FROM clients WHERE tenant_id = $1 AND archived_at IS NOT NULL) AS archivados,
                 COALESCE(sum(p.amount) FILTER (WHERE p.status = 'cobrado'), 0) AS recaudado,
                 count(*) FILTER (WHERE p.status = 'pendiente')::int AS cuotas_por_cobrar
-         FROM payments p JOIN clients c ON c.id = p.client_id WHERE NOT c.is_prospect AND c.archived_at IS NULL`,
+         FROM payments p JOIN clients c ON c.id = p.client_id WHERE p.tenant_id = $1 AND NOT c.is_prospect AND c.archived_at IS NULL`,
+        [tid()],
       ),
     ])
     const list = ids.rows.length ? await loadClients(pool, ids.rows.map((r) => r.id)) : []
@@ -209,18 +211,18 @@ export const clienteCrear = op(
 
     const clientId = await tx(async (c) => {
       const { rows } = await c.query(
-        `INSERT INTO clients (name, avatar, created_by, is_prospect, pipeline_stage, probability, stage_changed_at)
-         VALUES ($1, $2, $3, $4::boolean, $5, $6, CASE WHEN $4::boolean THEN now() END) RETURNING id`,
-        [b.nombre, avatar, actor.id, posible, stage, entry ? entry.probability : null],
+        `INSERT INTO clients (tenant_id, name, avatar, created_by, is_prospect, pipeline_stage, probability, stage_changed_at)
+         VALUES ($7, $1, $2, $3, $4::boolean, $5, $6, CASE WHEN $4::boolean THEN now() END) RETURNING id`,
+        [b.nombre, avatar, actor.id, posible, stage, entry ? entry.probability : null, tid()],
       )
       const cid: string = rows[0].id
       if (Object.keys(ficha).length) await applyClientPatch(c, actor.id, cid, ficha, actor.via) // misma validacion que al actualizar
       await insertItems(c, cid, items)
       if (totalCents > 0) {
         await c.query(
-          `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, received_by, received_by_source)
-           VALUES ($1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4, $4, 'manual')`,
-          [cid, b.fecha_inicial ?? todayISO(), totalCents / 100, actor.id],
+          `INSERT INTO payments (tenant_id, client_id, date, concept, amount, kind, status, created_by, received_by, received_by_source)
+           VALUES ($5, $1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4, $4, 'manual')`,
+          [cid, b.fecha_inicial ?? todayISO(), totalCents / 100, actor.id, tid()],
         )
       }
       await insertCharges(c, cid, actor.id, charges)
@@ -265,7 +267,7 @@ export const pagosListar = op(
     ...pageShape,
   }),
   async (_a, i) => {
-    const f = filters()
+    const f = filters('p.tenant_id')
     if (i.estado) f.add('p.status = ?', i.estado)
     if (i.recibido_por) f.add('lower(ru.name) = lower(?)', i.recibido_por)
     if (i.metodo) f.add('p.method = ?', i.metodo)
@@ -326,7 +328,7 @@ export const pagoRegistrar = op(
     .refine((v) => !(v.repetir_meses && hasDetalle(v)), { path: ['repetir_meses'], message: 'Los datos del cobro (bolívares, banco, referencia...) se registran en cada cuota, no al repetir' }),
   async (actor, b) => {
     await tx(async (c) => {
-      if (!(await c.query('SELECT 1 FROM clients WHERE id = $1 FOR UPDATE', [b.cliente_id])).rowCount)
+      if (!(await c.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [b.cliente_id, tid()])).rowCount)
         throw new HttpError(404, 'Cliente no encontrado')
       await insertCharges(
         c,
@@ -335,11 +337,11 @@ export const pagoRegistrar = op(
         expandCharge({ date: b.fecha, amount: b.monto, concept: b.concepto, status: b.estado, repeatMonths: b.repetir_meses }),
       )
       if (hasDetalle(b)) {
-        const made = (await c.query('SELECT id FROM payments WHERE client_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1', [b.cliente_id])).rows[0].id as string
+        const made = (await c.query('SELECT id FROM payments WHERE client_id = $1 AND tenant_id = $2 ORDER BY created_at DESC, id DESC LIMIT 1', [b.cliente_id, tid()])).rows[0].id as string
         await writeDetalle(c, made, pickDetalle(b))
       }
       if (b.estado === 'cobrado') {
-        const name = (await c.query('SELECT name FROM clients WHERE id = $1', [b.cliente_id])).rows[0].name as string
+        const name = (await c.query('SELECT name FROM clients WHERE id = $1 AND tenant_id = $2', [b.cliente_id, tid()])).rows[0].name as string
         await recordActivity(c, { kind: 'cobro_cobrado', actorId: actor.id, subject: name, detail: moneyLabel(b.monto), clientId: b.cliente_id, via: actor.via })
       }
     })

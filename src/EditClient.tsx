@@ -4,6 +4,7 @@ import { Icon } from './ui'
 import { AvatarPicker } from './blob'
 import { DraftBar } from './UpdateUI'
 import { saveGuarded, show, useFormGuard } from './updates'
+import TenantImg from './TenantImg'
 import { addPayment, archiveClient, deletePayment, money, moveLabel, removeClient, removeClientLogo, saveClientLinks, saveInitial, todayISO, updateClient, updatePayment, uploadClientLogo, useAllClients, loadClients, movementNow, clientNow, type ClientLink, type Movement } from './store'
 
 /** Cuota o cobro editable: fecha, concepto, monto y estado se guardan al salir del campo o al pulsar; borrar es inmediato. */
@@ -267,7 +268,7 @@ export default function EditClient({ clientId, onClose }: { clientId: string; on
             <legend>Logo del cliente</legend>
             {client.hasLogo ? (
               <p className="logo-now">
-                <img src={`/api/clients/${client.id}/logo?v=${logoBust}`} alt={`Logo de ${client.name}`} />
+                <TenantImg src={`/api/clients/${client.id}/logo?v=${logoBust}`} alt={`Logo de ${client.name}`} />
               </p>
             ) : (
               <p className="none">Este cliente aún no tiene logo. Se muestra en su ficha y en el documento de propuesta.</p>

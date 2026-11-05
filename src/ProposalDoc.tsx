@@ -4,6 +4,7 @@ import { Icon } from './ui'
 import { waNumber } from './Invoice'
 import { fmtDate, money, type Client } from './store'
 import type { Proposal, ProposalItem } from './proposalData'
+import TenantImg from './TenantImg'
 
 /**
  * Documento de propuesta comercial: el papel compartible de una propuesta (la «factura» de antes de vender).
@@ -237,7 +238,7 @@ export default function ProposalDoc({ client, proposal, onClose }: { client: Cli
             <dl>
               <dt>Cliente</dt>
               <dd>
-                {client.hasLogo && <img className="inv-clogo" src={`/api/clients/${client.id}/logo`} alt="" />}
+                {client.hasLogo && <TenantImg className="inv-clogo" src={`/api/clients/${client.id}/logo`} alt="" />}
                 {client.name}
               </dd>
             </dl>

@@ -3,6 +3,7 @@
 // Con las tablas actuales (decenas de filas) basta un recorrido completo; si algun dia pasan de unos miles, indice sobre fold(...).
 import { z } from 'zod'
 import { pool } from '../db.ts'
+import { hasModule, tid } from '../tenant.ts'
 import { archivadosParam, op, projectStateOut } from './common.ts'
 
 const MAX_TERMS = 5
@@ -19,7 +20,7 @@ export const buscar = op(
 
     /** WHERE a mano con parametros posicionales (nunca se concatena lo escrito). Cada palabra debe aparecer en el texto;
      *  si tiene 3+ digitos tambien vale contra los digitos del telefono ("0414 123" encuentra "0414-1234567"). */
-    const where = (hay: string, phone: string | null, hide: string) => {
+    const where = (hay: string, phone: string | null, hide: string, tenantCol: string) => {
       const args: unknown[] = []
       const conds: string[] = []
       for (const t of terms) {
@@ -32,13 +33,16 @@ export const buscar = op(
         } else conds.push(`strpos(fold(${hay}), fold($${k})) > 0`)
       }
       if (hide) conds.push(hide)
+      conds.push(`${tenantCol} = $${args.push(tid())}`)
       return { sql: conds.join(' AND '), args }
     }
     const hideOf = (cond: string, notCond: string) => (i.archivados === 'excluir' ? cond : i.archivados === 'solo' ? notCond : '')
     // El nombre que empieza por lo escrito va primero; despues, por nombre.
     const first = (col: string) => `(strpos(fold(${col}), fold($1)) = 1) DESC`
 
-    const want = (t: string) => !i.tipo || i.tipo === t
+    // Solo se busca en lo que el socio puede ver en este tenant.
+    const MOD = { cliente: 'clientes', proyecto: 'proyectos', tarea: 'tareas' } as const
+    const want = (t: keyof typeof MOD) => (!i.tipo || i.tipo === t) && hasModule(MOD[t])
 
     const [clientes, proyectos, tareas] = await Promise.all([
       want('cliente')
@@ -47,6 +51,7 @@ export const buscar = op(
               "concat_ws(' ', c.name, c.phone, c.email, c.contact_name, c.contact_role, c.address, array_to_string(c.tags, ' '), c.notes)",
               'c.phone',
               hideOf('c.archived_at IS NULL', 'c.archived_at IS NOT NULL'),
+              'c.tenant_id',
             )
             return pool.query(
               `SELECT c.id, c.name, c.is_prospect, c.pipeline_stage, c.phone, c.tags, (c.archived_at IS NOT NULL) AS archived
@@ -57,7 +62,7 @@ export const buscar = op(
         : null,
       want('proyecto')
         ? (() => {
-            const w = where("concat_ws(' ', p.name, c.name)", null, hideOf('p.archived_at IS NULL AND c.archived_at IS NULL', '(p.archived_at IS NOT NULL OR c.archived_at IS NOT NULL)'))
+            const w = where("concat_ws(' ', p.name, c.name)", null, hideOf('p.archived_at IS NULL AND c.archived_at IS NULL', '(p.archived_at IS NOT NULL OR c.archived_at IS NOT NULL)'), 'p.tenant_id')
             return pool.query(
               `SELECT p.id, p.name, p.status, p.client_id, c.name AS client, (p.archived_at IS NOT NULL OR c.archived_at IS NOT NULL) AS archived
                FROM projects p LEFT JOIN clients c ON c.id = p.client_id WHERE ${w.sql} ORDER BY ${first('p.name')}, p.name, p.id LIMIT ${i.limite}`,
@@ -67,7 +72,7 @@ export const buscar = op(
         : null,
       want('tarea')
         ? (() => {
-            const w = where("concat_ws(' ', t.title, p.name, c.name)", null, hideOf('p.archived_at IS NULL AND c.archived_at IS NULL', '(p.archived_at IS NOT NULL OR c.archived_at IS NOT NULL)'))
+            const w = where("concat_ws(' ', t.title, p.name, c.name)", null, hideOf('p.archived_at IS NULL AND c.archived_at IS NULL', '(p.archived_at IS NOT NULL OR c.archived_at IS NOT NULL)'), 't.tenant_id')
             return pool.query(
               `SELECT t.id, t.title, t.done, t.due_date, t.project_id, p.name AS project
                FROM tasks t JOIN projects p ON p.id = t.project_id LEFT JOIN clients c ON c.id = p.client_id

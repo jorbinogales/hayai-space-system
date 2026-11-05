@@ -15,6 +15,7 @@ import { DraftBar } from './UpdateUI'
 import { Icon } from './ui'
 import { useCosmos } from './Cosmos'
 import { reduced } from './warp'
+import { canOpen, useTenant } from './tenant'
 import './hub.css'
 
 const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
@@ -563,7 +564,7 @@ function Shortcuts({ d, onGo }: { d: HubData; onGo: (s: NavTarget) => void }) {
   return (
     <>
       <ul className="hb-shortcuts">
-        {items.map((s) => (
+        {items.filter((s) => canOpen(s.key)).map((s) => (
           <li key={s.key}>
             <button type="button" onClick={() => onGo(s.key)}>
               <span className="hb-sc-title">{s.title}</span>
@@ -582,6 +583,7 @@ function Shortcuts({ d, onGo }: { d: HubData; onGo: (s: NavTarget) => void }) {
 // ---------- pantalla ----------
 export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s: NavTarget) => void }) {
   const { world } = useCosmos()
+  const { can } = useTenant() // el Hub muestra solo los bloques de los módulos que el socio tiene en este espacio
   // Al entrar, la camara hace zoom hacia el nucleo HAYAI, que queda centrado y enorme como fondo vivo; el contenido flota encima y aparece al terminar el zoom.
   const [arrived, setArrived] = useState(() => world.coreReady())
   const [exiting, setExiting] = useState(false)
@@ -651,9 +653,11 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
             </div>
             <div className="hb-head-side">
               <p>Lo interno de HAYAI en una sola pantalla. Lo de los clientes, en su planeta.</p>
-              <button type="button" className="hb-btn is-dark" onClick={() => onOpen('marketing')}>
-                Planeta Marketing <Icon name="arrow" size={15} />
-              </button>
+              {can('marketing') && (
+                <button type="button" className="hb-btn is-dark" onClick={() => onOpen('marketing')}>
+                  Planeta Marketing <Icon name="arrow" size={15} />
+                </button>
+              )}
             </div>
           </header>
 
@@ -668,7 +672,7 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
 
           {ready ? <Pulse d={d} /> : <div className="hb-pulse" aria-hidden="true">{[0, 1, 2, 3].map((i) => <article key={i} className="hb-stat is-skel"><i /><i /><i /></article>)}</div>}
 
-          <FeedEntry seed={d?.feed} />
+          {can('feed') && <FeedEntry seed={d?.feed} />}
 
           <BriefCard />
 
@@ -685,7 +689,7 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
               )}
             </Block>
 
-            <Block id="systems" title="Sistemas" className="is-dark" ready={ready} aside={sis && <span className="hb-aside">{sis.resumen.arriba} en línea{sis.resumen.caido > 0 ? ` · ${sis.resumen.caido} caído${sis.resumen.caido === 1 ? '' : 's'}` : ''}</span>}>
+            {can('sistemas') && <Block id="systems" title="Sistemas" className="is-dark" ready={ready} aside={sis && <span className="hb-aside">{sis.resumen.arriba} en línea{sis.resumen.caido > 0 ? ` · ${sis.resumen.caido} caído${sis.resumen.caido === 1 ? '' : 's'}` : ''}</span>}>
               {sis && sis.data.length ? (
                 <ul className="hb-systems">
                   {sis.data.map((s) => (
@@ -695,7 +699,7 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
               ) : (
                 <p className="hb-empty is-dark">Aún no hay sistemas vigilados. Se dan de alta por la API o el MCP.</p>
               )}
-            </Block>
+            </Block>}
           </div>
 
           <div className="hb-grid is-7-5">
@@ -716,9 +720,11 @@ export default function Hub({ onBack, onOpen }: { onBack: () => void; onOpen: (s
                 <p>
                   <strong>Espacio reservado.</strong> Visitas del sitio y alcance en Instagram llegarán aquí cuando se conecte una fuente.
                 </p>
-                <button type="button" className="hb-btn is-ghost" onClick={() => onOpen('marketing')}>
-                  Ver la propuesta <Icon name="arrow" size={14} />
-                </button>
+                {can('marketing') && (
+                  <button type="button" className="hb-btn is-ghost" onClick={() => onOpen('marketing')}>
+                    Ver la propuesta <Icon name="arrow" size={14} />
+                  </button>
+                )}
               </div>
             </Block>
           </div>

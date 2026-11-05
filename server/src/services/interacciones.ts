@@ -3,6 +3,7 @@
 import { z } from 'zod'
 import { pool } from '../db.ts'
 import { HttpError, id, isoDate, text } from '../util.ts'
+import { tid } from '../tenant.ts'
 import { op, pageShape, paged, TZ, todayISO } from './common.ts'
 
 /** Los tipos que un socio (o un agente) puede escribir. 'etapa' no esta: es del sistema. */
@@ -39,7 +40,7 @@ function occurredAt(f: string, param: number): string {
 }
 
 async function una(interactionId: string) {
-  const r = (await pool.query(`${SELECT} WHERE i.id = $1`, [interactionId])).rows[0]
+  const r = (await pool.query(`${SELECT} WHERE i.id = $1 AND i.tenant_id = $2`, [interactionId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Interacción no encontrada')
   return interaccionOut(r)
 }
@@ -47,9 +48,9 @@ async function una(interactionId: string) {
 export const interaccionesListar = op(
   z.strictObject({ cliente_id: id, tipo: z.enum([...KINDS, 'etapa'], 'Tipo inválido').optional(), ...pageShape }),
   async (_a, i) => {
-    if (!(await pool.query('SELECT 1 FROM clients WHERE id = $1', [i.cliente_id])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
-    const args: unknown[] = [i.cliente_id]
-    let where = 'WHERE i.client_id = $1'
+    if (!(await pool.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2', [i.cliente_id, tid()])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
+    const args: unknown[] = [i.cliente_id, tid()]
+    let where = 'WHERE i.client_id = $1 AND i.tenant_id = $2'
     if (i.tipo) {
       args.push(i.tipo)
       where += ` AND i.kind = $${args.length}`
@@ -69,11 +70,11 @@ export const interaccionesListar = op(
 export const interaccionRegistrar = op(
   z.strictObject({ cliente_id: id, tipo: z.enum(KINDS, TIPO_MSG), resumen: text(2000), fecha: fecha.optional() }),
   async (actor, b) => {
-    if (!(await pool.query('SELECT 1 FROM clients WHERE id = $1', [b.cliente_id])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
-    const args: unknown[] = [b.cliente_id, b.tipo, b.resumen, actor.id]
+    if (!(await pool.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2', [b.cliente_id, tid()])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
+    const args: unknown[] = [b.cliente_id, b.tipo, b.resumen, actor.id, tid()]
     const when = b.fecha === undefined ? 'now()' : occurredAt(b.fecha, args.push(b.fecha)) // push devuelve el n.º del nuevo marcador
     const { rows } = await pool.query(
-      `INSERT INTO interactions (client_id, kind, summary, created_by, occurred_at) VALUES ($1, $2, $3, $4, ${when}) RETURNING id`,
+      `INSERT INTO interactions (client_id, kind, summary, created_by, tenant_id, occurred_at) VALUES ($1, $2, $3, $4, $5, ${when}) RETURNING id`,
       args,
     )
     return una(rows[0].id)
@@ -85,12 +86,12 @@ export const interaccionActualizar = op(
     .strictObject({ id, tipo: z.enum(KINDS, TIPO_MSG).optional(), resumen: text(2000).optional(), fecha: fecha.optional() })
     .refine((v) => v.tipo !== undefined || v.resumen !== undefined || v.fecha !== undefined, 'Envía al menos tipo, resumen o fecha'),
   async (_a, b) => {
-    const cur = (await pool.query('SELECT kind FROM interactions WHERE id = $1', [b.id])).rows[0]
+    const cur = (await pool.query('SELECT kind FROM interactions WHERE id = $1 AND tenant_id = $2', [b.id, tid()])).rows[0]
     if (!cur) throw new HttpError(404, 'Interacción no encontrada')
     if (cur.kind === 'etapa') throw new HttpError(409, 'Las entradas de etapa las escribe el sistema y no se editan')
-    const args: unknown[] = [b.id, b.tipo ?? null, b.resumen ?? null]
+    const args: unknown[] = [b.id, b.tipo ?? null, b.resumen ?? null, tid()]
     const when = b.fecha === undefined ? 'occurred_at' : occurredAt(b.fecha, args.push(b.fecha))
-    await pool.query(`UPDATE interactions SET kind = COALESCE($2, kind), summary = COALESCE($3, summary), occurred_at = ${when} WHERE id = $1`, args)
+    await pool.query(`UPDATE interactions SET kind = COALESCE($2, kind), summary = COALESCE($3, summary), occurred_at = ${when} WHERE id = $1 AND tenant_id = $4`, args)
     return una(b.id)
   },
 )

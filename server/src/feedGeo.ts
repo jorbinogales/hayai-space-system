@@ -4,6 +4,7 @@
 //   { estado: 'sin_resultado' | 'error', consulta, intentos, el, error? }
 // Un ítem con dirección y sin `geo` (o con un `geo` de otra dirección) está «pendiente». Un pin puesto a mano nunca se pisa.
 import { pool, type Db } from './db.ts'
+import { tenantCtx, tid, withTenant } from './tenant.ts'
 import { consultasDe, enVenezuela, geocoderOSinConfigurar, geocoderRespaldo, GeocoderError, respaldoNominatim, type GeoResultado, type Geocoder, type Precision } from './geocode.ts'
 
 export type EstadoUbicacion = 'ok' | 'pendiente' | 'sin_resultado' | 'error' | 'sin_direccion'
@@ -111,12 +112,12 @@ export type Resultado = 'ok' | 'sin_resultado' | 'error' | 'omitido' | 'sin_prov
 /** Lo que se guarda en `datos.geo` de un fallo (o del éxito si trae `ok`). */
 const escribir = async (db: Db, id: string, geo: Record<string, unknown>, consulta: string) => {
   // Solo si el ítem sigue con esa dirección y nadie puso un pin a mano mientras se consultaba (la consulta tarda).
-  const r = await db.query(`SELECT data FROM feed_items WHERE id = $1`, [id])
+  const r = await db.query(`SELECT data FROM feed_items WHERE id = $1 AND tenant_id = $2`, [id, tid()])
   if (!r.rowCount) return false
   const d = (r.rows[0].data ?? {}) as Record<string, unknown>
   const dir = direccionDe(d)
   if (!dir || norma(dir) !== norma(consulta) || obj(d.geo)?.origen === 'manual') return false
-  await db.query(`UPDATE feed_items SET data = jsonb_set(COALESCE(data, '{}'::jsonb), '{geo}', $2::jsonb, true) WHERE id = $1`, [id, JSON.stringify(geo)])
+  await db.query(`UPDATE feed_items SET data = jsonb_set(COALESCE(data, '{}'::jsonb), '{geo}', $2::jsonb, true) WHERE id = $1 AND tenant_id = $3`, [id, JSON.stringify(geo), tid()])
   return true
 }
 
@@ -127,7 +128,7 @@ const escribir = async (db: Db, id: string, geo: Record<string, unknown>, consul
 export async function geocodificarItem(db: Db, id: string, o: { forzar?: boolean } = {}): Promise<Resultado> {
   const prov = geocoderOSinConfigurar()
   if (!prov) return 'sin_proveedor'
-  const r = (await db.query(`SELECT title, data FROM feed_items WHERE id = $1`, [id])).rows[0]
+  const r = (await db.query(`SELECT title, data FROM feed_items WHERE id = $1 AND tenant_id = $2`, [id, tid()])).rows[0]
   if (!r) return 'omitido'
   const d = (r.data ?? {}) as Record<string, unknown>
   const u = ubicacionDe(d)
@@ -215,7 +216,7 @@ const yaProbadoConRespaldo = (d: Record<string, unknown>) => {
 export async function mejorarZonaItem(db: Db, id: string, o: { forzar?: boolean } = {}): Promise<ResultadoMejora> {
   const resp = respaldoNominatim()
   if (!resp) return 'sin_proveedor'
-  const r = (await db.query(`SELECT title, data FROM feed_items WHERE id = $1`, [id])).rows[0]
+  const r = (await db.query(`SELECT title, data FROM feed_items WHERE id = $1 AND tenant_id = $2`, [id, tid()])).rows[0]
   if (!r) return 'omitido'
   const d = (r.data ?? {}) as Record<string, unknown>
   if (!esZonaMapbox(d) || (!o.forzar && yaProbadoConRespaldo(d))) return 'omitido'
@@ -243,12 +244,13 @@ let trabajo: Promise<void> = Promise.resolve()
 /** Mete ítems a la cola de geocodificación del proceso (una por una, a la velocidad que permite el proveedor). No bloquea ni lanza. */
 export function programarGeocodificacion(ids: string[]) {
   if (!geocoderOSinConfigurar()) return
+  const t = tenantCtx() // la cola es del proceso: cada ítem se geocodifica dentro del tenant que lo publicó
   for (const id of ids)
     if (!pendientes.has(id) && pendientes.size < 500) {
       pendientes.add(id)
       trabajo = trabajo.then(async () => {
         try {
-          await geocodificarItem(pool, id)
+          await withTenant(t, () => geocodificarItem(pool, id))
         } catch (e) {
           console.error('[geocodificar]', e)
         } finally {
@@ -269,7 +271,7 @@ export type Relleno = { revisados: number; con_direccion: number; ya_ubicados: n
  * `ensayo` no consulta nada: cuenta lo que haría.
  */
 export async function rellenarUbicaciones(o: { tipo?: string; limite?: number; reintentar?: boolean; ensayo?: boolean; progreso?: (id: string, titulo: string, r: Resultado) => void } = {}): Promise<Relleno> {
-  const rows = (await pool.query(`SELECT id, title, data FROM feed_items WHERE ($1::text IS NULL OR kind = $1) ORDER BY found_at DESC, id`, [o.tipo ?? null])).rows
+  const rows = (await pool.query(`SELECT id, title, data FROM feed_items WHERE tenant_id = $2 AND ($1::text IS NULL OR kind = $1) ORDER BY found_at DESC, id`, [o.tipo ?? null, tid()])).rows
   const out: Relleno = { revisados: rows.length, con_direccion: 0, ya_ubicados: 0, ubicados: 0, sin_resultado: 0, errores: 0, omitidos: 0, pendientes: 0, cobertura: null }
   let hechos = 0
   for (const r of rows) {
@@ -308,7 +310,7 @@ export type RellenoZonas = { revisados: number; zonas_mapbox: number; ya_probado
  * fino. Idempotente: lo ya probado (`respaldo.resultado`) no se repite salvo con `reintentar`. `ensayo` solo cuenta.
  */
 export async function rellenarZonas(o: { tipo?: string; limite?: number; reintentar?: boolean; ensayo?: boolean; progreso?: (id: string, titulo: string, r: ResultadoMejora) => void } = {}): Promise<RellenoZonas> {
-  const rows = (await pool.query(`SELECT id, title, data FROM feed_items WHERE ($1::text IS NULL OR kind = $1) ORDER BY found_at DESC, id`, [o.tipo ?? null])).rows
+  const rows = (await pool.query(`SELECT id, title, data FROM feed_items WHERE tenant_id = $2 AND ($1::text IS NULL OR kind = $1) ORDER BY found_at DESC, id`, [o.tipo ?? null, tid()])).rows
   const out: RellenoZonas = { revisados: rows.length, zonas_mapbox: 0, ya_probados: 0, mejorados: 0, sin_mejora: 0, errores: 0, pendientes: 0 }
   let hechos = 0
   for (const r of rows) {
@@ -339,7 +341,8 @@ export const relleno_en_curso = () => corriendo
 export function iniciarRelleno(o: Parameters<typeof rellenarUbicaciones>[0] = {}): boolean {
   if (corriendo) return false
   corriendo = true
-  void rellenarUbicaciones({ ...o, ensayo: false })
+  const t = tenantCtx()
+  void withTenant(t, () => rellenarUbicaciones({ ...o, ensayo: false }))
     .then((r) => console.log('[geocodificar] relleno terminado', JSON.stringify(r)))
     .catch((e) => console.error('[geocodificar] relleno falló', e))
     .finally(() => {

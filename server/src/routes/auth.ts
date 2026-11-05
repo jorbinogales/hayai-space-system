@@ -11,8 +11,10 @@ import {
   rateLimit,
   requireSession,
   sessionJson,
+  type SessionUser,
 } from '../auth.ts'
 import { pool, tx } from '../db.ts'
+import { accessibleTenants } from '../tenant.ts'
 import { HttpError, parse, text } from '../util.ts'
 
 const pin = z.string('PIN inválido').regex(/^\d{6}$/, 'El PIN debe tener 6 dígitos numéricos')
@@ -44,9 +46,7 @@ authRouter.post('/login', rateLimit('login', loginMax), async (req, res) => {
   const lock = await checkPin(u.id, body.pin, u.pin_hash, u.lock_secs)
   if (lock === null) {
     await createSession(res, u.id)
-    return void res.json(
-      sessionJson({ id: u.id, name: u.name, avatar: u.avatar, role: u.role, mustChangePin: u.must_change_pin }),
-    )
+    return void res.json(await meJson({ id: u.id, name: u.name, avatar: u.avatar, role: u.role, mustChangePin: u.must_change_pin }))
   }
   if (lock > 0) {
     res.setHeader('Retry-After', lock)
@@ -55,8 +55,11 @@ authRouter.post('/login', rateLimit('login', loginMax), async (req, res) => {
   throw generic
 })
 
-authRouter.get('/me', requireSession, (req, res) => {
-  res.json(sessionJson(req.user!))
+/** Sesión + los tenants a los que entra (cada uno con sus módulos). El tenant activo NO vive en la sesión: lo manda cada petición. */
+const meJson = async (u: SessionUser) => ({ ...sessionJson(u), tenants: await accessibleTenants(u) })
+
+authRouter.get('/me', requireSession, async (req, res) => {
+  res.json(await meJson(req.user!))
 })
 
 authRouter.post('/logout', requireSession, async (req, res) => {
@@ -90,5 +93,5 @@ authRouter.post('/change-pin', requireSession, async (req, res) => {
     await c.query('UPDATE users SET pin_hash = $2, must_change_pin = false WHERE id = $1', [me.id, newHash])
     await c.query('DELETE FROM sessions WHERE user_id = $1 AND id <> $2', [me.id, req.sessionId])
   })
-  res.json(sessionJson({ ...me, mustChangePin: false }))
+  res.json(await meJson({ ...me, mustChangePin: false }))
 })

@@ -5,21 +5,23 @@ import { z } from 'zod'
 import { ACTIVITY_SELECT, activityOut, INTERNAL_ACTIVITY_SQL, recordActivity } from '../activity.ts'
 import { assertFresh, stamp } from '../concurrency.ts'
 import { pool, tx } from '../db.ts'
-import { userByName } from '../socios.ts'
+import { memberSql, userByName } from '../socios.ts'
+import { hasModule, tenantCtx, tid, visibleKinds } from '../tenant.ts'
 import { HttpError, id, isoDate, text } from '../util.ts'
 import { op, pageShape, paged, r2, TZ, todayISO } from './common.ts'
 import { feedResumen } from './feed.ts'
 import { sistemasListar } from './sistemas.ts'
 
 // ---------- equipo (astronautas) ----------
+// Los astronautas del tenant en curso (sus miembros y los ADMIN) con la carga de tareas de ESTE tenant.
 const WORKLOAD = `SELECT u.id, u.name, u.avatar, u.role_title, u.responsibilities,
     count(t.id) FILTER (WHERE NOT t.done)::int AS abiertas,
     count(t.id) FILTER (WHERE NOT t.done AND t.due_date < $1::date)::int AS vencidas,
     count(t.id) FILTER (WHERE t.done AND t.done_at > now() - interval '7 days')::int AS completadas_7d,
     count(t.id) FILTER (WHERE NOT t.done AND p.client_id IS NULL)::int AS internas_abiertas
   FROM users u
-  LEFT JOIN (tasks t JOIN projects p ON p.id = t.project_id AND p.archived_at IS NULL) ON COALESCE(t.assignee_id, p.owner_id) = u.id
-  WHERE u.active GROUP BY u.id ORDER BY u.name`
+  LEFT JOIN (tasks t JOIN projects p ON p.id = t.project_id AND p.archived_at IS NULL) ON COALESCE(t.assignee_id, p.owner_id) = u.id AND t.tenant_id = $2
+  WHERE ${memberSql('u', '$2')} GROUP BY u.id ORDER BY u.name`
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const astronauta = (r: any) => ({
@@ -33,7 +35,7 @@ const astronauta = (r: any) => ({
 })
 
 async function equipo() {
-  return (await pool.query(WORKLOAD, [todayISO()])).rows.map(astronauta)
+  return (await pool.query(WORKLOAD, [todayISO(), tid()])).rows.map(astronauta)
 }
 
 export const equipoVer = op(z.strictObject({}), async () => ({ data: await equipo() }))
@@ -73,14 +75,14 @@ const acuerdoOut = (r: any) => ({
 })
 
 async function acuerdo(agreementId: string) {
-  const r = (await pool.query(`${A_SELECT} WHERE a.id = $1`, [agreementId])).rows[0]
+  const r = (await pool.query(`${A_SELECT} WHERE a.id = $1 AND a.tenant_id = $2`, [agreementId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Acuerdo no encontrado')
   return acuerdoOut(r)
 }
 
 export const acuerdosListar = op(z.strictObject({ estado: estado.optional(), ...pageShape }), async (_a, i) => {
-  const where = i.estado ? 'WHERE a.status = $1' : ''
-  const base = i.estado ? [i.estado] : []
+  const where = i.estado ? 'WHERE a.tenant_id = $1 AND a.status = $2' : 'WHERE a.tenant_id = $1'
+  const base = i.estado ? [tid(), i.estado] : [tid()]
   const [total, rows, counts] = await Promise.all([
     pool.query(`SELECT count(*)::int AS n FROM agreements a ${where}`, base),
     pool.query(`${A_SELECT} ${where} ORDER BY (a.status = 'abierto') DESC, a.meeting_date DESC, a.created_at DESC, a.id LIMIT $${base.length + 1} OFFSET $${base.length + 2}`, [
@@ -88,7 +90,7 @@ export const acuerdosListar = op(z.strictObject({ estado: estado.optional(), ...
       i.per_page,
       (i.page - 1) * i.per_page,
     ]),
-    pool.query('SELECT status, count(*)::int AS n FROM agreements GROUP BY status'),
+    pool.query('SELECT status, count(*)::int AS n FROM agreements WHERE tenant_id = $1 GROUP BY status', [tid()]),
   ])
   const por_estado = { abierto: 0, cumplido: 0, descartado: 0 } as Record<string, number>
   for (const c of counts.rows) por_estado[c.status] = c.n
@@ -101,8 +103,8 @@ export const acuerdoCrear = op(
     const newId = await tx(async (c) => {
       const owner = b.responsable ? (await userByName(c, b.responsable)).id : null
       const { rows } = await c.query(
-        `INSERT INTO agreements (meeting_date, body, owner_id, due_date, created_by) VALUES (COALESCE($1::date, (now() AT TIME ZONE $6)::date), $2, $3, $4, $5) RETURNING id`,
-        [b.fecha_reunion ?? null, b.texto, owner, b.vence ?? null, actor.id, TZ],
+        `INSERT INTO agreements (tenant_id, meeting_date, body, owner_id, due_date, created_by) VALUES ($7, COALESCE($1::date, (now() AT TIME ZONE $6)::date), $2, $3, $4, $5) RETURNING id`,
+        [b.fecha_reunion ?? null, b.texto, owner, b.vence ?? null, actor.id, TZ, tid()],
       )
       await recordActivity(c, { kind: 'acuerdo_nuevo', actorId: actor.id, subject: b.texto.length > 90 ? `${b.texto.slice(0, 87)}...` : b.texto, via: actor.via })
       return rows[0].id as string
@@ -134,8 +136,8 @@ export const acuerdoActualizar = op(
            due_date = CASE WHEN $6::boolean THEN $7::date ELSE due_date END,
            status = COALESCE($8, status),
            closed_at = CASE WHEN $8::text IS NULL THEN closed_at WHEN $8::text = 'abierto' THEN NULL ELSE COALESCE(closed_at, now()) END
-         WHERE id = $1`,
-        [b.id, b.texto ?? null, b.fecha_reunion ?? null, b.responsable !== undefined, owner, b.vence !== undefined, b.vence ?? null, b.estado ?? null],
+         WHERE id = $1 AND tenant_id = $9`,
+        [b.id, b.texto ?? null, b.fecha_reunion ?? null, b.responsable !== undefined, owner, b.vence !== undefined, b.vence ?? null, b.estado ?? null, tid()],
       )
       if (!r.rowCount) throw new HttpError(404, 'Acuerdo no encontrado')
     })
@@ -152,19 +154,20 @@ async function pulso() {
     pool.query(
       `SELECT COALESCE(sum(e.amount), 0) AS total, count(*)::int AS n
        FROM expenses e LEFT JOIN projects p ON p.id = e.project_id
-       WHERE e.client_id IS NULL AND (p.id IS NULL OR p.client_id IS NULL) AND to_char(e.date, 'YYYY-MM') = $1`,
-      [mes],
+       WHERE e.tenant_id = $2 AND e.client_id IS NULL AND (p.id IS NULL OR p.client_id IS NULL) AND to_char(e.date, 'YYYY-MM') = $1`,
+      [mes, tid()],
     ),
     pool.query(
       `SELECT count(*) FILTER (WHERE NOT t.done)::int AS pendientes,
               count(*) FILTER (WHERE NOT t.done AND t.due_date < $1::date)::int AS vencidas,
               count(*) FILTER (WHERE t.done AND to_char(t.done_at AT TIME ZONE $2, 'YYYY-MM') = $3)::int AS completadas_mes
-       FROM tasks t JOIN projects p ON p.id = t.project_id WHERE p.client_id IS NULL AND p.archived_at IS NULL`,
-      [hoy, TZ, mes],
+       FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.tenant_id = $4 AND p.client_id IS NULL AND p.archived_at IS NULL`,
+      [hoy, TZ, mes, tid()],
     ),
     pool.query(
       `SELECT count(*) FILTER (WHERE status IN ('activo', 'entrega'))::int AS activos, count(*)::int AS total
-       FROM projects WHERE client_id IS NULL AND archived_at IS NULL`,
+       FROM projects WHERE tenant_id = $1 AND client_id IS NULL AND archived_at IS NULL`,
+      [tid()],
     ),
   ])
   return {
@@ -180,11 +183,12 @@ export const hubVer = op(z.strictObject({}), async (actor) => {
   const [pulsoData, equipoData, abiertos, conteo, sistemas, bitacora, feed] = await Promise.all([
     pulso(),
     equipo(),
-    pool.query(`${A_SELECT} WHERE a.status = 'abierto' ORDER BY a.meeting_date DESC, a.created_at DESC, a.id LIMIT 12`),
-    pool.query(`SELECT status, count(*)::int AS n FROM agreements GROUP BY status`),
-    sistemasListar.run(actor, { activos: true, page: 1, per_page: 100 }),
-    pool.query(`${ACTIVITY_SELECT} WHERE ${INTERNAL_ACTIVITY_SQL} ORDER BY a.id DESC LIMIT 15`),
-    feedResumen(actor.id),
+    pool.query(`${A_SELECT} WHERE a.tenant_id = $1 AND a.status = 'abierto' ORDER BY a.meeting_date DESC, a.created_at DESC, a.id LIMIT 12`, [tid()]),
+    pool.query(`SELECT status, count(*)::int AS n FROM agreements WHERE tenant_id = $1 GROUP BY status`, [tid()]),
+    // Lo de otros módulos solo si el socio lo tiene en este tenant.
+    hasModule('sistemas') ? sistemasListar.run(actor, { activos: true, page: 1, per_page: 100 }) : { data: [], meta: { por_estado: {} } },
+    pool.query(`${ACTIVITY_SELECT} WHERE a.tenant_id = $1 AND a.kind = ANY($2::text[]) AND ${INTERNAL_ACTIVITY_SQL} ORDER BY a.id DESC LIMIT 15`, [tid(), visibleKinds(tenantCtx().modules)]),
+    hasModule('feed') ? feedResumen(actor.id) : { nuevos: 0 },
   ])
   const acuerdosPor = { abierto: 0, cumplido: 0, descartado: 0 } as Record<string, number>
   for (const c of conteo.rows) acuerdosPor[c.status] = c.n
@@ -209,12 +213,13 @@ export const marketingEmbudo = op(
       pool.query('SELECT key, label, position, probability, kind FROM pipeline_stages WHERE active ORDER BY position'),
       pool.query(
         `SELECT pipeline_stage AS stage, count(*)::int AS n, COALESCE(sum(est_value), 0) AS valor, COALESCE(sum(est_value * probability / 100.0), 0) AS ponderado
-         FROM clients WHERE is_prospect AND archived_at IS NULL GROUP BY pipeline_stage`,
+         FROM clients WHERE tenant_id = $1 AND is_prospect AND archived_at IS NULL GROUP BY pipeline_stage`,
+        [tid()],
       ),
       pool.query(
         `SELECT pipeline_stage AS stage, count(*)::int AS n FROM clients
-         WHERE pipeline_stage IN ('ganado', 'perdido') AND stage_changed_at > now() - make_interval(days => $1) GROUP BY pipeline_stage`,
-        [i.dias],
+         WHERE tenant_id = $2 AND pipeline_stage IN ('ganado', 'perdido') AND stage_changed_at > now() - make_interval(days => $1) GROUP BY pipeline_stage`,
+        [i.dias, tid()],
       ),
       // Cohorte: lo que entró en los últimos N días, por origen, y en qué terminó hasta hoy. Los estados no se solapan:
       // ganados + perdidos + abiertos + descartados (archivados sin cerrar) + alta directa (cliente creado sin pasar por el pipeline) = entraron.
@@ -224,8 +229,8 @@ export const marketingEmbudo = op(
                 count(*) FILTER (WHERE pipeline_stage = 'perdido')::int AS perdidos,
                 count(*) FILTER (WHERE is_prospect AND archived_at IS NULL AND COALESCE(pipeline_stage, '') NOT IN ('ganado', 'perdido'))::int AS abiertos,
                 count(*) FILTER (WHERE archived_at IS NOT NULL AND COALESCE(pipeline_stage, '') NOT IN ('ganado', 'perdido'))::int AS descartados
-         FROM clients WHERE created_at > now() - make_interval(days => $1) GROUP BY 1 ORDER BY 2 DESC, 1`,
-        [i.dias],
+         FROM clients WHERE tenant_id = $2 AND created_at > now() - make_interval(days => $1) GROUP BY 1 ORDER BY 2 DESC, 1`,
+        [i.dias, tid()],
       ),
       pool.query(
         `SELECT count(*) FILTER (WHERE received_at > now() - interval '30 days')::int AS leads_30d,
@@ -233,7 +238,8 @@ export const marketingEmbudo = op(
                 count(*) FILTER (WHERE received_at > now() - interval '30 days' AND status = 'duplicado')::int AS duplicados,
                 count(*) FILTER (WHERE status = 'error')::int AS con_error,
                 count(*)::int AS total
-         FROM meta_leads`,
+         FROM meta_leads WHERE tenant_id = $1`,
+        [tid()],
       ),
     ])
     const byStage = new Map(now.rows.map((r) => [r.stage as string, r]))

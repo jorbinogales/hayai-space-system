@@ -1,5 +1,6 @@
 import { api } from './api'
 import { createList } from './cache'
+import { can } from './tenant'
 import { todayISO } from './store'
 
 export type ExpenseScope = 'general' | 'cliente' | 'proyecto'
@@ -23,7 +24,7 @@ export interface Expense {
 
 const expenses = createList<Expense>()
 export const useExpenses = expenses.use
-export const loadExpenses = async () => expenses.set(await api.get<Expense[]>('/expenses'))
+export const loadExpenses = async () => void (can('finanzas') && expenses.set(await api.get<Expense[]>('/expenses')))
 export const resetExpenses = () => expenses.set([])
 
 export interface ExpenseDraft {

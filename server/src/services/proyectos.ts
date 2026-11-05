@@ -2,6 +2,8 @@ import { z } from 'zod'
 import { assertFresh, stamp } from '../concurrency.ts'
 import { pool, tx } from '../db.ts'
 import { HttpError, id, isoDate, text } from '../util.ts'
+import { memberIdByName } from '../socios.ts'
+import { tid } from '../tenant.ts'
 import { archivadosParam, filters, op, pageShape, paged, PROJECT_STATES, projectIcon, projectStateIn, projectStateOut } from './common.ts'
 
 // Un proyecto puede no tener cliente (trabajo interno de HAYAI): de ahi el LEFT JOIN. Hitos = roadmap; checklist = accionables
@@ -43,13 +45,13 @@ const MAX_HITOS = 50
 const MAX_CHECKLIST = 100
 
 async function ownerId(name: string): Promise<string> {
-  const o = (await pool.query('SELECT id FROM users WHERE lower(name) = lower($1) AND active', [name])).rows[0]
+  const o = await memberIdByName(pool, name)
   if (!o) throw new HttpError(404, 'Responsable no encontrado')
-  return o.id
+  return o
 }
 
 async function proyecto(projectId: string) {
-  const r = (await pool.query(`${SELECT} WHERE p.id = $1`, [projectId])).rows[0]
+  const r = (await pool.query(`${SELECT} WHERE p.id = $1 AND p.tenant_id = $2`, [projectId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Proyecto no encontrado')
   return out(r)
 }
@@ -64,7 +66,7 @@ export const proyectosListar = op(
     ...pageShape,
   }),
   async (_a, i) => {
-    const f = filters()
+    const f = filters('p.tenant_id')
     if (i.estado) f.add('p.status = ?', projectStateIn(i.estado))
     if (i.cliente_id) f.add('p.client_id = ?', i.cliente_id)
     const interno = i.sin_cliente ?? i.interno
@@ -77,7 +79,8 @@ export const proyectosListar = op(
       pool.query(`SELECT count(*)::int AS n FROM projects p LEFT JOIN clients c ON c.id = p.client_id ${f.where()}`, f.params()),
       pool.query(`${SELECT} ${f.where()} ORDER BY p.created_at, p.id ${clause}`, args),
       pool.query(
-        'SELECT p.status, count(*)::int AS n FROM projects p LEFT JOIN clients c ON c.id = p.client_id WHERE p.archived_at IS NULL AND c.archived_at IS NULL GROUP BY p.status',
+        'SELECT p.status, count(*)::int AS n FROM projects p LEFT JOIN clients c ON c.id = p.client_id WHERE p.tenant_id = $1 AND p.archived_at IS NULL AND c.archived_at IS NULL GROUP BY p.status',
+        [tid()],
       ),
     ])
     const por_estado: Record<string, number> = Object.fromEntries(PROJECT_STATES.map((s) => [s, 0]))
@@ -113,18 +116,18 @@ const itemOut = (r: any) => ({
 const ITEM_SELECT = 'SELECT id, project_id, text, done, done_at, position FROM project_checklist'
 
 export async function hitosDe(projectId: string) {
-  return (await pool.query(`${HITO_SELECT} WHERE m.project_id = $1 ORDER BY m.position, m.id`, [projectId])).rows.map(hitoOut)
+  return (await pool.query(`${HITO_SELECT} WHERE m.project_id = $1 AND m.tenant_id = $2 ORDER BY m.position, m.id`, [projectId, tid()])).rows.map(hitoOut)
 }
 export async function checklistDe(projectId: string) {
-  return (await pool.query(`${ITEM_SELECT} WHERE project_id = $1 ORDER BY position, id`, [projectId])).rows.map(itemOut)
+  return (await pool.query(`${ITEM_SELECT} WHERE project_id = $1 AND tenant_id = $2 ORDER BY position, id`, [projectId, tid()])).rows.map(itemOut)
 }
 
 export const proyectoVer = op(z.strictObject({ id }), async (_a, i) => {
   const p = await proyecto(i.id)
   const [tareas, hitos, checklist] = await Promise.all([
     pool.query(
-      `SELECT t.id, t.title, t.done, t.due_date, t.milestone_id FROM tasks t WHERE t.project_id = $1 ORDER BY t.done, t.due_date NULLS LAST, t.created_at, t.id`,
-      [i.id],
+      `SELECT t.id, t.title, t.done, t.due_date, t.milestone_id FROM tasks t WHERE t.project_id = $1 AND t.tenant_id = $2 ORDER BY t.done, t.due_date NULLS LAST, t.created_at, t.id`,
+      [i.id, tid()],
     ),
     hitosDe(i.id),
     checklistDe(i.id),
@@ -156,11 +159,11 @@ export const proyectoCrear = op(
   }),
   async (actor, b) => {
     const owner = b.responsable ? await ownerId(b.responsable) : actor.id
-    if (b.cliente_id && !(await pool.query('SELECT 1 FROM clients WHERE id = $1', [b.cliente_id])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
+    if (b.cliente_id && !(await pool.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2', [b.cliente_id, tid()])).rowCount) throw new HttpError(404, 'Cliente no encontrado')
     const { rows } = await pool.query(
-      `INSERT INTO projects (name, description, icon, client_id, owner_id, status, due_date, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-      [b.nombre, b.descripcion ?? null, b.icono, b.cliente_id ?? null, owner, projectStateIn(b.estado), b.entrega ?? null, actor.id],
+      `INSERT INTO projects (name, description, icon, client_id, owner_id, status, due_date, created_by, tenant_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [b.nombre, b.descripcion ?? null, b.icono, b.cliente_id ?? null, owner, projectStateIn(b.estado), b.entrega ?? null, actor.id, tid()],
     )
     return proyecto(rows[0].id)
   },
@@ -178,7 +181,7 @@ export async function actualizarProyecto(b: {
   archivado?: boolean
 }) {
   const owner = b.responsable !== undefined ? await ownerId(b.responsable) : null
-  if (b.cliente_id && !(await pool.query('SELECT 1 FROM clients WHERE id = $1', [b.cliente_id])).rowCount)
+  if (b.cliente_id && !(await pool.query('SELECT 1 FROM clients WHERE id = $1 AND tenant_id = $2', [b.cliente_id, tid()])).rowCount)
     throw new HttpError(404, 'Cliente no encontrado')
   const rowCount = await tx(async (c) => {
     await assertFresh(c, 'projects', b.id)
@@ -189,7 +192,7 @@ export async function actualizarProyecto(b: {
        due_date = CASE WHEN $7::boolean THEN $8::date ELSE due_date END,
        archived_at = CASE WHEN $9::boolean IS NULL THEN archived_at WHEN $9::boolean THEN COALESCE(archived_at, now()) ELSE NULL END,
        description = CASE WHEN $11::boolean THEN $12::text ELSE description END
-     WHERE id = $1`,
+     WHERE id = $1 AND tenant_id = $13`,
     [
       b.id,
       b.nombre ?? null,
@@ -203,6 +206,7 @@ export async function actualizarProyecto(b: {
       b.cliente_id !== undefined, // null desvincula al cliente
       b.descripcion !== undefined,
       b.descripcion ?? null,
+      tid(),
     ],
   )).rowCount
   })
@@ -231,10 +235,10 @@ export const proyectoEstado = op(z.strictObject({ id, estado }), (_a, b) => actu
 
 // ---------- hitos (roadmap) ----------
 async function lockProject(c: { query: typeof pool.query }, projectId: string) {
-  if (!(await c.query('SELECT 1 FROM projects WHERE id = $1 FOR UPDATE', [projectId])).rowCount) throw new HttpError(404, 'Proyecto no encontrado')
+  if (!(await c.query('SELECT 1 FROM projects WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [projectId, tid()])).rowCount) throw new HttpError(404, 'Proyecto no encontrado')
 }
 const hito = async (milestoneId: string) => {
-  const r = (await pool.query(`${HITO_SELECT} WHERE m.id = $1`, [milestoneId])).rows[0]
+  const r = (await pool.query(`${HITO_SELECT} WHERE m.id = $1 AND m.tenant_id = $2`, [milestoneId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Hito no encontrado')
   return hitoOut(r)
 }
@@ -244,11 +248,11 @@ export const hitoCrear = op(
   async (_a, b) => {
     const milestoneId = await tx(async (c) => {
       await lockProject(c, b.proyecto_id) // serializa altas concurrentes: la posicion sale de max+1
-      const cur = (await c.query('SELECT count(*)::int AS n, COALESCE(max(position), 0) AS m FROM project_milestones WHERE project_id = $1', [b.proyecto_id])).rows[0]
+      const cur = (await c.query('SELECT count(*)::int AS n, COALESCE(max(position), 0) AS m FROM project_milestones WHERE project_id = $1 AND tenant_id = $2', [b.proyecto_id, tid()])).rows[0]
       if (cur.n >= MAX_HITOS) throw new HttpError(409, `Un proyecto admite máximo ${MAX_HITOS} hitos`)
       const { rows } = await c.query(
-        'INSERT INTO project_milestones (project_id, title, due_date, status, position) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-        [b.proyecto_id, b.titulo, b.vence ?? null, b.estado, cur.m + 1],
+        'INSERT INTO project_milestones (tenant_id, project_id, title, due_date, status, position) VALUES ($6, $1, $2, $3, $4, $5) RETURNING id',
+        [b.proyecto_id, b.titulo, b.vence ?? null, b.estado, cur.m + 1, tid()],
       )
       return rows[0].id as string
     })
@@ -263,8 +267,8 @@ export const hitoActualizar = op(
   async (_a, b) => {
     const { rowCount } = await pool.query(
       `UPDATE project_milestones SET title = COALESCE($2, title), status = COALESCE($3, status),
-         due_date = CASE WHEN $4::boolean THEN $5::date ELSE due_date END WHERE id = $1`,
-      [b.id, b.titulo ?? null, b.estado ?? null, b.vence !== undefined, b.vence ?? null],
+         due_date = CASE WHEN $4::boolean THEN $5::date ELSE due_date END WHERE id = $1 AND tenant_id = $6`,
+      [b.id, b.titulo ?? null, b.estado ?? null, b.vence !== undefined, b.vence ?? null, tid()],
     )
     if (!rowCount) throw new HttpError(404, 'Hito no encontrado')
     return hito(b.id)
@@ -276,12 +280,12 @@ async function reordenar(table: 'project_milestones' | 'project_checklist', proj
   if (new Set(ids).size !== ids.length) throw new HttpError(400, 'ids: hay elementos repetidos')
   await tx(async (c) => {
     await lockProject(c, projectId)
-    const have = (await c.query(`SELECT id FROM ${table} WHERE project_id = $1`, [projectId])).rows.map((r) => r.id as string)
+    const have = (await c.query(`SELECT id FROM ${table} WHERE project_id = $1 AND tenant_id = $2`, [projectId, tid()])).rows.map((r) => r.id as string)
     if (have.length !== ids.length || !ids.every((x) => have.includes(x)))
       throw new HttpError(400, `ids: debe incluir exactamente todos los ${what} del proyecto (${have.length})`)
     await c.query(
-      `UPDATE ${table} t SET position = o.n FROM unnest($1::uuid[]) WITH ORDINALITY AS o(id, n) WHERE t.id = o.id AND t.project_id = $2`,
-      [ids, projectId],
+      `UPDATE ${table} t SET position = o.n FROM unnest($1::uuid[]) WITH ORDINALITY AS o(id, n) WHERE t.id = o.id AND t.project_id = $2 AND t.tenant_id = $3`,
+      [ids, projectId, tid()],
     )
   })
 }
@@ -293,7 +297,7 @@ export const hitosOrdenar = op(z.strictObject({ proyecto_id: id, ids: z.array(id
 
 // ---------- checklist de accionables ----------
 const item = async (itemId: string) => {
-  const r = (await pool.query(`${ITEM_SELECT} WHERE id = $1`, [itemId])).rows[0]
+  const r = (await pool.query(`${ITEM_SELECT} WHERE id = $1 AND tenant_id = $2`, [itemId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Elemento no encontrado')
   return itemOut(r)
 }
@@ -301,9 +305,9 @@ const item = async (itemId: string) => {
 export const checklistAgregar = op(z.strictObject({ proyecto_id: id, texto: text(200) }), async (_a, b) => {
   const itemId = await tx(async (c) => {
     await lockProject(c, b.proyecto_id)
-    const cur = (await c.query('SELECT count(*)::int AS n, COALESCE(max(position), 0) AS m FROM project_checklist WHERE project_id = $1', [b.proyecto_id])).rows[0]
+    const cur = (await c.query('SELECT count(*)::int AS n, COALESCE(max(position), 0) AS m FROM project_checklist WHERE project_id = $1 AND tenant_id = $2', [b.proyecto_id, tid()])).rows[0]
     if (cur.n >= MAX_CHECKLIST) throw new HttpError(409, `La checklist admite máximo ${MAX_CHECKLIST} elementos`)
-    const { rows } = await c.query('INSERT INTO project_checklist (project_id, text, position) VALUES ($1, $2, $3) RETURNING id', [b.proyecto_id, b.texto, cur.m + 1])
+    const { rows } = await c.query('INSERT INTO project_checklist (tenant_id, project_id, text, position) VALUES ($4, $1, $2, $3) RETURNING id', [b.proyecto_id, b.texto, cur.m + 1, tid()])
     return rows[0].id as string
   })
   return item(itemId)
@@ -316,8 +320,8 @@ export const checklistActualizar = op(
   async (_a, b) => {
     const { rowCount } = await pool.query(
       `UPDATE project_checklist SET text = COALESCE($2, text), done = COALESCE($3::boolean, done),
-         done_at = CASE WHEN $3::boolean IS NULL THEN done_at WHEN $3::boolean THEN COALESCE(done_at, now()) ELSE NULL END WHERE id = $1`,
-      [b.id, b.texto ?? null, b.hecho ?? null],
+         done_at = CASE WHEN $3::boolean IS NULL THEN done_at WHEN $3::boolean THEN COALESCE(done_at, now()) ELSE NULL END WHERE id = $1 AND tenant_id = $4`,
+      [b.id, b.texto ?? null, b.hecho ?? null, tid()],
     )
     if (!rowCount) throw new HttpError(404, 'Elemento no encontrado')
     return item(b.id)

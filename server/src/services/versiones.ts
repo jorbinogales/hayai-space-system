@@ -10,7 +10,9 @@ import type { NextFunction, Request, Response } from 'express'
 import { z } from 'zod'
 import { recordActivity } from '../activity.ts'
 import { currentRate } from '../bcv.ts'
+import type { PoolClient } from 'pg'
 import { pool, tx } from '../db.ts'
+import { activeTenants, withTenant } from '../tenant.ts'
 import { HttpError, isoDate, text } from '../util.ts'
 import { op, todayISO } from './common.ts'
 
@@ -68,6 +70,11 @@ export async function versionHeader(_req: Request, res: Response, next: NextFunc
   next()
 }
 
+/** Las versiones son del sistema (globales): el aviso «version_nueva» va UNA vez a cada tenant activo, en la misma transacción. */
+async function announceAll(c: PoolClient, a: { actorId: string; subject: string; detail?: string; via?: string }) {
+  for (const t of await activeTenants()) await withTenant(t, () => recordActivity(c, { kind: 'version_nueva', ...a }))
+}
+
 const semver = z.string('versión inválida').trim().regex(/^\d{1,4}\.\d{1,4}\.\d{1,4}$/, 'La versión va como 1.6.0 (mayor.menor.parche)')
 
 /**
@@ -113,6 +120,8 @@ export const versionPublicar = op(
     fecha: isoDate.optional(), // por defecto, hoy (hora de Caracas)
   }),
   async (actor, b) => {
+    // Una versión es del sistema entero y avisa a todos los tenants: solo la publica un ADMIN.
+    if (actor.role !== 'ADMIN') throw new HttpError(403, 'Solo un administrador publica versiones del sistema', { codigo: 'solo_admin' })
     const row = await tx(async (c) => {
       // Dos publicaciones a la vez no pueden saltarse la regla de orden.
       await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['app_versions'])
@@ -126,7 +135,7 @@ export const versionPublicar = op(
         `INSERT INTO app_versions (version, title, summary, changes, released_on, author_id, announced_at) VALUES ($1, $2, $3, $4, $5, $6, now()) RETURNING id`,
         [b.version, b.titulo ?? null, b.resumen ?? null, b.cambios, fecha, actor.id],
       )
-      await recordActivity(c, { kind: 'version_nueva', actorId: actor.id, subject: b.version, detail: b.titulo ?? undefined, via: actor.via })
+      await announceAll(c, { actorId: actor.id, subject: b.version, detail: b.titulo ?? undefined, via: actor.via })
       return rows[0].id as string
     })
     invalidateVersionCache()
@@ -147,10 +156,10 @@ export async function announceCurrentVersion(): Promise<string | null> {
     if (!top) return null
     if ((await c.query('SELECT announced_at FROM app_versions WHERE id = $1', [top.id])).rows[0].announced_at) return null
     // El aviso necesita un socio como actor (activity.actor_id): el autor de la versión o, si es histórica, el socio activo más antiguo.
-    const actorId = top.author_id ?? (await c.query('SELECT id FROM users WHERE active ORDER BY created_at, id LIMIT 1')).rows[0]?.id
+    const actorId = top.author_id ?? (await c.query(`SELECT id FROM users WHERE active ORDER BY (role = 'ADMIN') DESC, created_at, id LIMIT 1`)).rows[0]?.id
     await c.query('UPDATE app_versions SET announced_at = now() WHERE announced_at IS NULL')
     if (!actorId) return null // sin socios no hay a quién avisar
-    await recordActivity(c, { kind: 'version_nueva', actorId, subject: top.version, detail: top.title ?? undefined, via: 'deploy' })
+    await announceAll(c, { actorId, subject: top.version, detail: top.title ?? undefined, via: 'deploy' })
     return top.version as string
   })
   invalidateVersionCache()

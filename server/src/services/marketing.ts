@@ -11,6 +11,7 @@ import { campanasMeta, brightdataListo, dominioDe, investigarSemilla, metaCampan
 import { insertContenido } from '../mkContenido.ts'
 import { userByName } from '../socios.ts'
 import { HttpError, id, isoDate, text } from '../util.ts'
+import { tenantCtx, tid } from '../tenant.ts'
 import { archivadosParam, boolFlag, exec, filters, op, pageShape, paged, r2, todayISO, type Actor } from './common.ts'
 import { feedPublicar } from './feed.ts'
 
@@ -62,7 +63,7 @@ const KW_SELECT = `SELECT k.*, u.name AS creador,
   FROM mk_keywords k JOIN users u ON u.id = k.created_by`
 
 async function kwFila(c: Db, kwId: string) {
-  const r = (await c.query(`${KW_SELECT} WHERE k.id = $1`, [kwId])).rows[0]
+  const r = (await c.query(`${KW_SELECT} WHERE k.id = $1 AND k.tenant_id = $2`, [kwId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Keyword no encontrada')
   return r
 }
@@ -72,7 +73,7 @@ export const kwInvestigar = op(
   async (_a, b) => {
     const r = await investigarSemilla(b.semilla)
     const normas = r.sugerencias.map((s) => norm(s.texto))
-    const guardadas = normas.length ? (await pool.query('SELECT id, texto_norm FROM mk_keywords WHERE texto_norm = ANY($1)', [normas])).rows : []
+    const guardadas = normas.length ? (await pool.query('SELECT id, texto_norm FROM mk_keywords WHERE texto_norm = ANY($1) AND tenant_id = $2', [normas, tid()])).rows : []
     const porNorm = new Map<string, string>(guardadas.map((g) => [g.texto_norm as string, g.id as string]))
     return {
       semilla: b.semilla,
@@ -110,21 +111,21 @@ export const kwGuardar = op(
       for (const it of lista) {
         const n = norm(it.texto)
         if (!n) throw new HttpError(400, 'texto: Es obligatorio')
-        const ya = vistas.has(n) ? (await c.query('SELECT id FROM mk_keywords WHERE texto_norm = $1', [n])).rows[0] : null
+        const ya = vistas.has(n) ? (await c.query('SELECT id FROM mk_keywords WHERE texto_norm = $1 AND tenant_id = $2', [n, tid()])).rows[0] : null
         if (ya) {
           out.push({ id: ya.id, creada: false })
           continue
         }
         vistas.add(n)
         const ins = await c.query(
-          `INSERT INTO mk_keywords (texto, texto_norm, intencion, fuente, semilla, created_by) VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (texto_norm) DO NOTHING RETURNING id`,
-          [it.texto.replace(/\s+/g, ' '), n, it.intencion ?? clasificarIntencion(it.texto), it.fuente ?? 'manual', it.semilla ?? null, actor.id],
+          `INSERT INTO mk_keywords (tenant_id, texto, texto_norm, intencion, fuente, semilla, created_by) VALUES ($7, $1, $2, $3, $4, $5, $6)
+           ON CONFLICT (tenant_id, texto_norm) DO NOTHING RETURNING id`,
+          [it.texto.replace(/\s+/g, ' '), n, it.intencion ?? clasificarIntencion(it.texto), it.fuente ?? 'manual', it.semilla ?? null, actor.id, tid()],
         )
         if (ins.rows[0]) out.push({ id: ins.rows[0].id, creada: true })
-        else out.push({ id: (await c.query('SELECT id FROM mk_keywords WHERE texto_norm = $1', [n])).rows[0].id, creada: false })
+        else out.push({ id: (await c.query('SELECT id FROM mk_keywords WHERE texto_norm = $1 AND tenant_id = $2', [n, tid()])).rows[0].id, creada: false })
       }
-      const rows = (await c.query(`${KW_SELECT} WHERE k.id = ANY($1)`, [out.map((o) => o.id)])).rows
+      const rows = (await c.query(`${KW_SELECT} WHERE k.id = ANY($1) AND k.tenant_id = $2`, [out.map((o) => o.id), tid()])).rows
       const porId = new Map(rows.map((r) => [r.id as string, r]))
       return out.map((o) => ({ ...kwOut(porId.get(o.id)), creada: o.creada }))
     })
@@ -142,7 +143,7 @@ export const kwListar = op(
     ...pageShape,
   }),
   async (_a, b) => {
-    const f = filters()
+    const f = filters('k.tenant_id')
     if (b.q) f.add(`k.texto_norm LIKE ?`, `%${norm(b.q).replace(/[\\%_]/g, '\\$&')}%`)
     if (b.intencion) f.add('k.intencion = ?', b.intencion)
     if (b.estado) f.add('k.estado = ?', b.estado)
@@ -151,13 +152,13 @@ export const kwListar = op(
     const rows = (
       await pool.query(`${KW_SELECT} ${f.where()} ORDER BY k.created_at DESC, k.texto LIMIT ${b.per_page} OFFSET ${(b.page - 1) * b.per_page}`, f.params())
     ).rows
-    const porEstado = (await pool.query('SELECT estado, count(*)::int AS n FROM mk_keywords GROUP BY estado')).rows
+    const porEstado = (await pool.query('SELECT estado, count(*)::int AS n FROM mk_keywords WHERE tenant_id = $1 GROUP BY estado', [tid()])).rows
     return paged(rows.map(kwOut), total, b.page, b.per_page, { por_estado: Object.fromEntries(porEstado.map((r) => [r.estado, r.n])) })
   },
 )
 
 async function serpDe(c: Db, kwId: string) {
-  const r = (await c.query('SELECT s.consultado_el, s.costo_estimado, s.resultados, u.name AS por FROM mk_serp s JOIN users u ON u.id = s.consultado_por WHERE s.keyword_id = $1 ORDER BY s.consultado_el DESC LIMIT 1', [kwId])).rows[0]
+  const r = (await c.query('SELECT s.consultado_el, s.costo_estimado, s.resultados, u.name AS por FROM mk_serp s JOIN users u ON u.id = s.consultado_por WHERE s.keyword_id = $1 AND s.tenant_id = $2 ORDER BY s.consultado_el DESC LIMIT 1', [kwId, tid()])).rows[0]
   if (!r) return null
   const comps = await competidoresActivos(c)
   return {
@@ -170,7 +171,7 @@ async function serpDe(c: Db, kwId: string) {
 
 export const kwVer = op(z.strictObject({ id }), async (_a, b) => {
   const k = kwOut(await kwFila(pool, b.id))
-  const contenidos = (await pool.query(`${CT_SELECT} WHERE m.keyword_id = $1 AND m.archived_at IS NULL ORDER BY m.created_at DESC`, [b.id])).rows.map(ctOut)
+  const contenidos = (await pool.query(`${CT_SELECT} WHERE m.keyword_id = $1 AND m.tenant_id = $2 AND m.archived_at IS NULL ORDER BY m.created_at DESC`, [b.id, tid()])).rows.map(ctOut)
   return { ...k, serp: await serpDe(pool, b.id), contenidos_vinculados: contenidos }
 })
 
@@ -181,13 +182,13 @@ export const kwActualizar = op(
       await kwFila(c, b.id)
       if (b.texto !== undefined) {
         const n = norm(b.texto)
-        const otra = (await c.query('SELECT 1 FROM mk_keywords WHERE texto_norm = $1 AND id <> $2', [n, b.id])).rows[0]
+        const otra = (await c.query('SELECT 1 FROM mk_keywords WHERE texto_norm = $1 AND id <> $2 AND tenant_id = $3', [n, b.id, tid()])).rows[0]
         if (otra) throw new HttpError(409, 'Ya existe una keyword igual. ✓ Guardada')
-        await c.query('UPDATE mk_keywords SET texto = $2, texto_norm = $3 WHERE id = $1', [b.id, b.texto.replace(/\s+/g, ' '), n])
+        await c.query('UPDATE mk_keywords SET texto = $2, texto_norm = $3 WHERE id = $1 AND tenant_id = $4', [b.id, b.texto.replace(/\s+/g, ' '), n, tid()])
       }
-      if (b.estado !== undefined) await c.query('UPDATE mk_keywords SET estado = $2 WHERE id = $1', [b.id, b.estado])
-      if (b.intencion !== undefined) await c.query('UPDATE mk_keywords SET intencion = $2 WHERE id = $1', [b.id, b.intencion])
-      await c.query('UPDATE mk_keywords SET updated_at = now() WHERE id = $1', [b.id])
+      if (b.estado !== undefined) await c.query('UPDATE mk_keywords SET estado = $2 WHERE id = $1 AND tenant_id = $3', [b.id, b.estado, tid()])
+      if (b.intencion !== undefined) await c.query('UPDATE mk_keywords SET intencion = $2 WHERE id = $1 AND tenant_id = $3', [b.id, b.intencion, tid()])
+      await c.query('UPDATE mk_keywords SET updated_at = now() WHERE id = $1 AND tenant_id = $2', [b.id, tid()])
     })
     return kwOut(await kwFila(pool, b.id))
   },
@@ -213,7 +214,7 @@ export const kwSerp = op(z.strictObject({ id, confirmar_costo: boolFlag.optional
   if (b.confirmar_costo === undefined || !yes(b.confirmar_costo))
     throw new HttpError(409, `Esta consulta consume saldo de tu cuenta de Brightdata (costo estimado: US$ ${costo}). Confírmala con confirmar_costo: true.`, { requiere_confirmacion: true, costo_estimado_usd: costo })
   const filas = await serpGoogle(k.texto as string) // 503 si no está configurado; 502 si falla (no se guarda nada)
-  await pool.query('INSERT INTO mk_serp (keyword_id, consultado_por, costo_estimado, resultados) VALUES ($1, $2, $3, $4::jsonb)', [b.id, actor.id, costo, JSON.stringify(filas)])
+  await pool.query('INSERT INTO mk_serp (tenant_id, keyword_id, consultado_por, costo_estimado, resultados) VALUES ($5, $1, $2, $3, $4::jsonb)', [b.id, actor.id, costo, JSON.stringify(filas), tid()])
   return { keyword: k.texto as string, ...(await serpDe(pool, b.id)) }
 })
 
@@ -230,7 +231,7 @@ export const kwIdea = op(z.strictObject({ id }), async (actor, b) => {
     categoria: 'contenido',
     datos: { keyword_id: b.id, keyword: k.texto, intencion: k.intencion },
   })) as { id: string }
-  await pool.query('UPDATE mk_keywords SET idea_item_id = $2, updated_at = now() WHERE id = $1 AND idea_item_id IS NULL', [b.id, it.id])
+  await pool.query('UPDATE mk_keywords SET idea_item_id = $2, updated_at = now() WHERE id = $1 AND tenant_id = $3 AND idea_item_id IS NULL', [b.id, it.id, tid()])
   return { creada: true, keyword: kwOut(await kwFila(pool, b.id)), item_id: it.id }
 })
 
@@ -239,9 +240,9 @@ export const kwContenido = op(
   z.strictObject({ id, titulo: text(160).optional(), responsable: text(40).optional(), fecha_objetivo: isoDate.optional(), notas: text(4000).optional() }),
   async (actor, b) => {
     const res = await tx(async (c) => {
-      const k = (await c.query('SELECT * FROM mk_keywords WHERE id = $1 FOR UPDATE', [b.id])).rows[0]
+      const k = (await c.query('SELECT * FROM mk_keywords WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [b.id, tid()])).rows[0]
       if (!k) throw new HttpError(404, 'Keyword no encontrada')
-      const ya = (await c.query("SELECT id FROM mk_contenidos WHERE keyword_id = $1 AND archived_at IS NULL AND estado <> 'publicado' ORDER BY created_at LIMIT 1", [b.id])).rows[0]
+      const ya = (await c.query("SELECT id FROM mk_contenidos WHERE keyword_id = $1 AND tenant_id = $2 AND archived_at IS NULL AND estado <> 'publicado' ORDER BY created_at LIMIT 1", [b.id, tid()])).rows[0]
       if (ya) return { creado: false, contenido_id: ya.id as string }
       const resp = b.responsable ? await userByName(c, b.responsable) : { id: actor.id }
       const cid = await insertContenido(c, {
@@ -253,7 +254,7 @@ export const kwContenido = op(
         feed_item_id: k.idea_item_id,
         created_by: actor.id,
       })
-      if (k.estado === 'por_atacar') await c.query("UPDATE mk_keywords SET estado = 'en_contenido', updated_at = now() WHERE id = $1", [b.id])
+      if (k.estado === 'por_atacar') await c.query("UPDATE mk_keywords SET estado = 'en_contenido', updated_at = now() WHERE id = $1 AND tenant_id = $2", [b.id, tid()])
       return { creado: true, contenido_id: cid }
     })
     return { ...res, contenido: await contenidoUno(res.contenido_id), keyword: kwOut(await kwFila(pool, b.id)) }
@@ -269,7 +270,7 @@ const handleIg = (v: string | null) => (v ? v.trim().replace(/^https?:\/\/(www\.
 const dominioWeb = (v: string | null) => (v ? dominioDe(/^https?:\/\//i.test(v) ? v : `https://${v}`) : '')
 
 async function competidoresActivos(c: Db): Promise<Comp[]> {
-  return (await c.query('SELECT id, nombre, nombre_norm, web, instagram FROM mk_competidores WHERE archived_at IS NULL')).rows as Comp[]
+  return (await c.query('SELECT id, nombre, nombre_norm, web, instagram FROM mk_competidores WHERE tenant_id = $1 AND archived_at IS NULL', [tid()])).rows as Comp[]
 }
 
 /** A cuál competidor pertenece un resultado del SERP: por su dominio (web) o por su usuario de Instagram. Null si ninguno. */
@@ -298,7 +299,7 @@ const compOut = (r: any) => ({
 const COMP_SELECT = 'SELECT k.*, u.name AS creador FROM mk_competidores k JOIN users u ON u.id = k.created_by'
 
 async function compFila(c: Db, cid: string) {
-  const r = (await c.query(`${COMP_SELECT} WHERE k.id = $1`, [cid])).rows[0]
+  const r = (await c.query(`${COMP_SELECT} WHERE k.id = $1 AND k.tenant_id = $2`, [cid, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Competidor no encontrado')
   return r
 }
@@ -309,7 +310,7 @@ const igLibre = text(120)
 const notasComp = text(4000)
 
 export const competidoresListar = op(z.strictObject({ q: text(80).optional(), archivados: archivadosParam, ...pageShape }), async (_a, b) => {
-  const f = filters()
+  const f = filters('k.tenant_id')
   if (b.q) f.add('k.nombre_norm LIKE ?', `%${norm(b.q).replace(/[\\%_]/g, '\\$&')}%`)
   if (b.archivados === 'excluir') f.raw('k.archived_at IS NULL')
   if (b.archivados === 'solo') f.raw('k.archived_at IS NOT NULL')
@@ -324,8 +325,8 @@ async function hallazgosDe(nombre: string, userId: string) {
   if (n.length < 3) return []
   const rows = (
     await pool.query(
-      `SELECT id, title, summary, kind, source, data, found_at FROM feed_items WHERE source ILIKE 'espia%' AND (visibility = 'equipo' OR published_by = $1) ORDER BY found_at DESC LIMIT 500`,
-      [userId],
+      `SELECT id, title, summary, kind, source, data, found_at FROM feed_items WHERE tenant_id = $2 AND source ILIKE 'espia%' AND (visibility = 'equipo' OR published_by = $1) ORDER BY found_at DESC LIMIT 500`,
+      [userId, tid()],
     )
   ).rows
   const out = []
@@ -347,11 +348,11 @@ export const competidorCrear = op(
   z.strictObject({ nombre: nombreComp, web: urlLibre.nullish(), instagram: igLibre.nullish(), notas: notasComp.nullish() }),
   async (actor, b) => {
     const n = norm(b.nombre)
-    const ya = (await pool.query('SELECT id, nombre FROM mk_competidores WHERE nombre_norm = $1 AND archived_at IS NULL', [n])).rows[0]
+    const ya = (await pool.query('SELECT id, nombre FROM mk_competidores WHERE nombre_norm = $1 AND tenant_id = $2 AND archived_at IS NULL', [n, tid()])).rows[0]
     if (ya) throw new HttpError(409, `Ya tienes un competidor llamado «${ya.nombre}»`)
     const r = await pool.query(
-      `INSERT INTO mk_competidores (nombre, nombre_norm, web, instagram, notas, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-      [b.nombre, n, b.web ?? null, b.instagram ?? null, b.notas ?? null, actor.id],
+      `INSERT INTO mk_competidores (tenant_id, nombre, nombre_norm, web, instagram, notas, created_by) VALUES ($7, $1, $2, $3, $4, $5, $6) RETURNING id`,
+      [b.nombre, n, b.web ?? null, b.instagram ?? null, b.notas ?? null, actor.id, tid()],
     )
     const k = await compFila(pool, r.rows[0].id)
     return { ...compOut(k), hallazgos: await hallazgosDe(k.nombre as string, actor.id) }
@@ -373,7 +374,7 @@ export const competidorActualizar = op(
       }
       if (b.nombre !== undefined) {
         const n = norm(b.nombre)
-        const otro = (await c.query('SELECT 1 FROM mk_competidores WHERE nombre_norm = $1 AND id <> $2 AND archived_at IS NULL', [n, b.id])).rows[0]
+        const otro = (await c.query('SELECT 1 FROM mk_competidores WHERE nombre_norm = $1 AND id <> $2 AND tenant_id = $3 AND archived_at IS NULL', [n, b.id, tid()])).rows[0]
         if (otro) throw new HttpError(409, 'Ya tienes un competidor con ese nombre')
         set('nombre', b.nombre)
         set('nombre_norm', n)
@@ -383,13 +384,13 @@ export const competidorActualizar = op(
       if (b.notas !== undefined) set('notas', b.notas)
       if (b.archivado !== undefined) {
         if (!yes(b.archivado)) {
-          const otro = (await c.query('SELECT 1 FROM mk_competidores WHERE nombre_norm = $1 AND id <> $2 AND archived_at IS NULL', [k.nombre_norm, b.id])).rows[0]
+          const otro = (await c.query('SELECT 1 FROM mk_competidores WHERE nombre_norm = $1 AND id <> $2 AND tenant_id = $3 AND archived_at IS NULL', [k.nombre_norm, b.id, tid()])).rows[0]
           if (otro) throw new HttpError(409, 'Ya hay un competidor activo con ese nombre')
         }
         sets.push(`archived_at = ${yes(b.archivado) ? 'COALESCE(archived_at, now())' : 'NULL'}`)
       }
       sets.push('updated_at = now()')
-      await c.query(`UPDATE mk_competidores SET ${sets.join(', ')} WHERE id = $1`, params)
+      await c.query(`UPDATE mk_competidores SET ${sets.join(', ')} WHERE id = $1 AND tenant_id = $${params.push(tid())}`, params)
     })
     const k = await compFila(pool, b.id)
     return { ...compOut(k), hallazgos: await hallazgosDe(k.nombre as string, actor.id) }
@@ -403,7 +404,8 @@ export const competidorKeywords = op(z.strictObject({ id }), async (_a, b) => {
   const rows = (
     await pool.query(
       `SELECT DISTINCT ON (s.keyword_id) s.keyword_id, s.consultado_el, s.resultados, kw.texto
-         FROM mk_serp s JOIN mk_keywords kw ON kw.id = s.keyword_id ORDER BY s.keyword_id, s.consultado_el DESC`,
+         FROM mk_serp s JOIN mk_keywords kw ON kw.id = s.keyword_id WHERE s.tenant_id = $1 ORDER BY s.keyword_id, s.consultado_el DESC`,
+      [tid()],
     )
   ).rows
   const apariciones = []
@@ -465,7 +467,7 @@ const ctOut = (r: any) => {
 }
 
 async function contenidoUno(cid: string, c: Db = pool) {
-  const r = (await c.query(`${CT_SELECT} WHERE m.id = $1`, [cid])).rows[0]
+  const r = (await c.query(`${CT_SELECT} WHERE m.id = $1 AND m.tenant_id = $2`, [cid, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Pieza de contenido no encontrada')
   return ctOut(r)
 }
@@ -475,7 +477,7 @@ const enlace = z.string('Enlace inválido').trim().max(500, 'Máximo 500 caracte
 export const contenidosListar = op(
   z.strictObject({ estado: estadoCt.optional(), responsable: text(40).optional(), keyword_id: id.optional(), archivados: archivadosParam }),
   async (_a, b) => {
-    const f = filters()
+    const f = filters('m.tenant_id')
     if (b.estado) f.add('m.estado = ?', b.estado)
     if (b.keyword_id) f.add('m.keyword_id = ?', b.keyword_id)
     if (b.responsable) f.add('lower(ru.name) = ?', b.responsable.trim().toLowerCase())
@@ -494,7 +496,7 @@ export const contenidoCrear = op(
   z.strictObject({ titulo: text(160), keyword_id: id.nullish(), responsable: text(40).optional(), fecha_objetivo: isoDate.nullish(), notas: text(4000).nullish() }),
   async (actor, b) => {
     const cid = await tx(async (c) => {
-      if (b.keyword_id && !(await c.query('SELECT 1 FROM mk_keywords WHERE id = $1', [b.keyword_id])).rows[0]) throw new HttpError(404, 'Keyword no encontrada')
+      if (b.keyword_id && !(await c.query('SELECT 1 FROM mk_keywords WHERE id = $1 AND tenant_id = $2', [b.keyword_id, tid()])).rows[0]) throw new HttpError(404, 'Keyword no encontrada')
       const resp = b.responsable ? await userByName(c, b.responsable) : { id: actor.id }
       return insertContenido(c, { titulo: b.titulo, keyword_id: b.keyword_id, responsable_id: resp.id, fecha_objetivo: b.fecha_objetivo, notas: b.notas, created_by: actor.id })
     })
@@ -518,7 +520,7 @@ export const contenidoActualizar = op(
     .refine((v) => Object.keys(v).length > 1, 'Nada que cambiar'),
   async (_a, b) => {
     await tx(async (c) => {
-      const m = (await c.query('SELECT * FROM mk_contenidos WHERE id = $1 FOR UPDATE', [b.id])).rows[0]
+      const m = (await c.query('SELECT * FROM mk_contenidos WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [b.id, tid()])).rows[0]
       if (!m) throw new HttpError(404, 'Pieza de contenido no encontrada')
       const sets: string[] = []
       const params: unknown[] = [b.id]
@@ -528,7 +530,7 @@ export const contenidoActualizar = op(
       }
       if (b.titulo !== undefined) set('titulo', b.titulo)
       if (b.keyword_id !== undefined) {
-        if (b.keyword_id && !(await c.query('SELECT 1 FROM mk_keywords WHERE id = $1', [b.keyword_id])).rows[0]) throw new HttpError(404, 'Keyword no encontrada')
+        if (b.keyword_id && !(await c.query('SELECT 1 FROM mk_keywords WHERE id = $1 AND tenant_id = $2', [b.keyword_id, tid()])).rows[0]) throw new HttpError(404, 'Keyword no encontrada')
         set('keyword_id', b.keyword_id)
       }
       if (b.responsable !== undefined) set('responsable_id', (await userByName(c, b.responsable)).id)
@@ -542,7 +544,7 @@ export const contenidoActualizar = op(
       } else if (b.publicado_en !== undefined || b.enlace !== undefined) throw new HttpError(400, 'Dónde se publicó y el enlace se piden al mover la pieza a Publicado')
       if (b.archivado !== undefined) sets.push(`archived_at = ${yes(b.archivado) ? 'COALESCE(archived_at, now())' : 'NULL'}`)
       sets.push('updated_at = now()')
-      await c.query(`UPDATE mk_contenidos SET ${sets.join(', ')} WHERE id = $1`, params)
+      await c.query(`UPDATE mk_contenidos SET ${sets.join(', ')} WHERE id = $1 AND tenant_id = $${params.push(tid())}`, params)
     })
     return contenidoUno(b.id)
   },
@@ -553,18 +555,18 @@ export const contenidoMover = op(
   z.strictObject({ id, estado: estadoCt, publicado_en: text(120).optional(), enlace: enlace.optional() }),
   async (_a, b) => {
     await tx(async (c) => {
-      const m = (await c.query('SELECT * FROM mk_contenidos WHERE id = $1 FOR UPDATE', [b.id])).rows[0]
+      const m = (await c.query('SELECT * FROM mk_contenidos WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [b.id, tid()])).rows[0]
       if (!m) throw new HttpError(404, 'Pieza de contenido no encontrada')
       if (m.archived_at) throw new HttpError(409, 'La pieza está archivada')
       if (b.estado === 'publicado') {
         const donde = b.publicado_en ?? m.publicado_en
         const link = b.enlace ?? m.enlace
         if (!donde || !link) throw new HttpError(400, 'Para publicar indica dónde se publicó (publicado_en) y el enlace (enlace)', { faltan: [!donde && 'publicado_en', !link && 'enlace'].filter(Boolean) })
-        await c.query(`UPDATE mk_contenidos SET estado = 'publicado', publicado_en = $2, enlace = $3, publicado_el = COALESCE(publicado_el, now()), updated_at = now() WHERE id = $1`, [b.id, donde, link])
+        await c.query(`UPDATE mk_contenidos SET estado = 'publicado', publicado_en = $2, enlace = $3, publicado_el = COALESCE(publicado_el, now()), updated_at = now() WHERE id = $1 AND tenant_id = $4`, [b.id, donde, link, tid()])
         // la keyword ya tiene su pieza publicada: pasa a «En contenido» si seguía por atacar
-        if (m.keyword_id) await c.query("UPDATE mk_keywords SET estado = 'en_contenido', updated_at = now() WHERE id = $1 AND estado = 'por_atacar'", [m.keyword_id])
+        if (m.keyword_id) await c.query("UPDATE mk_keywords SET estado = 'en_contenido', updated_at = now() WHERE id = $1 AND tenant_id = $2 AND estado = 'por_atacar'", [m.keyword_id, tid()])
       } else {
-        await c.query('UPDATE mk_contenidos SET estado = $2, publicado_en = NULL, enlace = NULL, publicado_el = NULL, updated_at = now() WHERE id = $1', [b.id, b.estado])
+        await c.query('UPDATE mk_contenidos SET estado = $2, publicado_en = NULL, enlace = NULL, publicado_el = NULL, updated_at = now() WHERE id = $1 AND tenant_id = $3', [b.id, b.estado, tid()])
       }
     })
     return contenidoUno(b.id)
@@ -578,6 +580,8 @@ export const campanasVer = op(
   z.strictObject({ dias: z.number('dias debe ser un número').int().min(7, 'dias: entre 7 y 90').max(90, 'dias: entre 7 y 90').default(30), cuenta: text(40).optional() }),
   async (_a, b) => {
     const base = { dias: b.dias, solo_lectura: true as const }
+    // Las credenciales de Meta Ads del servidor son las de HAYAI: sus campañas solo se muestran en el tenant HAYAI.
+    if (tenantCtx().slug !== 'hayai') return { ...base, conectado: false, motivo: 'Las campañas de Meta Ads conectadas en el servidor son del espacio HAYAI', error: null as string | null, cuentas: [], campanas: [], totales: null }
     if (!metaCampanasListo()) return { ...base, conectado: false, motivo: metaCampanasMotivo(), error: null as string | null, cuentas: [], campanas: [], totales: null }
     try {
       const r = await campanasMeta(b.dias, b.cuenta)

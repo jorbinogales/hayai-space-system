@@ -1,4 +1,5 @@
 import { api, ApiError } from './api'
+import { setTenants, type Tenant } from './tenant'
 
 // Acceso real contra el backend: el servidor valida el PIN (scrypt), aplica el bloqueo por intentos y fija la cookie de sesion.
 // No se pueden crear usuarios desde el login: los astronautas los da de alta el sistema.
@@ -10,6 +11,8 @@ export interface Session {
   role: 'ADMIN' | 'SOCIO'
   /** true mientras siga con el PIN inicial: debe crear uno nuevo antes de entrar */
   mustChangePin?: boolean
+  /** espacios de trabajo a los que entra, cada uno con sus modulos (puede venir vacio: sin acceso) */
+  tenants: Tenant[]
 }
 
 export interface Known {
@@ -40,3 +43,6 @@ export async function me(): Promise<Session | null> {
     throw e
   }
 }
+
+/** Toma los espacios de trabajo de la sesion y deja elegido el activo (el ultimo de este usuario si sigue valiendo). Va antes de pedir datos. */
+export const adopt = (s: Session) => setTenants(s.id, s.tenants ?? [])

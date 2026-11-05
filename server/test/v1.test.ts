@@ -153,6 +153,28 @@ function newKey(user: string, name: string, scopes?: string) {
   return m[0]
 }
 
+// ---------- multitenant (039): fixture de pruebas ----------
+// HAYAI es el tenant de todas las pruebas de siempre: cada llamada a la web (/api, no /api/v1 ni el webhook) lleva X-Tenant-Id de HAYAI
+// salvo que la prueba mande otro (o null para no mandarlo). Las pruebas de aislamiento entre tenants mandan el suyo.
+let HAYAI = ''
+const realFetch = globalThis.fetch
+globalThis.fetch = ((input: string | URL | Request, init: RequestInit = {}) => {
+  const url = String(input instanceof Request ? input.url : input)
+  const h = new Headers(init.headers)
+  if (HAYAI && /\/api\//.test(url) && !/\/api\/(v1|webhooks)/.test(url)) {
+    if (!h.has('x-tenant-id')) h.set('x-tenant-id', HAYAI)
+    else if (h.get('x-tenant-id') === 'null') h.delete('x-tenant-id')
+  }
+  return realFetch(input, { ...init, headers: h })
+}) as typeof fetch
+/** Inserts directos con el cliente admin (sin pasar por la API): en la BD de PRUEBAS tenant_id cae en HAYAI por defecto. La app no depende
+ *  de esto: db.ts rechaza toda consulta de la app sobre una tabla de negocio que no nombre tenant_id. */
+async function tenantFixture(db: pg.Client) {
+  HAYAI = (await db.query("SELECT id FROM tenants WHERE slug = 'hayai'")).rows[0].id
+  const { rows } = await db.query("SELECT table_name FROM information_schema.columns WHERE column_name = 'tenant_id' AND table_schema = 'public' AND table_name NOT IN ('user_tenants')")
+  for (const r of rows) await db.query(`ALTER TABLE ${r.table_name} ALTER COLUMN tenant_id SET DEFAULT '${HAYAI}'`)
+}
+
 before(async () => {
   dataDir = mkdtempSync(join(tmpdir(), 'hayai-test-pg-v1-'))
   embedded = new EmbeddedPostgres({
@@ -330,6 +352,7 @@ before(async () => {
   }
   admin = new pg.Client({ connectionString: DATABASE_URL })
   await admin.connect()
+  await tenantFixture(admin)
   KEY = newKey('Leandro', 'growi')
   KEY_J = newKey('Jorbi', 'jorbi-laptop')
   KEY_D = newKey('Leandro', 'limpieza', 'read,write,delete')
@@ -6535,7 +6558,8 @@ describe('Radar de competidores (Feed, v1.8.2)', () => {
 
   it('la semilla es idempotente: volver a correr la migración no duplica nada', async () => {
     const sql = readFileSync(resolve(root, 'server/db/migrations/035_competidores.sql'), 'utf8')
-    const inserta = sql.slice(sql.indexOf('INSERT INTO competidores'))
+    // Desde la 039 la unicidad del nombre es por tenant: la semilla vieja se vuelve a correr con el ON CONFLICT nuevo (tenant_id cae en HAYAI).
+    const inserta = sql.slice(sql.indexOf('INSERT INTO competidores')).replace('ON CONFLICT (nombre_norm)', 'ON CONFLICT (tenant_id, nombre_norm)')
     await admin.query(inserta)
     assert.equal((await rc()).body.meta.total, 12)
     assert.equal((await admin.query('SELECT count(*)::int AS n FROM competidores')).rows[0].n, 12)
@@ -6850,7 +6874,10 @@ describe('Chat interno', () => {
     const id = m.body.id
     assert.equal((await api(`/chat/${id}`, { method: 'DELETE' })).status, 403, 'KEY no tiene permiso de borrado')
     assert.equal((await api(`/chat/${id}`, { method: 'DELETE', key: KEY_R })).status, 403)
+    // Los 3 fundadores son ADMIN desde la 039: para probar «ni autor ni ADMIN», Jorbi pasa a SOCIO un momento (sigue en HAYAI).
+    await admin.query("UPDATE users SET role = 'SOCIO' WHERE name = 'Jorbi'")
     const noAutor = await api(`/chat/${id}`, { method: 'DELETE', key: KEY_JD })
+    await admin.query("UPDATE users SET role = 'ADMIN' WHERE name = 'Jorbi'")
     assert.equal(noAutor.status, 403, 'Jorbi tiene el permiso, pero no es el autor ni ADMIN')
     assert.equal((await api(`/chat/${id}`)).status, 200)
     assert.equal((await apiD(`/chat/${NOPE}`, { method: 'DELETE' })).status, 404)
@@ -6897,7 +6924,10 @@ describe('Chat interno', () => {
     assert.deepEqual([q.body.autor.nombre, q.body.fuente, q.body.menciones.map((x: any) => x.nombre)], ['Elis', 'manual', ['Leandro']], 'la web siempre es «manual» y el autor es la sesión')
     const id = q.body.id
     assert.equal((await web('Jorbi', `/chat/${id}`, { method: 'PATCH', body: { cuerpo: 'ajeno' } })).status, 403)
-    assert.equal((await web('Jorbi', `/chat/${id}`, { method: 'DELETE' })).status, 403, 'Jorbi no es ADMIN aquí ni autor')
+    await admin.query("UPDATE users SET role = 'SOCIO' WHERE name = 'Jorbi'") // ver arriba: los fundadores son ADMIN desde la 039
+    const borrar = await web('Jorbi', `/chat/${id}`, { method: 'DELETE' })
+    await admin.query("UPDATE users SET role = 'ADMIN' WHERE name = 'Jorbi'")
+    assert.equal(borrar.status, 403, 'Jorbi no es ADMIN aquí ni autor')
     const e = await web('Elis', `/chat/${id}`, { method: 'PATCH', body: { cuerpo: 'Nota de Elis, editada' }, headers: { 'if-match': q.full.actualizado_el } })
     assert.deepEqual([e.status, e.body.cuerpo, e.body.menciones.length], [200, 'Nota de Elis, editada', 0])
     assert.ok(e.body.editado_el)
@@ -7674,5 +7704,139 @@ describe('Proyectos en vivo (SSE «proyecto»)', () => {
     assert.equal(eventos.filter((e) => e.event === 'proyecto').length, 0, 'secciones o ids inválidos no se reparten')
     await api(`/proyectos/${proj}/checklist`, { body: { texto: 'Sigue vivo' } })
     await llega(proyecto('checklist', 'nuevo'))
+  })
+})
+
+describe('multitenant (API v1, MCP y SSE)', () => {
+  // Un segundo tenant con una SOCIO (Marta) que solo tiene clientes, tareas y proyectos. Su llave es de ese tenant.
+  let otro = ''
+  let KEY_M = ''
+  let marta = ''
+  let n = 0
+  const rpc = (method: string, params: unknown, key: string) =>
+    http(`${ROOT}/mcp`, { key, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: ++n, method, params } })
+
+  before(async () => {
+    otro = (await admin.query("INSERT INTO tenants (name, slug) VALUES ('Otra V1', 'otra-v1') RETURNING id")).rows[0].id
+    marta = (await admin.query("INSERT INTO users (name, avatar, role, pin_hash, must_change_pin) VALUES ('Marta', 'luna', 'SOCIO', 'x', false) RETURNING id")).rows[0].id
+    await admin.query("INSERT INTO user_tenants (user_id, tenant_id, modules) VALUES ($1, $2, ARRAY['clientes', 'tareas', 'proyectos'])", [marta, otro])
+    const r = cli('create', '--user', 'Marta', '--name', 'marta', '--scopes', 'read,write,delete', '--tenant', 'otra-v1')
+    assert.equal(r.status, 0, r.out)
+    KEY_M = r.out.match(/hy_[A-Za-z0-9_-]+/)![0]
+  })
+
+  it('CLI: la llave solo se crea en un tenant al que el dueño entra', () => {
+    const r = cli('create', '--user', 'Marta', '--name', 'colada') // por defecto hayai: Marta no es miembro
+    assert.notEqual(r.status, 0)
+    assert.match(r.out, /no tiene acceso/)
+    assert.notEqual(cli('create', '--user', 'Leandro', '--name', 'x', '--tenant', 'no-existe').status, 0)
+  })
+
+  it('/me dice el tenant y los módulos de la llave; sin el módulo => 403', async () => {
+    const me = await api('/me', { key: KEY_M })
+    assert.equal(me.status, 200)
+    assert.deepEqual([me.body.tenant.slug, me.body.tenant.modulos], ['otra-v1', ['clientes', 'tareas', 'proyectos']])
+    for (const p of ['/pagos', '/gastos', '/finanzas/resumen', '/chat', '/feed', '/papelera', '/marketing/keywords']) {
+      const r = await api(p, { key: KEY_M })
+      assert.equal(r.status, 403, p)
+      assert.equal(r.body.error.codigo, 'modulo_sin_acceso', p)
+    }
+    assert.equal((await api('/clientes', { key: KEY_M })).status, 200)
+  })
+
+  it('aislamiento: listados vacíos, ids de HAYAI => 404, lo propio no se ve desde HAYAI', async () => {
+    const hayai = (await api('/clientes?per_page=100')).body.data
+    assert.ok(hayai.length > 0)
+    const mine = await api('/clientes', { key: KEY_M })
+    assert.deepEqual([mine.body.data, mine.body.meta.total, mine.body.meta.resumen.activos], [[], 0, 0])
+    assert.deepEqual((await api('/tareas', { key: KEY_M })).body.data, [])
+    const hc = hayai[0].id
+    assert.equal((await api(`/clientes/${hc}`, { key: KEY_M })).status, 404)
+    assert.equal((await api(`/clientes/${hc}`, { key: KEY_M, method: 'PATCH', body: { notas: 'robado' } })).status, 404)
+    assert.equal((await api(`/clientes/${hc}/interacciones`, { key: KEY_M })).status, 404)
+    assert.equal((await api(`/clientes/${hc}`, { key: KEY_M, method: 'DELETE' })).status, 404)
+    assert.equal((await api('/proyectos', { key: KEY_M, body: { nombre: 'Colgado', cliente_id: hc } })).status, 404)
+
+    const c = await api('/clientes', { key: KEY_M, body: { nombre: 'Cliente de Marta' } })
+    assert.equal(c.status, 201, JSON.stringify(c.body))
+    const p = await api('/proyectos', { key: KEY_M, body: { nombre: 'Proyecto de Marta', cliente_id: c.body.id } })
+    assert.equal(p.status, 201, JSON.stringify(p.body))
+    assert.equal(p.body.responsable, 'Marta')
+    // Un responsable que no es socio de este tenant no existe aquí (Leandro es ADMIN: sí cuenta).
+    assert.equal((await api('/tareas', { key: KEY_M, body: { titulo: 'X', proyecto_id: p.body.id, responsable: 'Nadie' } })).status, 404)
+    const t = await api('/tareas', { key: KEY_M, body: { titulo: 'Tarea de Marta', proyecto_id: p.body.id, responsable: 'Leandro' } })
+    assert.equal(t.status, 201, JSON.stringify(t.body))
+    assert.equal((await api(`/clientes/${c.body.id}`)).status, 404) // desde HAYAI
+    assert.equal((await api(`/tareas/${t.body.id}`)).status, 404)
+    assert.ok(!(await api('/clientes?per_page=100')).body.data.some((x: any) => x.id === c.body.id))
+    assert.deepEqual((await api('/buscar?q=marta', { key: KEY_M })).body.clientes.map((x: any) => x.id), [c.body.id])
+    assert.equal((await api('/buscar?q=marta')).body.clientes.length, 0)
+    // La actividad de cada tenant es suya (y la de Marta no trae cobros: no tiene el módulo).
+    const act = (await api('/actividad?per_page=100', { key: KEY_M })).body.data
+    assert.ok(act.length >= 2 && act.every((a: any) => ['cliente_nuevo', 'tarea_nueva', 'version_nueva'].includes(a.tipo)))
+    assert.ok(!(await api('/actividad?per_page=100')).body.data.some((a: any) => a.cliente_id === c.body.id))
+    // Borrar va a la papelera de ESTE tenant: HAYAI no la ve ni la restaura.
+    const del = await api(`/tareas/${t.body.id}`, { key: KEY_M, method: 'DELETE' })
+    assert.equal(del.status, 200, JSON.stringify(del.body))
+    assert.equal((await apiD(`/papelera/${del.body.papelera_id}/restaurar`, { body: {} })).status, 404)
+    assert.ok(!(await apiD('/papelera?per_page=100')).body.data.some((x: any) => x.id === del.body.papelera_id))
+  })
+
+  it('MCP: solo las herramientas de los módulos del dueño en su tenant, y operan en ese tenant', async () => {
+    const r = await rpc('tools/list', {}, KEY_M)
+    assert.equal(r.status, 200)
+    const names = r.body.result.tools.map((t: any) => t.name)
+    assert.ok(names.includes('hayai_clientes_listar') && names.includes('hayai_tarea_crear') && names.includes('hayai_buscar'))
+    for (const x of ['hayai_pagos_listar', 'hayai_gastos_listar', 'hayai_feed_listar', 'hayai_chat_listar', 'hayai_papelera_listar', 'hayai_kw_listar']) assert.ok(!names.includes(x), x)
+    const call = await rpc('tools/call', { name: 'hayai_clientes_listar', arguments: {} }, KEY_M)
+    assert.deepEqual(JSON.parse(call.body.result.content[0].text).data.map((c: any) => c.nombre), ['Cliente de Marta'])
+  })
+
+  it('llave de un dueño que ya no entra a su tenant => 403; tenant desactivado => 403', async () => {
+    await admin.query('UPDATE tenants SET active = false WHERE id = $1', [otro])
+    assert.equal((await api('/me', { key: KEY_M })).status, 403)
+    await admin.query('UPDATE tenants SET active = true WHERE id = $1', [otro])
+    await admin.query('DELETE FROM user_tenants WHERE user_id = $1', [marta])
+    assert.equal((await api('/me', { key: KEY_M })).status, 403)
+    await admin.query("INSERT INTO user_tenants (user_id, tenant_id, modules) VALUES ($1, $2, ARRAY['clientes', 'tareas', 'proyectos'])", [marta, otro])
+    assert.equal((await api('/me', { key: KEY_M })).status, 200)
+  })
+
+  it('SSE: la pestaña de HAYAI no recibe la actividad del otro tenant; ?tenant= ajeno => 403', async () => {
+    const login = await fetch(`${ROOT}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Jorbi', pin: '482913' }) })
+    assert.equal(login.status, 200)
+    const cookie = login.headers.getSetCookie().find((c) => c.startsWith('hayai_sid='))!.split(';')[0]
+    const ac = new AbortController()
+    const res = await fetch(`${ROOT}/api/events`, { headers: { cookie }, signal: ac.signal }) // la fixture pone X-Tenant-Id de HAYAI
+    assert.equal(res.status, 200)
+    let buf = ''
+    const reader = res.body!.getReader()
+    const leer = (async () => {
+      try {
+        for (;;) {
+          const { value, done } = await reader.read()
+          if (done) break
+          buf += new TextDecoder().decode(value)
+        }
+      } catch {
+        /* abortado */
+      }
+    })()
+    await new Promise((r) => setTimeout(r, 200))
+    assert.equal((await api('/clientes', { key: KEY_M, body: { nombre: 'Secreto del otro tenant' } })).status, 201)
+    assert.equal((await api('/clientes', { body: { nombre: 'Visible en HAYAI' } })).status, 201)
+    await new Promise((r) => setTimeout(r, 600))
+    ac.abort()
+    await leer
+    assert.match(buf, /Visible en HAYAI/)
+    assert.doesNotMatch(buf, /Secreto del otro tenant/)
+    // Con ?tenant= (EventSource no manda cabeceras) también se valida la membresía: Rosa no existe aquí, pero Marta no tiene sesión;
+    // un tenant que no es UUID o al que no entra => 403.
+    const bad = await fetch(`${ROOT}/api/events?tenant=nope`, { headers: { cookie, 'x-tenant-id': 'null' } })
+    assert.equal(bad.status, 403)
+    const ok = new AbortController()
+    const viaQuery = await fetch(`${ROOT}/api/events?tenant=${otro}`, { headers: { cookie, 'x-tenant-id': 'null' }, signal: ok.signal }) // Jorbi es ADMIN: entra
+    assert.equal(viaQuery.status, 200)
+    ok.abort()
   })
 })

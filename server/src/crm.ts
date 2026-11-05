@@ -6,6 +6,7 @@ import { expandCharge, insertCharges, insertItems } from './charges.ts'
 import { recordActivity } from './activity.ts'
 import { assertFresh } from './concurrency.ts'
 import type { Db } from './db.ts'
+import { tid } from './tenant.ts'
 import { z } from 'zod'
 import { HttpError, isoDate, money, text } from './util.ts'
 
@@ -174,18 +175,18 @@ export const proposalTotals = (items: PItem[]) => ({
 export async function syncEstValue(c: PoolClient, clientId: string) {
   const p = (
     await c.query(
-      `SELECT id FROM proposals WHERE client_id = $1 AND status IN ('borrador', 'presentada', 'aceptada') ORDER BY version DESC LIMIT 1`,
-      [clientId],
+      `SELECT id FROM proposals WHERE client_id = $1 AND tenant_id = $2 AND status IN ('borrador', 'presentada', 'aceptada') ORDER BY version DESC LIMIT 1`,
+      [clientId, tid()],
     )
   ).rows[0]
   if (!p) return
-  const items = (await c.query('SELECT kind, qty, unit_price FROM proposal_items WHERE proposal_id = $1', [p.id])).rows as PItem[]
+  const items = (await c.query('SELECT kind, qty, unit_price FROM proposal_items WHERE proposal_id = $1 AND tenant_id = $2', [p.id, tid()])).rows as PItem[]
   const mensual = proposalTotals(items).mensual
-  await c.query('UPDATE clients SET est_value = $2 WHERE id = $1', [clientId, mensual > 0 ? mensual / 100 : null])
+  await c.query('UPDATE clients SET est_value = $2 WHERE id = $1 AND tenant_id = $3', [clientId, mensual > 0 ? mensual / 100 : null, tid()])
 }
 
 const liveProposal = async (c: PoolClient, clientId: string) =>
-  (await c.query(`SELECT id, status, version FROM proposals WHERE client_id = $1 AND status IN ('borrador', 'presentada') FOR UPDATE`, [clientId])).rows[0] as
+  (await c.query(`SELECT id, status, version FROM proposals WHERE client_id = $1 AND tenant_id = $2 AND status IN ('borrador', 'presentada') FOR UPDATE`, [clientId, tid()])).rows[0] as
     | { id: string; status: string; version: number }
     | undefined
 
@@ -193,27 +194,27 @@ const liveProposal = async (c: PoolClient, clientId: string) =>
 async function scheduleVisit(c: PoolClient, actorId: string, clientId: string, name: string, date: string) {
   let project = (
     await c.query(
-      `SELECT id FROM projects WHERE client_id = $1 AND status = 'planeacion' AND archived_at IS NULL ORDER BY created_at DESC, id LIMIT 1`,
-      [clientId],
+      `SELECT id FROM projects WHERE client_id = $1 AND tenant_id = $2 AND status = 'planeacion' AND archived_at IS NULL ORDER BY created_at DESC, id LIMIT 1`,
+      [clientId, tid()],
     )
   ).rows[0]
   if (!project)
     project = (
       await c.query(
-        `INSERT INTO projects (name, icon, client_id, owner_id, status, created_by) VALUES ($1, 'box', $2, $3, 'planeacion', $3) RETURNING id`,
-        [`Proyecto de ${name}`.slice(0, 80), clientId, actorId],
+        `INSERT INTO projects (tenant_id, name, icon, client_id, owner_id, status, created_by) VALUES ($4, $1, 'box', $2, $3, 'planeacion', $3) RETURNING id`,
+        [`Proyecto de ${name}`.slice(0, 80), clientId, actorId, tid()],
       )
     ).rows[0]
   const open = (
-    await c.query(`SELECT id FROM tasks WHERE project_id = $1 AND NOT done AND title LIKE 'Visita%' ORDER BY created_at, id LIMIT 1`, [project.id])
+    await c.query(`SELECT id FROM tasks WHERE project_id = $1 AND tenant_id = $2 AND NOT done AND title LIKE 'Visita%' ORDER BY created_at, id LIMIT 1`, [project.id, tid()])
   ).rows[0]
-  if (open) await c.query('UPDATE tasks SET due_date = $2 WHERE id = $1', [open.id, date])
-  else await c.query('INSERT INTO tasks (project_id, title, due_date, created_by) VALUES ($1, $2, $3, $4)', [project.id, `Visita a ${name}`.slice(0, 160), date, actorId])
+  if (open) await c.query('UPDATE tasks SET due_date = $2 WHERE id = $1 AND tenant_id = $3', [open.id, date, tid()])
+  else await c.query('INSERT INTO tasks (tenant_id, project_id, title, due_date, created_by) VALUES ($5, $1, $2, $3, $4)', [project.id, `Visita a ${name}`.slice(0, 160), date, actorId, tid()])
 }
 
 /** Al ganar con una propuesta vigente: la acepta y genera las mensualidades y los pagos unicos con el esquema de cobro. */
 async function closeWithProposal(c: PoolClient, actorId: string, clientId: string, proposalId: string, impl: string, plan: z.infer<typeof esquemaCobro>) {
-  const items = (await c.query('SELECT kind, concept, qty, unit_price FROM proposal_items WHERE proposal_id = $1 ORDER BY position', [proposalId])).rows as (PItem & { concept: string })[]
+  const items = (await c.query('SELECT kind, concept, qty, unit_price FROM proposal_items WHERE proposal_id = $1 AND tenant_id = $2 ORDER BY position', [proposalId, tid()])).rows as (PItem & { concept: string })[]
   const { mensual, unico } = proposalTotals(items)
   if (mensual > 0)
     await insertCharges(c, clientId, actorId, expandCharge({ date: plan.inicio_cobro, amount: mensual / 100, concept: 'Mensualidad', repeatMonths: plan.meses }))
@@ -223,15 +224,15 @@ async function closeWithProposal(c: PoolClient, actorId: string, clientId: strin
       // Igual que la inicial de siempre: su desglose queda en los items del cliente y el cobro, cobrado.
       await insertItems(c, clientId, unicos.map((i) => ({ concept: i.qty > 1 ? `${i.concept} x${i.qty}` : i.concept, amount: (Math.round(i.unit_price * 100) * i.qty) / 100 })).filter((i) => i.amount > 0))
       await c.query(
-        `INSERT INTO payments (client_id, date, concept, amount, kind, status, created_by, received_by, received_by_source) VALUES ($1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4, $4, 'manual')
+        `INSERT INTO payments (tenant_id, client_id, date, concept, amount, kind, status, created_by, received_by, received_by_source) VALUES ($5, $1, $2, 'Inicial', $3, 'inicial', 'cobrado', $4, $4, 'manual')
          ON CONFLICT (client_id) WHERE kind = 'inicial' DO UPDATE SET amount = payments.amount + EXCLUDED.amount`,
-        [clientId, impl, unico / 100, actorId],
+        [clientId, impl, unico / 100, actorId, tid()],
       )
     } else {
       await insertCharges(c, clientId, actorId, expandCharge({ date: impl, amount: unico / 100, concept: 'Implementación y extras' }))
     }
   }
-  await c.query(`UPDATE proposals SET status = 'aceptada' WHERE id = $1`, [proposalId])
+  await c.query(`UPDATE proposals SET status = 'aceptada' WHERE id = $1 AND tenant_id = $2`, [proposalId, tid()])
 }
 
 /**
@@ -252,8 +253,8 @@ export async function applyClientPatch(c: PoolClient, actorId: string, clientId:
   const cur = (
     await c.query(
       `SELECT name, is_prospect, pipeline_stage, probability, lost_reason, next_action, next_action_date, archived_at, implementation_date
-       FROM clients WHERE id = $1 FOR UPDATE`,
-      [clientId],
+       FROM clients WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+      [clientId, tid()],
     )
   ).rows[0]
   if (!cur) throw new HttpError(404, 'Cliente no encontrado')
@@ -316,7 +317,7 @@ export async function applyClientPatch(c: PoolClient, actorId: string, clientId:
   // ---- propuestas y cierre de la venta ----
   const live = changed || p.valor_estimado !== undefined ? await liveProposal(c, clientId) : undefined
   if (p.valor_estimado != null) {
-    const has = (await c.query(`SELECT 1 FROM proposals WHERE client_id = $1 AND status IN ('borrador', 'presentada', 'aceptada')`, [clientId])).rowCount
+    const has = (await c.query(`SELECT 1 FROM proposals WHERE client_id = $1 AND tenant_id = $2 AND status IN ('borrador', 'presentada', 'aceptada')`, [clientId, tid()])).rowCount
     if (has) throw new HttpError(400, 'El valor estimado sale de la mensualidad de la propuesta vigente: edita la propuesta')
   }
   if (changed && stage === 'propuesta_presentada' && !live) throw new HttpError(400, 'Arma una propuesta antes de pasar a "propuesta_presentada"')
@@ -366,12 +367,15 @@ export async function applyClientPatch(c: PoolClient, actorId: string, clientId:
   }
   if (p.archivado === true) sets.push('archived_at = COALESCE(archived_at, now())')
   if (p.archivado === false) sets.push('archived_at = NULL')
-  if (sets.length) await c.query(`UPDATE clients SET ${sets.join(', ')} WHERE id = $1`, args)
+  if (sets.length) {
+    args.push(tid())
+    await c.query(`UPDATE clients SET ${sets.join(', ')} WHERE id = $1 AND tenant_id = $${args.length}`, args)
+  }
 
   // ---- efectos de la etapa ----
   if (changed && stage === 'propuesta_presentada' && live?.status === 'borrador')
-    await c.query(`UPDATE proposals SET status = 'presentada', presented_at = now() WHERE id = $1`, [live.id])
-  if (changed && stage === 'perdido' && live) await c.query(`UPDATE proposals SET status = 'rechazada' WHERE id = $1`, [live.id])
+    await c.query(`UPDATE proposals SET status = 'presentada', presented_at = now() WHERE id = $1 AND tenant_id = $2`, [live.id, tid()])
+  if (changed && stage === 'perdido' && live) await c.query(`UPDATE proposals SET status = 'rechazada' WHERE id = $1 AND tenant_id = $2`, [live.id, tid()])
   if (changed && stage === 'ganado' && live) {
     await closeWithProposal(c, actorId, clientId, live.id, implementation!, p.esquema_cobro!)
     await syncEstValue(c, clientId)
@@ -379,19 +383,20 @@ export async function applyClientPatch(c: PoolClient, actorId: string, clientId:
   const name = (p.nombre ?? cur.name) as string
   if (p.fecha_visita !== undefined) await scheduleVisit(c, actorId, clientId, name, p.fecha_visita)
   if (p.resumen_visita !== undefined)
-    await c.query(`INSERT INTO interactions (client_id, kind, summary, created_by) VALUES ($1, 'visita', $2, $3)`, [clientId, p.resumen_visita, actorId])
+    await c.query(`INSERT INTO interactions (tenant_id, client_id, kind, summary, created_by) VALUES ($4, $1, 'visita', $2, $3)`, [clientId, p.resumen_visita, actorId, tid()])
 
   if (changed) {
     const label = (s: string | null) => (s ? (byKey.get(s)?.label ?? s) : 'Sin etapa')
     // Al presentar o ganar queda escrito QUE version de la propuesta fue (la bitacora es la fuente de verdad de la negociacion).
     const version = live && (stage === 'propuesta_presentada' || stage === 'ganado') ? live.version : null
     await c.query(
-      `INSERT INTO interactions (client_id, kind, summary, meta, created_by) VALUES ($1, 'etapa', $2, $3::jsonb, $4)`,
+      `INSERT INTO interactions (tenant_id, client_id, kind, summary, meta, created_by) VALUES ($5, $1, 'etapa', $2, $3::jsonb, $4)`,
       [
         clientId,
         `${label(was)} → ${label(stage)}${version ? ` (propuesta v${version})` : ''}`,
         JSON.stringify({ de: was, a: stage, ...(lost ? { motivo: lost } : {}), ...(version ? { propuesta_version: version, propuesta_id: live!.id } : {}) }),
         actorId,
+        tid(),
       ],
     )
     // Aviso al equipo en la misma transaccion. Ganar y perder tienen su propio texto; el resto es "movió a X (De → A)".

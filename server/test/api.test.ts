@@ -67,7 +67,7 @@ const CRM = {
   createdAt: '<ts>',
   phone: null, email: null, contactName: null, contactRole: null, address: null, notes: null, tags: [], source: null, utmSource: null,
   stage: null, estValue: null, probability: null, expectedClose: null, lostReason: null, stageChangedAt: null,
-  nextAction: null, nextActionDate: null, lastContactAt: null, delFeed: null, socials: [], implementationDate: null,
+  nextAction: null, nextActionDate: null, lastContactAt: null, delFeed: null, socials: [], systemLinks: [], hasLogo: false, implementationDate: null,
 }
 const CRM_KEYS = Object.keys(CRM)
 
@@ -77,6 +77,28 @@ async function sessionFor(name: string, pin = '000000') {
   const r = await login(name, pin)
   assert.equal(r.status, 200, `login ${name}: ${JSON.stringify(r.body)}`)
   return r.cookie!
+}
+
+// ---------- multitenant (039): fixture de pruebas ----------
+// HAYAI es el tenant de todas las pruebas de siempre: cada llamada a la web (/api, no /api/v1 ni el webhook) lleva X-Tenant-Id de HAYAI
+// salvo que la prueba mande otro (o null para no mandarlo). Las pruebas de aislamiento entre tenants mandan el suyo.
+let HAYAI = ''
+const realFetch = globalThis.fetch
+globalThis.fetch = ((input: string | URL | Request, init: RequestInit = {}) => {
+  const url = String(input instanceof Request ? input.url : input)
+  const h = new Headers(init.headers)
+  if (HAYAI && /\/api\//.test(url) && !/\/api\/(v1|webhooks)/.test(url)) {
+    if (!h.has('x-tenant-id')) h.set('x-tenant-id', HAYAI)
+    else if (h.get('x-tenant-id') === 'null') h.delete('x-tenant-id')
+  }
+  return realFetch(input, { ...init, headers: h })
+}) as typeof fetch
+/** Inserts directos con el cliente admin (sin pasar por la API): en la BD de PRUEBAS tenant_id cae en HAYAI por defecto. La app no depende
+ *  de esto: db.ts rechaza toda consulta de la app sobre una tabla de negocio que no nombre tenant_id. */
+async function tenantFixture(db: pg.Client) {
+  HAYAI = (await db.query("SELECT id FROM tenants WHERE slug = 'hayai'")).rows[0].id
+  const { rows } = await db.query("SELECT table_name FROM information_schema.columns WHERE column_name = 'tenant_id' AND table_schema = 'public' AND table_name NOT IN ('user_tenants')")
+  for (const r of rows) await db.query(`ALTER TABLE ${r.table_name} ALTER COLUMN tenant_id SET DEFAULT '${HAYAI}'`)
 }
 
 before(async () => {
@@ -110,6 +132,7 @@ before(async () => {
   }
   admin = new pg.Client({ connectionString: DATABASE_URL })
   await admin.connect()
+  await tenantFixture(admin)
 })
 
 after(async () => {
@@ -128,9 +151,9 @@ describe('semilla', () => {
     assert.deepEqual(
       rows.map((r) => [r.name, r.avatar, r.role, r.must_change_pin, r.active]),
       [
-        ['Elis', 'nova', 'SOCIO', true, true],
-        ['Jorbi', 'orion', 'SOCIO', true, true],
-        ['Leandro', 'vega', 'SOCIO', true, true],
+        ['Elis', 'nova', 'ADMIN', true, true],
+        ['Jorbi', 'orion', 'ADMIN', true, true],
+        ['Leandro', 'vega', 'ADMIN', true, true],
       ],
     )
     for (const r of rows) assert.match(r.pin_hash, /^scrypt\$\d+\$\d+\$\d+\$[^$]+\$[^$]+$/)
@@ -169,7 +192,7 @@ describe('auth', () => {
   it('login ok con 000000 => mustChangePin=true, cookie httpOnly/Lax/Path=/, sin pin_hash', async () => {
     const r = await login('Elis')
     assert.equal(r.status, 200)
-    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Elis', avatar: 'nova', role: 'SOCIO', mustChangePin: true })
+    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Elis', avatar: 'nova', role: 'ADMIN', mustChangePin: true, tenants: [{ id: '<uuid>', name: 'HAYAI', slug: 'hayai', modules: ['hub', 'feed', 'clientes', 'crm', 'cobros', 'proyectos', 'tareas', 'finanzas', 'marketing', 'sistemas', 'chat', 'integraciones', 'papelera'] }] })
     assert.match(r.setCookie!, /HttpOnly/i)
     assert.match(r.setCookie!, /SameSite=Lax/i)
     assert.match(r.setCookie!, /Path=\//)
@@ -209,7 +232,7 @@ describe('auth', () => {
     const b = await sessionFor('Elis') // otra sesión del mismo usuario
     const r = await call('/auth/change-pin', { cookie: a, body: { currentPin: '000000', newPin: '482913' } })
     assert.equal(r.status, 200)
-    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Elis', avatar: 'nova', role: 'SOCIO', mustChangePin: false })
+    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Elis', avatar: 'nova', role: 'ADMIN', mustChangePin: false, tenants: [{ id: '<uuid>', name: 'HAYAI', slug: 'hayai', modules: ['hub', 'feed', 'clientes', 'crm', 'cobros', 'proyectos', 'tareas', 'finanzas', 'marketing', 'sistemas', 'chat', 'integraciones', 'papelera'] }] })
     assert.equal((await call('/auth/me', { cookie: b })).status, 401) // la otra sesión murió
     assert.equal((await call('/auth/me', { cookie: a })).body.mustChangePin, false) // la actual sigue
     assert.equal((await call('/auth/change-pin', { cookie: a, body: { currentPin: '482913', newPin: '482913' } })).status, 400)
@@ -484,7 +507,7 @@ describe('datos', () => {
   it('tareas: crear, listar, marcar/desmarcar (done_at coherente), borrar, 404', async () => {
     const t = await call('/tasks', { cookie, body: { projectId, title: 'Diseñar home' } })
     assert.equal(t.status, 201, JSON.stringify(t.body))
-    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Diseñar home', done: false, due: null, owner: 'Elis', hidden: false, milestoneId: null })
+    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Diseñar home', done: false, due: null, owner: 'Elis', hidden: false, milestoneId: null, assigneeId: null, responsable: 'Leandro', asignada: false })
     assert.equal(t.body.projectId, projectId)
     assert.deepEqual((await call('/tasks', { cookie })).body, [t.body])
 
@@ -683,7 +706,7 @@ describe('datos', () => {
       id: '<uuid>', name: 'Web Futuro', icon: 'globe', owner: 'Leandro', client: 'Futuro SA', clientId: '<uuid>', status: 'planeacion', due: '2020-03-01', archived: false, clientArchived: false, description: null,
     })
     assert.equal(project.clientId, client.id)
-    assert.deepEqual(shape(task), { id: '<uuid>', projectId: '<uuid>', title: 'Visita a Futuro SA', done: false, due: '2020-02-10', owner: 'Elis', hidden: false, milestoneId: null })
+    assert.deepEqual(shape(task), { id: '<uuid>', projectId: '<uuid>', title: 'Visita a Futuro SA', done: false, due: '2020-02-10', owner: 'Elis', hidden: false, milestoneId: null, assigneeId: null, responsable: 'Leandro', asignada: false })
     assert.equal(task.projectId, project.id)
     const { rows } = await admin.query('SELECT created_by FROM clients WHERE id = $1', [client.id])
     assert.equal(rows[0].created_by, (await call('/auth/me', { cookie })).body.id)
@@ -746,7 +769,7 @@ describe('datos', () => {
   it('tareas con fecha: due en POST/PATCH/GET, null la borra, PATCH vacío => 400', async () => {
     const t = await call('/tasks', { cookie, body: { projectId, title: 'Con fecha', due: '2019-05-05' } })
     assert.equal(t.status, 201, JSON.stringify(t.body))
-    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Con fecha', done: false, due: '2019-05-05', owner: 'Elis', hidden: false, milestoneId: null })
+    assert.deepEqual(shape(t.body), { id: '<uuid>', projectId: '<uuid>', title: 'Con fecha', done: false, due: '2019-05-05', owner: 'Elis', hidden: false, milestoneId: null, assigneeId: null, responsable: 'Leandro', asignada: false })
     assert.deepEqual((await call('/tasks', { cookie })).body.find((x: any) => x.id === t.body.id), t.body)
     const nul = await call('/tasks', { cookie, body: { projectId, title: 'Sin fecha', due: null } })
     assert.equal(nul.body.due, null)
@@ -864,5 +887,150 @@ describe('borrar', () => {
     )
     assert.equal((await call(`/clients/${c.id}`, { cookie, method: 'DELETE' })).status, 404)
     assert.equal((await call(`/projects/${p.id}`, { cookie, method: 'DELETE' })).status, 404)
+  })
+})
+
+describe('multitenant', () => {
+  // Elis es ADMIN (global) con PIN 482913 (lo dejó la suite de auth). Crea un segundo tenant y dos SOCIO desde /admin.
+  let adminCookie = ''
+  let otro = '' // id del tenant «Otra Empresa»
+  let hayai = ''
+  let socioCookie = '' // Pedro: SOCIO solo en Otra Empresa, con clientes, tareas y proyectos (sin cobros ni finanzas)
+  let sinNadaCookie = '' // Rosa: SOCIO sin ningún tenant
+  const NOPE = '00000000-0000-4000-8000-000000000000'
+  const as = (cookie: string, tenant: string | null, path: string, o: { method?: string; body?: unknown } = {}) =>
+    call(path, { cookie, ...o, headers: { 'x-tenant-id': tenant ?? 'null' } })
+
+  async function nuevoSocio(name: string, tenants: { tenantId: string; modules: string[] }[]) {
+    const r = await call('/admin/users', { cookie: adminCookie, body: { name, tenants } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.equal(r.body.role, 'SOCIO')
+    assert.equal(r.body.mustChangePin, true)
+    const first = await sessionFor(name) // PIN inicial 000000
+    assert.equal((await call('/clients', { cookie: first })).status, 403) // debe cambiar el PIN antes de usar nada
+    const ch = await call('/auth/change-pin', { cookie: first, body: { currentPin: '000000', newPin: '246813' } })
+    assert.equal(ch.status, 200, JSON.stringify(ch.body))
+    assert.equal(ch.body.mustChangePin, false)
+    return first
+  }
+
+  before(async () => {
+    adminCookie = await sessionFor('Elis', '482913')
+    hayai = (await call('/auth/me', { cookie: adminCookie })).body.tenants[0].id
+    const t = await call('/admin/tenants', { cookie: adminCookie, body: { name: 'Otra Empresa' } })
+    assert.equal(t.status, 201, JSON.stringify(t.body))
+    assert.equal(t.body.slug, 'otra-empresa')
+    otro = t.body.id
+    socioCookie = await nuevoSocio('Pedro', [{ tenantId: otro, modules: ['clientes', 'tareas', 'proyectos'] }])
+    sinNadaCookie = await nuevoSocio('Rosa', [])
+  })
+
+  it('/admin es solo de ADMIN: un SOCIO recibe 403; slug único; validación zod', async () => {
+    assert.equal((await call('/admin/tenants', { cookie: socioCookie })).status, 403)
+    assert.equal((await call('/admin/users', { cookie: socioCookie, body: { name: 'Hack' } })).status, 403)
+    assert.equal((await call('/admin/tenants')).status, 401)
+    assert.equal((await call('/admin/tenants', { cookie: adminCookie, body: { name: 'otra empresa' } })).status, 409)
+    assert.equal((await call('/admin/tenants', { cookie: adminCookie, body: { name: '' } })).status, 400)
+    assert.equal((await call('/admin/users', { cookie: adminCookie, body: { name: 'X', tenants: [{ tenantId: otro, modules: ['nope'] }] } })).status, 400)
+    const users = await call('/admin/users', { cookie: adminCookie })
+    assert.equal(users.status, 200)
+    assert.deepEqual(users.body.find((u: any) => u.name === 'Pedro').tenants.map((x: any) => [x.slug, x.modules]), [['otra-empresa', ['clientes', 'tareas', 'proyectos']]])
+    const me = users.body.find((u: any) => u.name === 'Elis')
+    assert.equal((await call(`/admin/users/${me.id}`, { cookie: adminCookie, method: 'PATCH', body: { active: false } })).status, 409) // no se deja fuera a sí mismo
+  })
+
+  it('/auth/me: el SOCIO ve solo sus tenants y módulos; el ADMIN todos los activos con todos los módulos', async () => {
+    const me = (await call('/auth/me', { cookie: socioCookie })).body
+    assert.deepEqual(me.tenants.map((t: any) => [t.slug, t.modules]), [['otra-empresa', ['clientes', 'tareas', 'proyectos']]])
+    const adm = (await call('/auth/me', { cookie: adminCookie })).body
+    assert.deepEqual(adm.tenants.map((t: any) => t.slug), ['hayai', 'otra-empresa'])
+    assert.equal(adm.tenants[1].modules.length, 13)
+    assert.deepEqual((await call('/auth/me', { cookie: sinNadaCookie })).body.tenants, [])
+  })
+
+  it('sin cabecera => 400; tenant ajeno, inexistente o basura => 403; SOCIO sin el módulo => 403', async () => {
+    const sin = await as(socioCookie, null, '/clients')
+    assert.deepEqual([sin.status, sin.body.codigo], [400, 'tenant_requerido'])
+    const ajeno = await as(socioCookie, hayai, '/clients')
+    assert.deepEqual([ajeno.status, ajeno.body.codigo], [403, 'tenant_sin_acceso'])
+    assert.equal((await as(socioCookie, NOPE, '/clients')).status, 403)
+    assert.equal((await as(socioCookie, 'basura', '/clients')).status, 403)
+    assert.equal((await as(sinNadaCookie, otro, '/clients')).status, 403) // sin membresía
+    assert.equal((await as(sinNadaCookie, hayai, '/tasks')).status, 403)
+    const mod = await as(socioCookie, otro, '/expenses')
+    assert.deepEqual([mod.status, mod.body.codigo, mod.body.modulo], [403, 'modulo_sin_acceso', 'finanzas'])
+    assert.equal((await as(socioCookie, otro, '/chat')).status, 403)
+    assert.equal((await as(socioCookie, otro, '/trash')).status, 403)
+    assert.equal((await as(socioCookie, otro, `/clients/${NOPE}/payments`, { body: {} })).status, 403) // cobros
+    assert.equal((await as(socioCookie, otro, '/clients')).status, 200)
+  })
+
+  it('aislamiento: nada de HAYAI se ve ni se toca desde otro tenant (listados, detalle, escritura) y viceversa', async () => {
+    const hClients = (await as(adminCookie, hayai, '/clients')).body
+    const hProjects = (await as(adminCookie, hayai, '/projects')).body
+    const hTasks = (await as(adminCookie, hayai, '/tasks')).body
+    assert.ok(hClients.length > 0 && hProjects.length > 0 && hTasks.length > 0)
+
+    for (const p of ['/clients', '/projects', '/tasks']) assert.deepEqual((await as(socioCookie, otro, p)).body, [], p)
+    const c = await as(socioCookie, otro, '/clients', { body: { name: 'Cliente de Otra', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] } })
+    assert.equal(c.status, 201, JSON.stringify(c.body))
+    const p = await as(socioCookie, otro, '/projects', { body: { name: 'Proyecto de Otra', icon: 'box', clientId: c.body.id, owner: 'Pedro' } })
+    assert.equal(p.status, 201, JSON.stringify(p.body))
+    const t = await as(socioCookie, otro, '/tasks', { body: { projectId: p.body.id, title: 'Tarea de Otra' } })
+    assert.equal(t.status, 201, JSON.stringify(t.body))
+    assert.equal((await as(socioCookie, otro, '/projects', { body: { name: 'X', icon: 'box', owner: 'Rosa' } })).status, 404) // Rosa no es miembro
+
+    assert.deepEqual((await as(socioCookie, otro, '/clients')).body.map((x: any) => x.name), ['Cliente de Otra'])
+    assert.deepEqual((await as(socioCookie, otro, '/tasks')).body.map((x: any) => x.title), ['Tarea de Otra'])
+    assert.ok(!(await as(adminCookie, hayai, '/clients')).body.some((x: any) => x.id === c.body.id))
+    assert.ok(!(await as(adminCookie, hayai, '/tasks')).body.some((x: any) => x.id === t.body.id))
+    assert.deepEqual((await as(adminCookie, otro, '/clients')).body.map((x: any) => x.id), [c.body.id])
+    const socios = (await as(adminCookie, otro, '/users')).body.map((u: any) => u.name)
+    assert.ok(socios.includes('Pedro') && socios.includes('Elis') && !socios.includes('Rosa')) // miembros + ADMIN
+
+    // Ids de HAYAI desde el otro tenant: 404 (no 403), lectura y escritura.
+    const [hc, hp, ht] = [hClients[0].id, hProjects[0].id, hTasks[0].id]
+    assert.equal((await as(socioCookie, otro, `/clients/${hc}`, { method: 'PATCH', body: { name: 'Robado' } })).status, 404)
+    assert.equal((await as(socioCookie, otro, `/clients/${hc}/interactions`)).status, 404)
+    assert.equal((await as(socioCookie, otro, `/clients/${hc}/archive`, { body: {} })).status, 404)
+    assert.equal((await as(socioCookie, otro, `/clients/${hc}`, { method: 'DELETE' })).status, 404)
+    assert.equal((await as(socioCookie, otro, `/projects/${hp}/detail`)).status, 404)
+    assert.equal((await as(socioCookie, otro, `/tasks/${ht}`, { method: 'PATCH', body: { done: true } })).status, 404)
+    assert.equal((await as(socioCookie, otro, `/tasks/${ht}`, { method: 'DELETE' })).status, 404)
+    assert.equal((await as(socioCookie, otro, '/tasks', { body: { projectId: hp, title: 'Intrusa' } })).status, 404)
+    assert.equal((await as(socioCookie, otro, '/projects', { body: { name: 'Y', icon: 'box', clientId: hc, owner: 'Pedro' } })).status, 404)
+    assert.equal((await as(socioCookie, otro, `/clients/${hc}/interactions`, { body: { tipo: 'nota', resumen: 'x' } })).status, 404)
+    assert.equal((await as(adminCookie, hayai, `/clients/${c.body.id}`, { method: 'PATCH', body: { name: 'X' } })).status, 404)
+    assert.equal((await as(adminCookie, hayai, `/projects/${p.body.id}/detail`)).status, 404)
+    // Búsqueda, actividad y papelera: solo lo del tenant.
+    const s = (await as(socioCookie, otro, '/search?q=otra')).body
+    assert.deepEqual(s.clientes.map((x: any) => x.id), [c.body.id])
+    const act = (await as(socioCookie, otro, '/activity')).body
+    assert.ok(act.data.length > 0)
+    assert.ok(act.data.every((a: any) => a.cliente_id === null || a.cliente_id === c.body.id))
+    assert.ok(!(await as(adminCookie, hayai, '/activity?per_page=100')).body.data.some((a: any) => a.cliente_id === c.body.id))
+    assert.equal((await as(adminCookie, hayai, '/trash')).status, 200)
+    assert.deepEqual((await as(adminCookie, otro, '/trash')).body, [])
+  })
+
+  it('tenant desactivado: nadie entra (ni el ADMIN); se reactiva', async () => {
+    assert.equal((await call(`/admin/tenants/${otro}`, { cookie: adminCookie, method: 'PATCH', body: { active: false } })).status, 200)
+    assert.equal((await as(socioCookie, otro, '/clients')).status, 403)
+    assert.equal((await as(adminCookie, otro, '/clients')).status, 403)
+    assert.deepEqual((await call('/auth/me', { cookie: socioCookie })).body.tenants, [])
+    assert.equal((await call(`/admin/tenants/${otro}`, { cookie: adminCookie, method: 'PATCH', body: { active: true } })).status, 200)
+    assert.equal((await as(socioCookie, otro, '/clients')).status, 200)
+  })
+
+  it('cambiar módulos, quitar el acceso y resetear PIN desde /admin', async () => {
+    const pedro = (await call('/admin/users', { cookie: adminCookie })).body.find((u: any) => u.name === 'Pedro')
+    assert.equal((await call(`/admin/users/${pedro.id}/tenants/${otro}`, { cookie: adminCookie, method: 'PUT', body: { modules: ['clientes'] } })).status, 200)
+    assert.equal((await as(socioCookie, otro, '/tasks')).status, 403)
+    assert.equal((await call(`/admin/users/${pedro.id}/tenants/${otro}`, { cookie: adminCookie, method: 'DELETE' })).status, 200)
+    assert.equal((await as(socioCookie, otro, '/clients')).status, 403)
+    const r = await call(`/admin/users/${pedro.id}/reset-pin`, { cookie: adminCookie, body: {} })
+    assert.deepEqual([r.status, r.body.mustChangePin], [200, true])
+    assert.equal((await call('/auth/me', { cookie: socioCookie })).status, 401) // sus sesiones se cerraron
+    assert.equal((await login('Pedro', '000000')).status, 200)
   })
 })

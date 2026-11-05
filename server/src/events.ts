@@ -4,10 +4,13 @@
 import type { Request, Response } from 'express'
 import pg from 'pg'
 import { ACTIVITY_SELECT, activityOut, CHANNEL, CHAT_CHANNEL, PROYECTO_CHANNEL } from './activity.ts'
-import { connectionString, pool } from './db.ts'
+import { ALL_TENANTS, connectionString, pool } from './db.ts'
 import { mensajePorId } from './services/chat.ts'
+import { tenantById, tenantCtx, tid, visibleKinds, withTenant } from './tenant.ts'
 
-type Sub = { res: Response; userId: string; timer: NodeJS.Timeout }
+// Multitenant: cada pestaña escucha UN tenant (el de ?tenant= / X-Tenant-Id, validado al abrir) y solo recibe lo de ese tenant y de
+// sus módulos: la actividad por tipo, el chat con el módulo chat y las vistas de proyecto con el módulo proyectos.
+type Sub = { res: Response; userId: string; tenantId: string; kinds: Set<string>; chat: boolean; proyectos: boolean; timer: NodeJS.Timeout }
 
 const subs = new Set<Sub>()
 let listener: pg.Client | null = null
@@ -23,42 +26,48 @@ function frame(id: number, data: unknown) {
   return `id: ${id}\nevent: actividad\ndata: ${JSON.stringify(data)}\n\n`
 }
 
+// Las del listener recorren todos los tenants: cada fila sale con su tenant_id y se reparte solo a las pestañas de ese tenant.
+const SELECT_ALL = ACTIVITY_SELECT.replace('SELECT a.id,', 'SELECT a.tenant_id, a.id,')
 async function fetchAfter(afterId: number, limit = REPLAY_MAX) {
-  const { rows } = await pool.query(`${ACTIVITY_SELECT} WHERE a.id > $1 ORDER BY a.id LIMIT $2`, [afterId, limit])
+  const { rows } = await pool.query(`${SELECT_ALL} WHERE a.id > $1 ORDER BY a.id LIMIT $2`, [afterId, limit])
   return rows
 }
 
 // Chat interno: el mismo mensaje para todos (nuevo, editado o borrado). Sin `id:` en el frame a proposito: el id del stream es el de la
 // actividad (Last-Event-ID) y un evento del chat lo pisaria; si el stream se corta, el chat se vuelve a pedir al reconectar.
-async function broadcastChat(p: { op?: string; id?: string }) {
-  if (!p.id || (p.op !== 'nuevo' && p.op !== 'editado' && p.op !== 'borrado')) return
-  const data = p.op === 'borrado' ? { op: p.op, id: p.id } : await mensajePorId(pool, p.id).then((mensaje) => (mensaje ? { op: p.op, mensaje } : null))
+async function broadcastChat(p: { op?: string; id?: string; tenant_id?: string }) {
+  if (!p.id || !p.tenant_id || (p.op !== 'nuevo' && p.op !== 'editado' && p.op !== 'borrado')) return
+  const tenant = await tenantById(p.tenant_id)
+  if (!tenant) return
+  const id = p.id
+  const data = p.op === 'borrado' ? { op: p.op, id } : await withTenant(tenant, () => mensajePorId(pool, id)).then((mensaje) => (mensaje ? { op: p.op, mensaje } : null))
   if (!data) return // desaparecio entre el aviso y la lectura (se borro): el aviso de borrado llega aparte
   const out = `event: chat\ndata: ${JSON.stringify(data)}\n\n`
-  for (const s of subs) s.res.write(out)
+  for (const s of subs) if (s.tenantId === p.tenant_id && s.chat) s.res.write(out)
 }
 
 // Vistas de proyecto: el aviso del trigger (sin datos, solo que seccion cambio de que proyecto) va tal cual a todas las pestañas. Igual que el chat,
 // sin `id:` en el frame: no toca el Last-Event-ID de la actividad; si el stream se corta, la pantalla se resincroniza al reconectar.
 const SECCIONES = new Set(['proyecto', 'hitos', 'checklist', 'tareas'])
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-function broadcastProyecto(p: { op?: unknown; seccion?: unknown; proyecto_id?: unknown; hito?: unknown }) {
+function broadcastProyecto(p: { op?: unknown; seccion?: unknown; proyecto_id?: unknown; hito?: unknown; tenant_id?: unknown }) {
   if (typeof p.seccion !== 'string' || !SECCIONES.has(p.seccion) || typeof p.proyecto_id !== 'string' || !UUID.test(p.proyecto_id)) return
+  if (typeof p.tenant_id !== 'string') return // la 039 lo pone en el aviso: sin él no se sabe a qué tenant va
   const data = { op: p.op === 'nuevo' || p.op === 'borrado' ? p.op : 'editado', seccion: p.seccion, proyecto_id: p.proyecto_id, hito: p.hito === true }
   const out = `event: proyecto\ndata: ${JSON.stringify(data)}\n\n`
-  for (const s of subs) s.res.write(out)
+  for (const s of subs) if (s.tenantId === p.tenant_id && s.proyectos) s.res.write(out)
 }
 
 // Ids ya repartidos (los ultimos): el aviso en vivo y el reenvio tras una caida pueden traer el mismo evento dos veces.
 const recent = new Set<number>()
 function broadcast(rows: unknown[]) {
-  for (const r of rows as { id: string | number }[]) {
+  for (const r of rows as { id: string | number; tenant_id: string; kind: string }[]) {
     const id = Number(r.id)
     lastId = Math.max(lastId, id)
     if (recent.has(id)) continue
     recent.add(id)
     if (recent.size > 500) recent.delete(recent.values().next().value as number)
-    for (const s of subs) s.res.write(frame(id, activityOut(r, s.userId)))
+    for (const s of subs) if (s.tenantId === r.tenant_id && s.kinds.has(r.kind)) s.res.write(frame(id, activityOut(r, s.userId)))
   }
 }
 
@@ -83,7 +92,7 @@ async function connectListener() {
   c.on('end', retry)
   c.on('notification', (m) => {
     if (m.channel === CHAT_CHANNEL) {
-      let p: { op?: string; id?: string } = {}
+      let p: { op?: string; id?: string; tenant_id?: string } = {}
       try {
         p = JSON.parse(m.payload ?? '{}')
       } catch {
@@ -105,7 +114,7 @@ async function connectListener() {
     const id = Number(m.payload)
     if (!Number.isInteger(id)) return
     enqueue(async () => {
-      const { rows } = await pool.query(`${ACTIVITY_SELECT} WHERE a.id = $1`, [id])
+      const { rows } = await pool.query(`${SELECT_ALL} WHERE a.id = $1`, [id])
       broadcast(rows)
     })
   })
@@ -126,7 +135,7 @@ async function connectListener() {
 /** Arranca el LISTEN. Se llama una vez desde index.ts (los tests de createApp no lo necesitan). */
 export async function startEvents() {
   stopped = false
-  const { rows } = await pool.query('SELECT coalesce(max(id), 0)::bigint AS n FROM activity')
+  const { rows } = await pool.query(`SELECT coalesce(max(id), 0)::bigint AS n FROM activity ${ALL_TENANTS}`)
   lastId = Number(rows[0].n)
   await connectListener()
 }
@@ -144,9 +153,11 @@ function end(s: Sub) {
   s.res.end()
 }
 
-/** GET /api/events: stream de la actividad del equipo para la sesion en curso. Last-Event-ID reenvia lo que se perdio. */
+/** GET /api/events?tenant=<id>: stream de la actividad del tenant para la sesion en curso. Last-Event-ID reenvia lo que se perdio. */
 export async function openStream(req: Request, res: Response) {
   const userId = req.user!.id
+  const t = tenantCtx()
+  const kinds = visibleKinds(t.modules)
   const mine = [...subs].filter((s) => s.userId === userId)
   if (mine.length >= MAX_PER_USER) end(mine[0]) // el mas viejo cede (pestañas olvidadas)
 
@@ -159,7 +170,15 @@ export async function openStream(req: Request, res: Response) {
   res.flushHeaders()
   res.write('retry: 3000\n\n')
 
-  const sub: Sub = { res, userId, timer: setInterval(() => res.write(': ping\n\n'), HEARTBEAT_MS) }
+  const sub: Sub = {
+    res,
+    userId,
+    tenantId: t.id,
+    kinds: new Set(kinds),
+    chat: t.modules.includes('chat'),
+    proyectos: t.modules.includes('proyectos'),
+    timer: setInterval(() => res.write(': ping\n\n'), HEARTBEAT_MS),
+  }
   const life = setTimeout(() => end(sub), MAX_LIFE_MS)
   life.unref()
   sub.timer.unref()
@@ -173,6 +192,7 @@ export async function openStream(req: Request, res: Response) {
   subs.add(sub)
   const last = Number(req.headers['last-event-id'] ?? req.query.desde_id ?? NaN)
   if (Number.isInteger(last) && last >= 0) {
-    for (const r of await fetchAfter(last)) res.write(frame(Number(r.id), activityOut(r, userId)))
+    const { rows } = await pool.query(`${ACTIVITY_SELECT} WHERE a.tenant_id = $1 AND a.id > $2 AND a.kind = ANY($3) ORDER BY a.id LIMIT $4`, [tid(), last, kinds, REPLAY_MAX])
+    for (const r of rows) res.write(frame(Number(r.id), activityOut(r, userId)))
   }
 }

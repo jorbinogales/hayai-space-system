@@ -4,6 +4,7 @@ import { tx } from './db.ts'
 import { recordActivity } from './activity.ts'
 import { assertFresh } from './concurrency.ts'
 import { type Detalle, hasDetalle, pickDetalle, writeDetalle } from './paymentDetail.ts'
+import { tid } from './tenant.ts'
 import { HttpError } from './util.ts'
 
 export type PaymentPatch = { fecha?: string; monto?: number; concepto?: string; estado?: 'pendiente' | 'cobrado' } & Detalle
@@ -21,8 +22,8 @@ export async function patchPayment(actor: { id: string; via?: string }, paymentI
     await assertFresh(c, 'payments', paymentId)
     const row = (
       await c.query(
-        `SELECT p.client_id, p.kind, p.status, p.amount, cl.name AS client FROM payments p JOIN clients cl ON cl.id = p.client_id WHERE p.id = $1 FOR UPDATE OF p`,
-        [paymentId],
+        `SELECT p.client_id, p.kind, p.status, p.amount, cl.name AS client FROM payments p JOIN clients cl ON cl.id = p.client_id WHERE p.id = $1 AND p.tenant_id = $2 FOR UPDATE OF p`,
+        [paymentId, tid()],
       )
     ).rows[0]
     if (!row) throw new HttpError(404, 'Pago no encontrado')
@@ -30,12 +31,12 @@ export async function patchPayment(actor: { id: string; via?: string }, paymentI
     if (row.kind === 'inicial' && core) throw new HttpError(400, 'La inicial se edita desde sus ítems, no como un pago')
     const { rows } = await c.query(
       `UPDATE payments SET date = COALESCE($2, date), amount = COALESCE($3, amount), concept = COALESCE($4, concept), status = COALESCE($5, status)
-       WHERE id = $1 RETURNING amount, status`,
-      [paymentId, p.fecha ?? null, p.monto ?? null, p.concepto ?? null, p.estado ?? null],
+       WHERE id = $1 AND tenant_id = $6 RETURNING amount, status`,
+      [paymentId, p.fecha ?? null, p.monto ?? null, p.concepto ?? null, p.estado ?? null, tid()],
     )
     // al pasar a cobrado, lo recibió quien lo marca (si nadie lo fijó antes; un recibido_por explícito manda y se escribe abajo)
     if (row.status !== 'cobrado' && rows[0].status === 'cobrado' && p.recibido_por === undefined)
-      await c.query(`UPDATE payments SET received_by = $2, received_by_source = 'manual' WHERE id = $1 AND received_by IS NULL`, [paymentId, actor.id])
+      await c.query(`UPDATE payments SET received_by = $2, received_by_source = 'manual' WHERE id = $1 AND tenant_id = $3 AND received_by IS NULL`, [paymentId, actor.id, tid()])
     if (hasDetalle(p) || p.monto !== undefined) await writeDetalle(c, paymentId, pickDetalle(p), { amountChanged: p.monto !== undefined && Number(p.monto) !== Number(row.amount) })
     if (row.status !== 'cobrado' && rows[0].status === 'cobrado')
       await recordActivity(c, {

@@ -21,6 +21,8 @@ import { loadClients } from './store'
 import { useFormGuard } from './updates'
 import type { NextAction } from './nextAction'
 import { DraftBar } from './UpdateUI'
+import TenantImg from './TenantImg'
+import { useTenant } from './tenant'
 import './ficha.css'
 import './proposal.css'
 
@@ -55,10 +57,12 @@ const PROPOSAL_STATE: Record<Proposal['estado'], string> = { borrador: 'Borrador
 
 /** Propuestas del cliente (posible o activo: una ampliación también es una propuesta) y el botón para armar una nueva. */
 function ProposalsCard({ c }: { c: Client }) {
+  const crm = useTenant().can('crm') // las propuestas son del módulo crm
   const version = useProposalsVersion()
   const [list, setList] = useState<Proposal[] | null>(null)
   const [doc, setDoc] = useState<Proposal | null>(null)
   useEffect(() => {
+    if (!crm) return
     let live = true
     setList(null)
     void loadProposals(c.id)
@@ -67,7 +71,8 @@ function ProposalsCard({ c }: { c: Client }) {
     return () => {
       live = false
     }
-  }, [c.id, version])
+  }, [c.id, version, crm])
+  if (!crm) return null
   return (
     <section className="fx-card" aria-label="Propuestas">
       <div className="pr-head">
@@ -107,7 +112,7 @@ function SistemaCard({ c }: { c: Client }) {
   return (
     <section className="fx-card" aria-label="Sistema del cliente">
       <h3>Sistema</h3>
-      {c.hasLogo && <img className="fx-logo" src={`/api/clients/${c.id}/logo`} alt={`Logo de ${c.name}`} />}
+      {c.hasLogo && <TenantImg className="fx-logo" src={`/api/clients/${c.id}/logo`} alt={`Logo de ${c.name}`} />}
       {links.length > 0 && (
         <ul className="fx-links">
           {links.map((l, i) => (
@@ -709,7 +714,7 @@ export default function History({
   function applyIntent() {
     const i = client ? takeFichaIntent(client.id) : null
     if (!i) return
-    if (i.tab) setTab(i.tab)
+    if (i.tab && shownTabs.some((t) => t.key === i.tab)) setTab(i.tab)
     if (i.cobroId) setCobroId(i.cobroId)
   }
   useEffect(() => {
@@ -719,14 +724,17 @@ export default function History({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client?.id])
   const proposalReq = useProposalRequest()
+  const tenant = useTenant()
+  // cobros y proyectos son módulos aparte de clientes: sin ellos la pestaña no existe
+  const shownTabs = TABS.filter((t) => (t.key === 'cobros' ? tenant.can('cobros') : t.key === 'proyectos' ? tenant.can('proyectos') : true))
 
   const onKey = (e: KeyboardEvent<HTMLButtonElement>) => {
-    const i = TABS.findIndex((t) => t.key === tab)
-    const to = e.key === 'ArrowRight' ? (i + 1) % TABS.length : e.key === 'ArrowLeft' ? (i + TABS.length - 1) % TABS.length : e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : -1
+    const i = shownTabs.findIndex((t) => t.key === tab)
+    const to = e.key === 'ArrowRight' ? (i + 1) % shownTabs.length : e.key === 'ArrowLeft' ? (i + shownTabs.length - 1) % shownTabs.length : e.key === 'Home' ? 0 : e.key === 'End' ? shownTabs.length - 1 : -1
     if (to < 0) return
     e.preventDefault()
-    setTab(TABS[to].key)
-    tabs.current[TABS[to].key]?.focus()
+    setTab(shownTabs[to].key)
+    tabs.current[shownTabs[to].key]?.focus()
   }
 
   const st = c && stats(c)
@@ -774,7 +782,7 @@ export default function History({
             )}
 
             <div className="fx-tabs" role="tablist" aria-label="Secciones de la ficha">
-              {TABS.map((t) => (
+              {shownTabs.map((t) => (
                 <button
                   key={t.key}
                   ref={(el) => void (tabs.current[t.key] = el)}
@@ -794,7 +802,7 @@ export default function History({
             </div>
 
             <div className="h-scroll" ref={scroll}>
-              {TABS.map((t) => (
+              {shownTabs.map((t) => (
                 <div key={t.key} role="tabpanel" id={`fx-panel-${t.key}`} aria-labelledby={`fx-tab-${t.key}`} hidden={tab !== t.key} tabIndex={0} className="fx-panel">
                   {t.key === 'ficha' && <FichaPanel c={c} stages={stages} project={project} visit={visit} next={next} onConvert={onConvert} onClose={onClose} />}
                   {t.key === 'bitacora' && <LogPanel c={c} log={log} stages={stages} />}

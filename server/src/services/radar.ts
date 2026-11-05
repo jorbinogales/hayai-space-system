@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { pool } from '../db.ts'
 import { stamp } from '../concurrency.ts'
 import { HttpError, id, text } from '../util.ts'
+import { tid } from '../tenant.ts'
 import { filters, op } from './common.ts'
 
 export const GRUPOS = ['saas_venezolano', 'gratis_offline', 'software_factory', 'restaurant_tech'] as const
@@ -70,7 +71,7 @@ const campos = {
 }
 
 async function ficha(competidorId: string) {
-  const r = (await pool.query(`SELECT ${COLS} FROM competidores WHERE id = $1`, [competidorId])).rows[0]
+  const r = (await pool.query(`SELECT ${COLS} FROM competidores WHERE id = $1 AND tenant_id = $2`, [competidorId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Competidor no encontrado')
   return out(r)
 }
@@ -87,14 +88,14 @@ export const radarListar = op(
     per_page: z.number().int().min(1).max(100).default(100),
   }),
   async (_a, i) => {
-    const f = filters()
+    const f = filters('tenant_id')
     if (i.q) f.add("nombre_norm LIKE '%' || ? || '%'", norm(i.q).replace(/[\\%_]/g, '\\$&'))
     if (i.grupo) f.add('grupo = ?', i.grupo)
     const { clause, args } = f.page(i.per_page, i.page)
     const [total, rows, porGrupo] = await Promise.all([
       pool.query(`SELECT count(*)::int AS n FROM competidores ${f.where()}`, f.params()),
       pool.query(`SELECT ${COLS} FROM competidores ${f.where()} ORDER BY orden, created_at, id ${clause}`, args),
-      pool.query('SELECT grupo, count(*)::int AS n FROM competidores GROUP BY grupo'),
+      pool.query('SELECT grupo, count(*)::int AS n FROM competidores WHERE tenant_id = $1 GROUP BY grupo', [tid()]),
     ])
     const grupos = Object.fromEntries(GRUPOS.map((g) => [g, 0])) as Record<string, number>
     for (const r of porGrupo.rows) grupos[r.grupo] = r.n
@@ -112,9 +113,9 @@ export const radarCrear = op(
   async (actor, b) => {
     const r = await pool
       .query(
-        `INSERT INTO competidores (nombre, nombre_norm, web, grupo, que_vende, precio, mensaje, a_quien, fortaleza, debilidad, notas, orden, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, (SELECT COALESCE(max(orden), 0) + 1 FROM competidores), $12) RETURNING id`,
-        [b.nombre, norm(b.nombre), b.web ?? null, b.grupo, b.que_vende ?? null, b.precio ?? null, b.mensaje ?? null, b.a_quien ?? null, b.fortaleza ?? null, b.debilidad ?? null, b.notas ?? null, actor.id],
+        `INSERT INTO competidores (nombre, nombre_norm, web, grupo, que_vende, precio, mensaje, a_quien, fortaleza, debilidad, notas, orden, created_by, tenant_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, (SELECT COALESCE(max(orden), 0) + 1 FROM competidores WHERE tenant_id = $13), $12, $13) RETURNING id`,
+        [b.nombre, norm(b.nombre), b.web ?? null, b.grupo, b.que_vende ?? null, b.precio ?? null, b.mensaje ?? null, b.a_quien ?? null, b.fortaleza ?? null, b.debilidad ?? null, b.notas ?? null, actor.id, tid()],
       )
       .catch(repetido)
     return ficha(r.rows[0].id)
@@ -140,14 +141,14 @@ export const radarActualizar = op(
     }
     if (b.grupo !== undefined) poner('grupo', b.grupo)
     for (const k of EDITABLES) if (b[k] !== undefined) poner(k, b[k])
-    const r = await pool.query(`UPDATE competidores SET ${set.join(', ')}, updated_at = now() WHERE id = $1 RETURNING id`, args).catch(repetido)
+    const r = await pool.query(`UPDATE competidores SET ${set.join(', ')}, updated_at = now() WHERE id = $1 AND tenant_id = $${args.push(tid())} RETURNING id`, args).catch(repetido)
     if (!r.rowCount) throw new HttpError(404, 'Competidor no encontrado')
     return ficha(b.id)
   },
 )
 
 export const radarEliminar = op(z.strictObject({ id }), async (_a, b) => {
-  const r = await pool.query('DELETE FROM competidores WHERE id = $1 RETURNING nombre', [b.id])
+  const r = await pool.query('DELETE FROM competidores WHERE id = $1 AND tenant_id = $2 RETURNING nombre', [b.id, tid()])
   if (!r.rowCount) throw new HttpError(404, 'Competidor no encontrado')
   return { eliminado: true, id: b.id, nombre: r.rows[0].nombre as string }
 })

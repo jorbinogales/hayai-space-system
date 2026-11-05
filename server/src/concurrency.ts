@@ -5,6 +5,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { NextFunction, Request, Response } from 'express'
 import type { PoolClient } from 'pg'
+import { tid } from './tenant.ts'
 import { HttpError } from './util.ts'
 
 type Store = { expected: string | null }
@@ -50,8 +51,8 @@ export async function assertFresh(db: Pick<PoolClient, 'query'>, table: Versione
   const expected = als.getStore()?.expected
   if (!expected) return
   const { rows } = await db.query(
-    `SELECT updated_at, date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', $2::timestamptz) AS fresh FROM ${table} WHERE id = $1 FOR UPDATE`,
-    [rowId, expected],
+    `SELECT updated_at, date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', $2::timestamptz) AS fresh FROM ${table} WHERE id = $1 AND tenant_id = $3 FOR UPDATE`,
+    [rowId, expected, tid()],
   )
   if (!rows[0] || rows[0].fresh) return // sin fila: la operacion responde su propio 404
   throw new HttpError(409, 'Este registro cambió mientras lo editabas (otro socio, un agente o una actualización del sistema). Vuelve a leerlo y revisa antes de guardar.', {

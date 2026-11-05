@@ -8,7 +8,8 @@ import { type Db, pool, tx } from '../db.ts'
 import { detectDocument, extractText, maskDocument, maskDocumentsIn, normalizeDocument } from '../ocr.ts'
 import { DETAIL_COLUMNS, DETAIL_JOINS, detalleOut } from '../paymentDetail.ts'
 import { patchPayment } from '../payments.ts'
-import { userByName } from '../socios.ts'
+import { memberIdByName, userByName } from '../socios.ts'
+import { tid } from '../tenant.ts'
 import { HttpError, id, text } from '../util.ts'
 import { op, todayISO } from './common.ts'
 
@@ -42,7 +43,7 @@ export const cobroOut = (r: any) => ({
 })
 
 export async function cobro(paymentId: string) {
-  const r = (await pool.query(`${BASE} WHERE p.id = $1`, [paymentId])).rows[0]
+  const r = (await pool.query(`${BASE} WHERE p.id = $1 AND p.tenant_id = $2`, [paymentId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Pago no encontrado')
   return cobroOut(r)
 }
@@ -54,7 +55,8 @@ const documento = z.string('Documento inválido').trim().min(5, 'Documento invá
 
 export const receptoresListar = op(z.strictObject({}), async () => {
   const { rows } = await pool.query(
-    `SELECT d.id, d.document, d.created_at, u.id AS user_id, u.name FROM receiver_documents d JOIN users u ON u.id = d.user_id ORDER BY u.name, d.created_at`,
+    `SELECT d.id, d.document, d.created_at, u.id AS user_id, u.name FROM receiver_documents d JOIN users u ON u.id = d.user_id WHERE d.tenant_id = $1 ORDER BY u.name, d.created_at`,
+    [tid()],
   )
   // Enmascarado: el listado no expone cédulas completas a cada llave; para cambiar uno se guarda de nuevo o se elimina por id.
   return { data: rows.map((r) => ({ id: r.id as string, documento: maskDocument(r.document), socio: { id: r.user_id as string, nombre: r.name as string } })) }
@@ -65,20 +67,20 @@ export const receptorGuardar = op(z.strictObject({ documento, socio: text(40) })
   if (!doc) throw new HttpError(400, 'documento: usa letra y número, por ejemplo V-12345678')
   const u = await userByName(pool, b.socio, 'socio')
   const { rows } = await pool.query(
-    `INSERT INTO receiver_documents (document, user_id) VALUES ($1, $2)
-     ON CONFLICT (document) DO UPDATE SET user_id = EXCLUDED.user_id RETURNING id`,
-    [doc, u.id],
+    `INSERT INTO receiver_documents (tenant_id, document, user_id) VALUES ($3, $1, $2)
+     ON CONFLICT (tenant_id, document) DO UPDATE SET user_id = EXCLUDED.user_id RETURNING id`,
+    [doc, u.id, tid()],
   )
   return { id: rows[0].id as string, documento: maskDocument(doc), socio: { id: u.id, nombre: u.name } }
 })
 
 export const receptorEliminar = op(z.strictObject({ id }), async (_a, b) => {
-  const r = await pool.query('DELETE FROM receiver_documents WHERE id = $1', [b.id])
+  const r = await pool.query('DELETE FROM receiver_documents WHERE id = $1 AND tenant_id = $2', [b.id, tid()])
   if (!r.rowCount) throw new HttpError(404, 'Mapeo no encontrado')
   return { eliminado: true }
 })
 
-/** Siembra el mapeo desde RECEIVER_DOCUMENTS="V-111=Elis,V-222=Jorbi" (solo agrega los que faltan; lo editado en la interfaz manda). */
+/** Siembra el mapeo del tenant en curso (al arrancar: HAYAI) desde RECEIVER_DOCUMENTS="V-111=Elis,V-222=Jorbi" (solo agrega los que faltan; lo editado en la interfaz manda). */
 export async function seedReceiverDocuments(spec = process.env.RECEIVER_DOCUMENTS) {
   if (!spec?.trim()) return 0
   let n = 0
@@ -89,12 +91,12 @@ export async function seedReceiverDocuments(spec = process.env.RECEIVER_DOCUMENT
       console.error(`RECEIVER_DOCUMENTS: entrada ignorada (${rawName ? 'documento inválido' : 'falta el socio'})`)
       continue
     }
-    const u = (await pool.query('SELECT id FROM users WHERE lower(name) = lower($1)', [rawName])).rows[0]
-    if (!u) {
+    const userId = await memberIdByName(pool, rawName)
+    if (!userId) {
       console.error(`RECEIVER_DOCUMENTS: no hay un socio llamado "${rawName}"`)
       continue
     }
-    n += (await pool.query('INSERT INTO receiver_documents (document, user_id) VALUES ($1, $2) ON CONFLICT (document) DO NOTHING', [doc, u.id])).rowCount ?? 0
+    n += (await pool.query('INSERT INTO receiver_documents (tenant_id, document, user_id) VALUES ($3, $1, $2) ON CONFLICT (tenant_id, document) DO NOTHING', [doc, userId, tid()])).rowCount ?? 0
   }
   return n
 }
@@ -111,14 +113,15 @@ type Deteccion = {
 async function applyDetection(c: Db, paymentId: string, doc: string | null): Promise<Deteccion> {
   if (!doc) return { documento: null, estado: 'no_detectado', socio: null, requiere_confirmacion: true }
   const m = (
-    await c.query(`SELECT u.id, u.name FROM receiver_documents d JOIN users u ON u.id = d.user_id WHERE d.document = $1`, [doc])
+    await c.query(`SELECT u.id, u.name FROM receiver_documents d JOIN users u ON u.id = d.user_id WHERE d.document = $1 AND d.tenant_id = $2`, [doc, tid()])
   ).rows[0] as { id: string; name: string } | undefined
   const shown = maskDocument(doc)
   if (!m) return { documento: shown, estado: 'sin_mapeo', socio: null, requiere_confirmacion: true }
-  const cur = (await c.query('SELECT received_by FROM payments WHERE id = $1 FOR UPDATE', [paymentId])).rows[0]
+  const cur = (await c.query('SELECT received_by FROM payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [paymentId, tid()])).rows[0]
+  if (!cur) throw new HttpError(404, 'Pago no encontrado')
   const socio = { id: m.id, nombre: m.name }
   if (!cur.received_by) {
-    await c.query(`UPDATE payments SET received_by = $2, received_by_source = 'comprobante' WHERE id = $1`, [paymentId, m.id])
+    await c.query(`UPDATE payments SET received_by = $2, received_by_source = 'comprobante' WHERE id = $1 AND tenant_id = $3`, [paymentId, m.id, tid()])
     return { documento: shown, estado: 'asignado', socio, requiere_confirmacion: false }
   }
   if (cur.received_by === m.id) return { documento: shown, estado: 'ya_asignado', socio, requiere_confirmacion: false }
@@ -138,19 +141,19 @@ export const comprobanteSubir = op(
     if (buf.length > MAX_RECEIPT_BYTES) throw new HttpError(413, 'Imagen demasiado grande (máximo 4 MB)')
     const mime = sniffImage(buf)
     if (!mime) throw new HttpError(400, 'imagen_base64: solo se aceptan imágenes PNG, JPEG o WebP')
-    if (!(await pool.query('SELECT 1 FROM payments WHERE id = $1', [b.id])).rowCount) throw new HttpError(404, 'Pago no encontrado')
+    if (!(await pool.query('SELECT 1 FROM payments WHERE id = $1 AND tenant_id = $2', [b.id, tid()])).rowCount) throw new HttpError(404, 'Pago no encontrado')
 
     const ocr = (b.texto_ocr ?? (await extractText(buf))).slice(0, 20_000) // lo lento va antes de la transacción
     const doc = detectDocument(ocr)
     const nombre = (b.nombre ?? `comprobante.${EXT[mime]}`).replace(/[\r\n"\\/]/g, '_')
 
     const deteccion = await tx(async (c) => {
-      if (!(await c.query('SELECT 1 FROM payments WHERE id = $1 FOR UPDATE', [b.id])).rowCount) throw new HttpError(404, 'Pago no encontrado')
+      if (!(await c.query('SELECT 1 FROM payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [b.id, tid()])).rowCount) throw new HttpError(404, 'Pago no encontrado')
       await c.query(
-        `INSERT INTO payment_receipts (payment_id, filename, mime, size, data, ocr_text, detected_document, uploaded_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO payment_receipts (tenant_id, payment_id, filename, mime, size, data, ocr_text, detected_document, uploaded_by) VALUES ($9, $1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (payment_id) DO UPDATE SET filename = EXCLUDED.filename, mime = EXCLUDED.mime, size = EXCLUDED.size, data = EXCLUDED.data,
            ocr_text = EXCLUDED.ocr_text, detected_document = EXCLUDED.detected_document, uploaded_by = EXCLUDED.uploaded_by, uploaded_at = now()`,
-        [b.id, nombre, mime, buf.length, buf, ocr || null, doc, actor.id],
+        [b.id, nombre, mime, buf.length, buf, ocr || null, doc, actor.id, tid()],
       )
       return applyDetection(c, b.id, doc)
     })
@@ -162,7 +165,7 @@ export const comprobanteSubir = op(
 
 /** Vuelve a cruzar el documento ya leído con el mapeo (por si lo acaban de agregar). No repite el OCR. */
 export const comprobanteDetectar = op(z.strictObject({ id }), async (_a, b) => {
-  const r = (await pool.query('SELECT detected_document, ocr_text FROM payment_receipts WHERE payment_id = $1', [b.id])).rows[0]
+  const r = (await pool.query('SELECT detected_document, ocr_text FROM payment_receipts WHERE payment_id = $1 AND tenant_id = $2', [b.id, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Este cobro no tiene comprobante')
   const doc = (r.detected_document as string | null) ?? detectDocument((r.ocr_text as string | null) ?? '')
   const deteccion = await tx((c) => applyDetection(c, b.id, doc))
@@ -170,14 +173,14 @@ export const comprobanteDetectar = op(z.strictObject({ id }), async (_a, b) => {
 })
 
 export const comprobanteVer = op(z.strictObject({ id }), async (_a, b) => {
-  const r = (await pool.query('SELECT detected_document, ocr_text FROM payment_receipts WHERE payment_id = $1', [b.id])).rows[0]
+  const r = (await pool.query('SELECT detected_document, ocr_text FROM payment_receipts WHERE payment_id = $1 AND tenant_id = $2', [b.id, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Este cobro no tiene comprobante')
   return { cobro: await cobro(b.id), documento_detectado: r.detected_document ? maskDocument(r.detected_document) : null, texto_ocr: maskDocumentsIn((r.ocr_text as string | null) ?? '').slice(0, 1500) }
 })
 
 /** Los bytes de la imagen (para la web y la ruta de descarga de la API). */
 export async function comprobanteArchivo(paymentId: string) {
-  const r = (await pool.query('SELECT data, mime, filename FROM payment_receipts WHERE payment_id = $1', [paymentId])).rows[0]
+  const r = (await pool.query('SELECT data, mime, filename FROM payment_receipts WHERE payment_id = $1 AND tenant_id = $2', [paymentId, tid()])).rows[0]
   if (!r) throw new HttpError(404, 'Este cobro no tiene comprobante')
   return { data: r.data as Buffer, mime: r.mime as Mime, filename: r.filename as string }
 }

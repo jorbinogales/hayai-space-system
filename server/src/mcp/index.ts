@@ -49,6 +49,7 @@ import { gastoRegistrar, gastosListar } from '../services/gastos.ts'
 import { checklistActualizar, checklistAgregar, checklistOrdenar, hitoActualizar, hitoCrear, hitosOrdenar, proyectoActualizar, proyectoCrear, proyectoEstado, proyectosListar, proyectoVer } from '../services/proyectos.ts'
 import { ofertaActualizar, ofertaCrear, ofertaDesactivar, ofertasListar, propuestaActualizar, propuestaCrear, propuestasListar, propuestaVer } from '../services/propuestas.ts'
 import { tareaActualizar, tareaCompletar, tareaCrear, tareasListar } from '../services/tareas.ts'
+import { mcpToolAllowed, type TenantCtx, withTenant } from '../tenant.ts'
 import { HttpError } from '../util.ts'
 import { apiKeyAuth, keyRateLimit, type Scope } from '../v1/apiKey.ts'
 import { apiErrors, jsonOnly } from '../v1/index.ts'
@@ -212,14 +213,14 @@ const INSTRUCTIONS =
   'Montos en USD como número; fechas AAAA-MM-DD; zona horaria de Caracas. ' +
   'Lo que se escriba queda atribuido al socio dueño de la llave de API. Solo ves las herramientas que los permisos de tu llave permiten (lectura, escritura, borrado). Borrar manda a la papelera 30 días: nada se pierde al instante.'
 
-function buildServer(actor: SessionUser, version: string | null) {
+function buildServer(actor: SessionUser, tenant: TenantCtx, version: string | null) {
   // La versión vigente va en las instrucciones y en serverInfo: el agente se entera de un cambio en cuanto se conecta, sin preguntar.
   const aviso = version
     ? ` Versión actual del sistema: v${version}. Si es distinta de la última que conocías, llama a hayai_version_ver con desde=<tu última versión> para ver qué cambió (nuevas herramientas, campos o reglas) antes de escribir. Al editar un registro, manda actualizado_el (el de tu última lectura) para no pisar cambios de otros.`
     : ''
   const server = new McpServer({ name: 'hayai-space', version: version ?? '1.0.0' }, { instructions: INSTRUCTIONS + aviso })
-  // Solo se ofrecen las herramientas que los permisos de la llave permiten: el agente no ve lo que no puede usar.
-  for (const t of TOOLS.filter((x) => actor.scopes?.includes(x.scope))) {
+  // Solo se ofrecen las herramientas que los permisos de la llave Y los módulos del dueño en su tenant permiten: el agente no ve lo que no puede usar.
+  for (const t of TOOLS.filter((x) => actor.scopes?.includes(x.scope) && mcpToolAllowed(x.name, tenant.modules))) {
     server.registerTool(
       t.name,
       {
@@ -236,7 +237,7 @@ function buildServer(actor: SessionUser, version: string | null) {
             input = rest
             expected = actualizado_el
           }
-          const data = await withExpected(expected, () => exec(t.op, actor, input))
+          const data = await withTenant(tenant, () => withExpected(expected, () => exec(t.op, actor, input)))
           return { content: [{ type: 'text' as const, text: JSON.stringify(data) }] }
         } catch (e) {
           // Los errores de negocio (validación, 404...) vuelven como resultado de la herramienta para que el agente los lea y corrija.
@@ -265,7 +266,7 @@ mcpRouter.all('/', (req, res, next) => {
 })
 
 mcpRouter.post('/', apiKeyAuth, keyRateLimit(), versionHeader, jsonOnly, express.json({ limit: '6mb' }), async (req, res) => { // 6 MB: el comprobante de un cobro viaja en base64
-  const server = buildServer(req.user!, await currentVersionString())
+  const server = buildServer(req.user!, req.tenant!, await currentVersionString())
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
   res.on('close', () => {
     void transport.close()

@@ -11,8 +11,9 @@ import { isNewer, noteVersion, onUpdates, runningVersion } from './updates'
 import { notifyFeed } from './feedData'
 import { chatReconnected, receiveChat, refreshChatCounters, resetChat, type ChatEvent } from './chatData'
 import { projectsResync, receiveProject, resetProjectLive, type ProjectEvent } from './projectLive'
+import { boardResync, receiveBoard, type BoardEvent } from './boardData'
 
-export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'tarea_reasignada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta' | 'acuerdo_nuevo' | 'sistema_caido' | 'sistema_recuperado' | 'version_nueva' | 'feed_nuevo'
+export type ActivityKind = 'cliente_nuevo' | 'posible_nuevo' | 'tarea_nueva' | 'tarea_completada' | 'tarea_reasignada' | 'cobro_cobrado' | 'cambio_etapa' | 'cliente_ganado' | 'cliente_perdido' | 'lead_meta' | 'acuerdo_nuevo' | 'sistema_caido' | 'sistema_recuperado' | 'version_nueva' | 'feed_nuevo' | 'tarjeta_nueva' | 'tarjeta_movida' | 'tarjeta_comentada' | 'tarjeta_asignada'
 export interface Activity {
   id: number
   tipo: ActivityKind
@@ -24,6 +25,8 @@ export interface Activity {
   cliente_id: string | null
   proyecto_id: string | null
   tarea_id: string | null
+  /** solo en los avisos tarjeta_* */
+  tarjeta_id?: string | null
   fecha: string
 }
 export interface Alert {
@@ -147,6 +150,7 @@ function pushToast(event: Activity) {
 function reloadFor(e: Activity) {
   if (e.tipo === 'version_nueva') return // no cambia ningún dato de la pantalla
   if (e.tipo === 'feed_nuevo') return void notifyFeed() // el feed del Hub se vuelve a pedir; lo demás no cambia
+  if (e.tipo.startsWith('tarjeta_')) return // el tablero se refresca solo con su propio aviso SSE «tablero»
   window.clearTimeout(refreshTimer)
   refreshTimer = window.setTimeout(() => {
     if (e.tipo === 'cliente_nuevo' || e.tipo === 'lead_meta') void loadClients().catch(() => {})
@@ -199,9 +203,18 @@ function connect() {
       /* ilegible */
     }
   })
+  // Tablero: aviso sin datos de que cambió una columna, una tarjeta o un comentario (tampoco lleva id).
+  es.addEventListener('tablero', (m) => {
+    try {
+      receiveBoard(JSON.parse((m as MessageEvent<string>).data) as BoardEvent)
+    } catch {
+      /* ilegible */
+    }
+  })
   es.onopen = () => {
     set({ online: true })
     chatReconnected()
+    if (everOpened) boardResync()
     retries = 0
     // Tras una caida no se reenvia lo de los proyectos (los avisos no llevan id): las vistas abiertas lo vuelven a pedir.
     if (everOpened) projectsResync()

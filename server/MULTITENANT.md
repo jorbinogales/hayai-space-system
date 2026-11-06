@@ -20,10 +20,10 @@ La misma forma de siempre, más `tenants`:
   "tenants": [ { "id": "uuid", "name": "HAYAI", "slug": "hayai", "modules": ["hub", "feed", "..."] } ] }
 ```
 
-- `tenants` trae solo los tenants activos a los que entra el usuario. Para un ADMIN son todos, con los 13 módulos.
+- `tenants` trae solo los tenants activos a los que entra el usuario. Para un ADMIN son todos, con los 14 módulos.
 - Un usuario puede tener `tenants: []`: el frontend debe mostrar «sin acceso».
 - Usuario nuevo: entra con nombre y PIN `000000`, y recibe `mustChangePin: true`. Con eso, todo lo demás responde `403 {error:"pin_change_required"}` hasta que llame a `POST /auth/change-pin {currentPin:"000000", newPin}`.
-- Módulos: `hub, feed, clientes, crm, cobros, proyectos, tareas, finanzas, marketing, sistemas, chat, integraciones, papelera`.
+- Módulos: `hub, feed, clientes, crm, cobros, proyectos, tareas, tablero, finanzas, marketing, sistemas, chat, integraciones, papelera`.
 
 ## Códigos de error
 
@@ -48,6 +48,7 @@ En la web el cuerpo es `{ error, codigo, modulo? }`. En v1 es `{ error: { code: 
 | cobros | `/clients/:id/payments`, `/clients/:id/initial`, `/payments`, `/cobros/*`, `/receptores` |
 | proyectos | `/projects/*`, `/milestones`, `/checklist` |
 | tareas | `/tasks` |
+| tablero | `/board` y `/board/*` (columnas, tarjetas, comentarios; contrato en `server/TABLERO.md`) |
 | finanzas | `/expenses` |
 | marketing | `/marketing/*` |
 | sistemas | `/systems` |
@@ -64,7 +65,7 @@ Las rutas de solo membresía filtran por módulo por dentro:
 
 Las conversiones desde el feed exigen el módulo de lo que crean.
 
-La API v1 (`/api/v1`) y el MCP usan el mismo mapa con sus nombres: `clientes`, `pagos`, `gastos`, `tareas`, etc. El tenant sale de la llave, que es de un solo tenant: en v1 la cabecera `X-Tenant-Id` se ignora. `GET /api/v1/me` incluye `tenant {id, nombre, slug, modulos}`. Las herramientas MCP que se listan son las de los módulos del dueño de la llave.
+La API v1 (`/api/v1`) y el MCP usan el mismo mapa con sus nombres: `clientes`, `pagos`, `gastos`, `tareas`, `tablero` (herramientas MCP `hayai_tablero_*` y `hayai_tarjeta_*`), etc. El tenant sale de la llave, que es de un solo tenant: en v1 la cabecera `X-Tenant-Id` se ignora. `GET /api/v1/me` incluye `tenant {id, nombre, slug, modulos}`. Las herramientas MCP que se listan son las de los módulos del dueño de la llave.
 
 ## Llaves de API
 
@@ -81,7 +82,7 @@ new EventSource(`/api/events?tenant=${tenantId}`, { withCredentials: true })
 ```
 
 - Se valida igual que la cabecera (400 sin él, 403 sin acceso).
-- La pestaña recibe solo los eventos de ese tenant: `actividad` (filtrada por módulos), `chat` (solo con el módulo chat) y `proyecto` (solo con el módulo proyectos).
+- La pestaña recibe solo los eventos de ese tenant: `actividad` (filtrada por módulos), `chat` (solo con el módulo chat), `proyecto` (solo con el módulo proyectos) y `tablero` (solo con el módulo tablero).
 - Al cambiar de tenant, cierra el EventSource y abre otro. `Last-Event-ID` reenvía solo la actividad del tenant.
 - Si se quitan los accesos con un stream abierto, ese stream sigue abierto hasta que reconecte (máximo 25 minutos).
 

@@ -24,6 +24,7 @@ export const TENANT_TABLES = [
   'systems', 'system_checks', 'agreements', 'activity', 'activity_seen', 'notification_reads', 'briefs', 'trash', 'api_keys',
   'feed_items', 'feed_item_usuarios', 'feed_item_vinculos', 'feed_guion_versiones', 'competidores',
   'chat_messages', 'chat_mentions', 'chat_reads', 'mk_keywords', 'mk_serp', 'mk_competidores', 'mk_contenidos',
+  'boards', 'board_columns', 'board_cards', 'board_card_comments',
 ]
 const TOUCHES = new RegExp(`\\b(?:FROM|JOIN|INTO|UPDATE|TABLE|NULL::)\\s*(?:ONLY\\s+)?(?:${TENANT_TABLES.join('|')})\\b`, 'i')
 export const ALL_TENANTS = '/* todos los tenants */'

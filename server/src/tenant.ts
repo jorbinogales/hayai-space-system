@@ -9,7 +9,7 @@ import { pool } from './db.ts'
 import { HttpError } from './util.ts'
 
 /** Catálogo de módulos: el mismo del CHECK user_tenants_modules_ck. */
-export const MODULES = ['hub', 'feed', 'clientes', 'crm', 'cobros', 'proyectos', 'tareas', 'finanzas', 'marketing', 'sistemas', 'chat', 'integraciones', 'papelera'] as const
+export const MODULES = ['hub', 'feed', 'clientes', 'crm', 'cobros', 'proyectos', 'tareas', 'tablero', 'finanzas', 'marketing', 'sistemas', 'chat', 'integraciones', 'papelera'] as const
 export type Module = (typeof MODULES)[number]
 
 export type TenantCtx = { id: string; name: string; slug: string; modules: Module[] }
@@ -133,6 +133,7 @@ export const WEB_MODULES: ModuleMap = {
   checklist: 'proyectos',
   expenses: 'finanzas',
   tasks: 'tareas',
+  board: 'tablero',
   keys: 'integraciones',
   trash: 'papelera',
   chat: 'chat',
@@ -187,6 +188,7 @@ export const V1_MODULES: ModuleMap = {
   competidores: 'feed',
   chat: 'chat',
   tareas: 'tareas',
+  tablero: 'tablero',
   papelera: 'papelera',
   notificaciones: null,
   actividad: null,
@@ -203,6 +205,7 @@ const MCP_WORDS: ModuleMap = {
   proyectos: 'proyectos', proyecto: 'proyectos', hito: 'proyectos', hitos: 'proyectos', checklist: 'proyectos',
   gastos: 'finanzas', gasto: 'finanzas', finanzas: 'finanzas',
   tareas: 'tareas', tarea: 'tareas',
+  tablero: 'tablero', tarjeta: 'tablero', tarjetas: 'tablero', columna: 'tablero',
   pagos: 'cobros', pago: 'cobros', comprobante: 'cobros', receptores: 'cobros', receptor: 'cobros',
   pipeline: 'crm', ofertas: 'crm', oferta: 'crm', propuestas: 'crm', propuesta: 'crm',
   notificaciones: null, actividad: null, buscar: null, version: null, versiones: null,
@@ -236,6 +239,10 @@ const KIND_MODULE: Record<string, Module | null> = {
   sistema_recuperado: 'sistemas',
   version_nueva: null,
   feed_nuevo: 'feed',
+  tarjeta_nueva: 'tablero',
+  tarjeta_movida: 'tablero',
+  tarjeta_comentada: 'tablero',
+  tarjeta_asignada: 'tablero',
 }
 /** Tipos de actividad que puede ver quien tiene estos módulos (va como `a.kind = ANY($n)`). */
 export const visibleKinds = (modules: readonly Module[]) => Object.keys(KIND_MODULE).filter((k) => KIND_MODULE[k] === null || modules.includes(KIND_MODULE[k]!))

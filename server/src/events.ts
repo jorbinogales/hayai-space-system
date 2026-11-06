@@ -9,8 +9,8 @@ import { mensajePorId } from './services/chat.ts'
 import { tenantById, tenantCtx, tid, visibleKinds, withTenant } from './tenant.ts'
 
 // Multitenant: cada pestaña escucha UN tenant (el de ?tenant= / X-Tenant-Id, validado al abrir) y solo recibe lo de ese tenant y de
-// sus módulos: la actividad por tipo, el chat con el módulo chat y las vistas de proyecto con el módulo proyectos.
-type Sub = { res: Response; userId: string; tenantId: string; kinds: Set<string>; chat: boolean; proyectos: boolean; timer: NodeJS.Timeout }
+// sus módulos: la actividad por tipo, el chat con el módulo chat, las vistas de proyecto con el módulo proyectos y el tablero con el módulo tablero.
+type Sub = { res: Response; userId: string; tenantId: string; kinds: Set<string>; chat: boolean; proyectos: boolean; tablero: boolean; timer: NodeJS.Timeout }
 
 const subs = new Set<Sub>()
 let listener: pg.Client | null = null
@@ -58,6 +58,20 @@ function broadcastProyecto(p: { op?: unknown; seccion?: unknown; proyecto_id?: u
   for (const s of subs) if (s.tenantId === p.tenant_id && s.proyectos) s.res.write(out)
 }
 
+// Tablero (migración 040): el aviso del trigger { op, seccion, id, tenant_id } va tal cual, sin datos, a las pestañas del tenant con el
+// módulo tablero. id = la columna (seccion 'columnas') o la tarjeta ('tarjetas' y 'comentarios'). Sin `id:` en el frame, como el chat.
+export const TABLERO_CHANNEL = 'tablero'
+const TABLERO_SECCIONES = new Set(['columnas', 'tarjetas', 'comentarios'])
+function broadcastTablero(p: { op?: unknown; seccion?: unknown; id?: unknown; tenant_id?: unknown }) {
+  if (typeof p.seccion !== 'string' || !TABLERO_SECCIONES.has(p.seccion) || typeof p.id !== 'string' || !UUID.test(p.id) || typeof p.tenant_id !== 'string') return
+  const data = { op: p.op === 'nuevo' || p.op === 'borrado' ? p.op : 'editado', seccion: p.seccion, id: p.id }
+  const out = `event: tablero
+data: ${JSON.stringify(data)}
+
+`
+  for (const s of subs) if (s.tenantId === p.tenant_id && s.tablero) s.res.write(out)
+}
+
 // Ids ya repartidos (los ultimos): el aviso en vivo y el reenvio tras una caida pueden traer el mismo evento dos veces.
 const recent = new Set<number>()
 function broadcast(rows: unknown[]) {
@@ -101,9 +115,11 @@ async function connectListener() {
       enqueue(() => broadcastChat(p))
       return
     }
-    if (m.channel === PROYECTO_CHANNEL) {
+    if (m.channel === PROYECTO_CHANNEL || m.channel === TABLERO_CHANNEL) {
       try {
-        broadcastProyecto(JSON.parse(m.payload ?? '{}'))
+        const p = JSON.parse(m.payload ?? '{}')
+        if (m.channel === PROYECTO_CHANNEL) broadcastProyecto(p)
+        else broadcastTablero(p)
       } catch {
         /* aviso ilegible: se ignora, la pantalla se resincroniza sola al reconectar */
       }
@@ -123,6 +139,7 @@ async function connectListener() {
     await c.query(`LISTEN ${CHANNEL}`)
     await c.query(`LISTEN ${CHAT_CHANNEL}`)
     await c.query(`LISTEN ${PROYECTO_CHANNEL}`)
+    await c.query(`LISTEN ${TABLERO_CHANNEL}`)
     listener = c
     // Lo que se confirmo mientras no escuchabamos.
     enqueue(async () => broadcast(await fetchAfter(lastId)))
@@ -177,6 +194,7 @@ export async function openStream(req: Request, res: Response) {
     kinds: new Set(kinds),
     chat: t.modules.includes('chat'),
     proyectos: t.modules.includes('proyectos'),
+    tablero: t.modules.includes('tablero'),
     timer: setInterval(() => res.write(': ping\n\n'), HEARTBEAT_MS),
   }
   const life = setTimeout(() => end(sub), MAX_LIFE_MS)

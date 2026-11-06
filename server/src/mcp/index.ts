@@ -49,6 +49,7 @@ import { gastoRegistrar, gastosListar } from '../services/gastos.ts'
 import { checklistActualizar, checklistAgregar, checklistOrdenar, hitoActualizar, hitoCrear, hitosOrdenar, proyectoActualizar, proyectoCrear, proyectoEstado, proyectosListar, proyectoVer } from '../services/proyectos.ts'
 import { ofertaActualizar, ofertaCrear, ofertaDesactivar, ofertasListar, propuestaActualizar, propuestaCrear, propuestasListar, propuestaVer } from '../services/propuestas.ts'
 import { tareaActualizar, tareaCompletar, tareaCrear, tareasListar } from '../services/tareas.ts'
+import { tableroVer, tarjetaComentar, tarjetaCrear, tarjetaMover } from '../services/tablero.ts'
 import { mcpToolAllowed, type TenantCtx, withTenant } from '../tenant.ts'
 import { HttpError } from '../util.ts'
 import { apiKeyAuth, keyRateLimit, type Scope } from '../v1/apiKey.ts'
@@ -73,6 +74,10 @@ const TOOLS: Tool[] = [
   { name: 'hayai_tarea_crear', op: tareaCrear, scope: 'write', description: 'Crea una tarea dentro de un proyecto (proyecto_id es obligatorio). vence opcional (AAAA-MM-DD); hito_id opcional (debe ser un hito del mismo proyecto); responsable opcional (nombre del socio; sin él la lleva el responsable del proyecto).' },
   { name: 'hayai_tarea_actualizar', op: tareaActualizar, scope: 'write', description: 'Edita una tarea: titulo, estado (pendiente | completada), vence (null borra la fecha), hito_id (null la suelta del hito) y responsable (nombre del socio; null la devuelve al responsable del proyecto, sin cambiarlo). Reasignar deja constancia en la actividad del equipo.' },
   { name: 'hayai_tarea_completar', op: tareaCompletar, scope: 'write', description: 'Marca una tarea como completada.' },
+  { name: 'hayai_tablero_ver', op: tableroVer, scope: 'read', description: 'El tablero kanban del equipo: columnas en orden, cada una con sus tarjetas (no archivadas) en orden, con prioridad (baja | media | alta | urgente), responsable, cliente, vence y número de comentarios.' },
+  { name: 'hayai_tarjeta_crear', op: tarjetaCrear, scope: 'write', description: 'Crea una tarjeta en una columna del tablero (columna_id y titulo obligatorios; los ids salen de hayai_tablero_ver). Opcional: descripcion, prioridad (baja | media | alta | urgente; por defecto media), responsable (nombre de un socio con acceso al tablero), cliente_id, vence (AAAA-MM-DD) y despues_de (id de la tarjeta tras la que va; null = arriba; sin él = al final).' },
+  { name: 'hayai_tarjeta_mover', op: tarjetaMover, scope: 'write', description: 'Mueve una tarjeta a una columna (columna_id), tras la tarjeta despues_de (null = arriba; sin él = al final). Sirve también para reordenar dentro de la misma columna. Cambiar de columna deja constancia en la actividad del equipo.' },
+  { name: 'hayai_tarjeta_comentar', op: tarjetaComentar, scope: 'write', description: 'Agrega un comentario (texto) a una tarjeta del tablero, firmado por el dueño de la llave.' },
   // Pagos: no estaban en el SPEC original, pero sin ellos no se puede mover lo recaudado.
   { name: 'hayai_pagos_listar', op: pagosListar, scope: 'read', description: 'Lista cobros ordenados por fecha. estado: pendiente | cobrado; filtros cliente_id, desde, hasta. Con estado=pendiente son los próximos cobros; "vencido" marca los que ya pasaron de fecha y vencido=true los filtra (solo lo pendiente con fecha anterior a hoy). meta.total_monto suma todo el filtro.' },
   { name: 'hayai_pago_registrar', op: pagoRegistrar, scope: 'write', description: 'Agrega un cobro a un cliente (pendiente por defecto). repetir_meses (2-36) crea un pago mensual como serie de cuotas pendientes.' },

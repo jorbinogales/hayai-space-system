@@ -192,7 +192,7 @@ describe('auth', () => {
   it('login ok con 000000 => mustChangePin=true, cookie httpOnly/Lax/Path=/, sin pin_hash', async () => {
     const r = await login('Elis')
     assert.equal(r.status, 200)
-    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Elis', avatar: 'nova', role: 'ADMIN', mustChangePin: true, tenants: [{ id: '<uuid>', name: 'HAYAI', slug: 'hayai', modules: ['hub', 'feed', 'clientes', 'crm', 'cobros', 'proyectos', 'tareas', 'finanzas', 'marketing', 'sistemas', 'chat', 'integraciones', 'papelera'] }] })
+    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Elis', avatar: 'nova', role: 'ADMIN', mustChangePin: true, tenants: [{ id: '<uuid>', name: 'HAYAI', slug: 'hayai', modules: ['hub', 'feed', 'clientes', 'crm', 'cobros', 'proyectos', 'tareas', 'tablero', 'finanzas', 'marketing', 'sistemas', 'chat', 'integraciones', 'papelera'] }] })
     assert.match(r.setCookie!, /HttpOnly/i)
     assert.match(r.setCookie!, /SameSite=Lax/i)
     assert.match(r.setCookie!, /Path=\//)
@@ -232,7 +232,7 @@ describe('auth', () => {
     const b = await sessionFor('Elis') // otra sesión del mismo usuario
     const r = await call('/auth/change-pin', { cookie: a, body: { currentPin: '000000', newPin: '482913' } })
     assert.equal(r.status, 200)
-    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Elis', avatar: 'nova', role: 'ADMIN', mustChangePin: false, tenants: [{ id: '<uuid>', name: 'HAYAI', slug: 'hayai', modules: ['hub', 'feed', 'clientes', 'crm', 'cobros', 'proyectos', 'tareas', 'finanzas', 'marketing', 'sistemas', 'chat', 'integraciones', 'papelera'] }] })
+    assert.deepEqual(shape(r.body), { id: '<uuid>', name: 'Elis', avatar: 'nova', role: 'ADMIN', mustChangePin: false, tenants: [{ id: '<uuid>', name: 'HAYAI', slug: 'hayai', modules: ['hub', 'feed', 'clientes', 'crm', 'cobros', 'proyectos', 'tareas', 'tablero', 'finanzas', 'marketing', 'sistemas', 'chat', 'integraciones', 'papelera'] }] })
     assert.equal((await call('/auth/me', { cookie: b })).status, 401) // la otra sesión murió
     assert.equal((await call('/auth/me', { cookie: a })).body.mustChangePin, false) // la actual sigue
     assert.equal((await call('/auth/change-pin', { cookie: a, body: { currentPin: '482913', newPin: '482913' } })).status, 400)
@@ -944,7 +944,7 @@ describe('multitenant', () => {
     assert.deepEqual(me.tenants.map((t: any) => [t.slug, t.modules]), [['otra-empresa', ['clientes', 'tareas', 'proyectos']]])
     const adm = (await call('/auth/me', { cookie: adminCookie })).body
     assert.deepEqual(adm.tenants.map((t: any) => t.slug), ['hayai', 'otra-empresa'])
-    assert.equal(adm.tenants[1].modules.length, 13)
+    assert.equal(adm.tenants[1].modules.length, 14)
     assert.deepEqual((await call('/auth/me', { cookie: sinNadaCookie })).body.tenants, [])
   })
 
@@ -1032,5 +1032,292 @@ describe('multitenant', () => {
     assert.deepEqual([r.status, r.body.mustChangePin], [200, true])
     assert.equal((await call('/auth/me', { cookie: socioCookie })).status, 401) // sus sesiones se cerraron
     assert.equal((await login('Pedro', '000000')).status, 200)
+  })
+})
+
+describe('tablero (040)', () => {
+  // Elis es ADMIN. Tomas: SOCIO de HAYAI con tablero y clientes. Ines: SOCIO de HAYAI sin tablero. Bruno: SOCIO de otro tenant con tablero.
+  let elis = ''
+  let tomas = ''
+  let ines = ''
+  let bruno = ''
+  let dos = '' // tenant «Tablero Dos»
+  const ids: Record<string, string> = {}
+  const NOPE = '00000000-0000-4000-8000-000000000000'
+  const as = (cookie: string, path: string, o: { method?: string; body?: unknown; headers?: Record<string, string> } = {}) => call(path, { cookie, ...o })
+  const inDos = (path: string, o: { method?: string; body?: unknown } = {}) => call(path, { cookie: bruno, ...o, headers: { 'x-tenant-id': dos } })
+  const boardOf = async (cookie = elis) => (await as(cookie, '/board')).body
+  const col = async (name: string) => (await boardOf()).columns.find((c: any) => c.name === name)
+  const titles = async (name: string) => (await col(name)).cards.map((k: any) => k.title)
+  const newCard = async (columnId: string, title: string, extra: Record<string, unknown> = {}) => {
+    const r = await as(elis, '/board/cards', { body: { columnId, title, ...extra } })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    return r.full
+  }
+  const move = (cardId: string, columnId: string, afterId?: string | null, cookie = elis) =>
+    as(cookie, `/board/cards/${cardId}/move`, { body: { columnId, ...(afterId !== undefined ? { afterId } : {}) } })
+  const acts = async (tipo: string, cardId: string) => (await as(elis, '/activity?per_page=100')).body.data.filter((a: any) => a.tipo === tipo && a.tarjeta_id === cardId)
+
+  async function socio(name: string, tenants: { tenantId: string; modules: string[] }[]) {
+    assert.equal((await call('/admin/users', { cookie: elis, body: { name, tenants } })).status, 201)
+    const first = await sessionFor(name)
+    assert.equal((await call('/auth/change-pin', { cookie: first, body: { currentPin: '000000', newPin: '246813' } })).status, 200)
+    return first
+  }
+
+  before(async () => {
+    elis = await sessionFor('Elis', '482913')
+    const t = await call('/admin/tenants', { cookie: elis, body: { name: 'Tablero Dos' } })
+    assert.equal(t.status, 201, JSON.stringify(t.body))
+    dos = t.body.id
+    tomas = await socio('Tomas', [{ tenantId: HAYAI, modules: ['tablero', 'clientes'] }])
+    ines = await socio('Ines', [{ tenantId: HAYAI, modules: ['clientes'] }])
+    bruno = await socio('Bruno', [{ tenantId: dos, modules: ['tablero', 'clientes'] }])
+    const users = (await call('/admin/users', { cookie: elis })).body
+    for (const n of ['Tomas', 'Ines', 'Bruno', 'Elis']) ids[n] = users.find((u: any) => u.name === n).id
+  })
+
+  it('cada tenant nace con su tablero y 4 columnas (sembradas por la BD); sin el módulo => 403', async () => {
+    const b = await boardOf()
+    assert.deepEqual(b.columns.map((c: any) => [c.name, c.cards]), [['Por hacer', []], ['En curso', []], ['En revisión', []], ['Hecho', []]])
+    const d = (await inDos('/board')).body
+    assert.notEqual(d.id, b.id)
+    assert.deepEqual(d.columns.map((c: any) => c.name), ['Por hacer', 'En curso', 'En revisión', 'Hecho'])
+    const no = await as(ines, '/board')
+    assert.deepEqual([no.status, no.body.codigo, no.body.modulo], [403, 'modulo_sin_acceso', 'tablero'])
+    assert.equal((await as(ines, '/board/cards', { body: { columnId: b.columns[0].id, title: 'x' } })).status, 403)
+    assert.equal((await as(tomas, '/board')).status, 200)
+    const members = (await as(tomas, '/board/members')).body.map((u: any) => u.name)
+    assert.ok(members.includes('Tomas') && members.includes('Elis') && !members.includes('Ines') && !members.includes('Bruno'), members.join())
+  })
+
+  it('columnas: crear al final o tras after_id, renombrar, reordenar; validación', async () => {
+    const a = await as(elis, '/board/columns', { body: { name: 'Bloqueado' } })
+    assert.equal(a.status, 201, JSON.stringify(a.body))
+    const top = await as(elis, '/board/columns', { body: { name: 'Ideas', afterId: null } })
+    assert.equal(top.status, 201)
+    const hecho = await col('Hecho')
+    assert.equal((await as(elis, '/board/columns', { body: { name: 'Tras hecho', afterId: hecho.id } })).status, 201)
+    assert.deepEqual((await boardOf()).columns.map((c: any) => c.name), ['Ideas', 'Por hacer', 'En curso', 'En revisión', 'Hecho', 'Tras hecho', 'Bloqueado'])
+    assert.equal((await as(elis, `/board/columns/${top.body.id}`, { method: 'PATCH', body: { name: 'Ideas sueltas', afterId: a.body.id } })).status, 200)
+    assert.deepEqual((await boardOf()).columns.map((c: any) => c.name).slice(-2), ['Bloqueado', 'Ideas sueltas'])
+    assert.equal((await as(elis, '/board/columns', { body: { name: 'x'.repeat(61) } })).status, 400)
+    assert.equal((await as(elis, '/board/columns', { body: { name: 'X', afterId: NOPE } })).status, 400)
+    assert.equal((await as(elis, `/board/columns/${top.body.id}`, { method: 'PATCH', body: {} })).status, 400)
+    assert.equal((await as(elis, `/board/columns/${NOPE}`, { method: 'PATCH', body: { name: 'Y' } })).status, 404)
+    assert.equal((await as(elis, `/board/columns/${top.body.id}`, { method: 'DELETE' })).status, 204)
+  })
+
+  it('tarjetas: orden al crear (final / arriba / tras after_id), mover entre y dentro de columnas; solo cambiar de columna avisa', async () => {
+    const ph = (await col('Por hacer')).id
+    const ec = (await col('En curso')).id
+    const A = await newCard(ph, 'A')
+    assert.deepEqual([A.priority, A.assignee, A.client, A.comments, A.archivedAt, A.createdBy.name], ['media', null, null, 0, null, 'Elis'])
+    const B = await newCard(ph, 'B')
+    const C = await newCard(ph, 'C')
+    await newCard(ph, 'D', { afterId: null })
+    const E = await newCard(ph, 'E', { afterId: A.id, priority: 'urgente', dueDate: '2026-12-01', description: '  Detalle  ' })
+    assert.deepEqual([E.priority, E.dueDate, E.description], ['urgente', '2026-12-01', 'Detalle'])
+    assert.deepEqual(await titles('Por hacer'), ['D', 'A', 'E', 'B', 'C'])
+    const nueva = await acts('tarjeta_nueva', A.id)
+    assert.equal(nueva.length, 1)
+    assert.equal(nueva[0].texto, 'Elis añadió la tarjeta «A» en Por hacer')
+
+    const m = await move(C.id, ec, null)
+    assert.equal(m.status, 200, JSON.stringify(m.body))
+    assert.equal(m.body.columnId, ec)
+    assert.equal(m.full.updatedAt, C.updatedAt, 'mover no cambia la versión del contenido')
+    assert.equal((await acts('tarjeta_movida', C.id))[0].texto, 'Elis movió la tarjeta «C» a En curso')
+    assert.equal((await move(B.id, ph, (await col('Por hacer')).cards[0].id)).status, 200) // B tras D, misma columna
+    assert.deepEqual(await titles('Por hacer'), ['D', 'B', 'A', 'E'])
+    assert.equal((await move(B.id, ph)).status, 200) // al final
+    assert.deepEqual(await titles('Por hacer'), ['D', 'A', 'E', 'B'])
+    assert.equal((await acts('tarjeta_movida', B.id)).length, 0, 'reordenar en la misma columna no avisa')
+    assert.equal((await move(A.id, ec, A.id)).status, 400) // tras sí misma
+    assert.equal((await move(A.id, ec, B.id)).status, 400) // B no está en la columna destino
+    assert.equal((await move(A.id, NOPE)).status, 404)
+    assert.equal((await move(NOPE, ec)).status, 404)
+    assert.equal((await as(elis, '/board/cards', { body: { columnId: ph, title: '' } })).status, 400)
+    assert.equal((await as(elis, '/board/cards', { body: { columnId: ph, title: 'x'.repeat(201) } })).status, 400)
+    assert.equal((await as(elis, '/board/cards', { body: { columnId: ph, title: 'x', priority: 'maxima' } })).status, 400)
+  })
+
+  it('renumera la columna tras muchos arrastres al mismo hueco (scale <= 10) sin perder el orden', async () => {
+    const c = (await as(elis, '/board/columns', { body: { name: 'Arrastres' } })).body.id
+    const P = await newCard(c, 'P')
+    await newCard(c, 'Q')
+    const X = await newCard(c, 'X')
+    const Y = await newCard(c, 'Y')
+    for (let i = 0; i < 30; i++) assert.equal((await move(i % 2 ? Y.id : X.id, c, P.id)).status, 200)
+    assert.deepEqual(await titles('Arrastres'), ['P', 'Y', 'X', 'Q'])
+    const { rows } = await admin.query('SELECT max(scale(position))::int AS s, count(DISTINCT position)::int AS n FROM board_cards WHERE column_id = $1', [c])
+    assert.ok(rows[0].s <= 10, `scale ${rows[0].s}`)
+    assert.equal(rows[0].n, 4)
+  })
+
+  it('editar con If-Match (409 si cambió), archivar/desarchivar, responsable y cliente validados', async () => {
+    const ph = (await col('Por hacer')).id
+    const k = await newCard(ph, 'Editable')
+    const stale = k.updatedAt
+    const ok = await as(elis, `/board/cards/${k.id}`, { method: 'PATCH', body: { title: 'Editada', description: '' }, headers: { 'if-match': stale } })
+    assert.equal(ok.status, 200, JSON.stringify(ok.body))
+    assert.deepEqual([ok.body.title, ok.body.description], ['Editada', null])
+    assert.notEqual(ok.full.updatedAt, stale)
+    const conf = await as(elis, `/board/cards/${k.id}`, { method: 'PATCH', body: { priority: 'alta' }, headers: { 'if-match': stale } })
+    assert.deepEqual([conf.status, conf.body.codigo], [409, 'conflicto'])
+    assert.equal((await as(elis, `/board/cards/${k.id}`, { method: 'PATCH', body: {} })).status, 400)
+
+    const asg = await as(elis, `/board/cards/${k.id}`, { method: 'PATCH', body: { assigneeId: ids.Tomas } })
+    assert.equal(asg.status, 200, JSON.stringify(asg.body))
+    assert.deepEqual([asg.body.assignee.id, asg.body.assignee.name], [ids.Tomas, 'Tomas'])
+    assert.equal((await acts('tarjeta_asignada', k.id))[0].texto, 'Elis asignó la tarjeta «Editada» a Tomas')
+    assert.equal((await as(elis, `/board/cards/${k.id}`, { method: 'PATCH', body: { assigneeId: ids.Tomas } })).status, 200)
+    assert.equal((await acts('tarjeta_asignada', k.id)).length, 1, 'el mismo responsable no vuelve a avisar')
+    for (const who of [ids.Ines, ids.Bruno, NOPE]) {
+      const r = await as(elis, `/board/cards/${k.id}`, { method: 'PATCH', body: { assigneeId: who } })
+      assert.deepEqual([r.status, r.body.codigo], [400, 'responsable_invalido'], who)
+    }
+    assert.equal((await as(elis, '/board/cards', { body: { columnId: ph, title: 'x', assigneeId: ids.Ines } })).status, 400)
+    assert.equal((await as(elis, `/board/cards/${k.id}`, { method: 'PATCH', body: { assigneeId: ids.Elis } })).status, 200) // ADMIN: siempre
+
+    const cli = await as(elis, '/clients', { body: { name: 'Cliente Tablero', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] } })
+    assert.equal(cli.status, 201, JSON.stringify(cli.body))
+    ids.cliente = cli.body.id
+    const ajeno = await call('/clients', { cookie: bruno, headers: { 'x-tenant-id': dos }, body: { name: 'Cliente de Dos', avatar: 'x', initialDate: '2026-01-01', items: [], charges: [] } })
+    assert.equal(ajeno.status, 201, JSON.stringify(ajeno.body))
+    ids.clienteDos = ajeno.body.id
+    assert.deepEqual((await as(elis, `/board/cards/${k.id}`, { method: 'PATCH', body: { clientId: ids.cliente } })).body.client, { id: ids.cliente, name: 'Cliente Tablero' })
+    assert.equal((await as(elis, `/board/cards/${k.id}`, { method: 'PATCH', body: { clientId: ids.clienteDos } })).status, 404)
+    assert.equal((await as(elis, '/board/cards', { body: { columnId: ph, title: 'x', clientId: ids.clienteDos } })).status, 404)
+
+    const before = (await as(elis, `/board/cards/${k.id}`)).full.updatedAt
+    const arch = await as(elis, `/board/cards/${k.id}/archive`, { body: {} })
+    assert.equal(arch.status, 200)
+    assert.ok(arch.body.archivedAt)
+    assert.ok(!(await titles('Por hacer')).includes('Editada'))
+    assert.ok((await as(elis, '/board/cards/archived')).body.some((x: any) => x.id === k.id))
+    const un = await as(elis, `/board/cards/${k.id}/unarchive`, { body: {} })
+    assert.deepEqual([un.body.archivedAt, un.full.updatedAt], [null, before])
+    assert.ok((await titles('Por hacer')).includes('Editada'))
+    ids.editable = k.id
+  })
+
+  it('comentarios: cualquiera con el módulo comenta; editar/borrar solo el autor o un ADMIN (403)', async () => {
+    const k = ids.editable
+    const c1 = await as(tomas, `/board/cards/${k}/comments`, { body: { body: 'Hola desde Tomas' } })
+    assert.equal(c1.status, 201, JSON.stringify(c1.body))
+    assert.deepEqual([c1.body.author.name, c1.body.editedAt, c1.body.cardId], ['Tomas', null, k])
+    assert.equal((await acts('tarjeta_comentada', k))[0].texto, 'Tomas comentó la tarjeta «Editada»')
+    const c2 = (await as(elis, `/board/cards/${k}/comments`, { body: { body: 'De Elis' } })).body
+    assert.equal((await as(elis, `/board/cards/${k}`)).body.comments, 2)
+    assert.equal((await as(tomas, `/board/comments/${c2.id}`, { method: 'PATCH', body: { body: 'pisado' } })).status, 403)
+    assert.equal((await as(tomas, `/board/comments/${c2.id}`, { method: 'DELETE' })).status, 403)
+    const ed = await as(elis, `/board/comments/${c1.body.id}`, { method: 'PATCH', body: { body: 'Corregido por admin' } })
+    assert.deepEqual([ed.status, ed.body.body, typeof ed.body.editedAt], [200, 'Corregido por admin', 'string'])
+    assert.equal((await as(tomas, `/board/comments/${c1.body.id}`, { method: 'PATCH', body: { body: 'Mío' } })).status, 200)
+    assert.equal((await as(tomas, `/board/cards/${k}/comments`, { body: { body: ' ' } })).status, 400)
+    assert.equal((await as(tomas, `/board/cards/${k}/comments`, { body: { body: 'x'.repeat(4001) } })).status, 400)
+    assert.deepEqual((await as(tomas, `/board/cards/${k}/comments`)).body.map((m: any) => m.body), ['Mío', 'De Elis'])
+    assert.equal((await as(tomas, `/board/comments/${c1.body.id}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await as(elis, `/board/cards/${k}`)).body.comments, 1)
+    assert.equal((await as(elis, `/board/comments/${NOPE}`, { method: 'DELETE' })).status, 404)
+  })
+
+  it('aislamiento: nada del tablero de HAYAI se ve ni se toca desde otro tenant', async () => {
+    const k = ids.editable
+    const hph = (await col('Por hacer')).id
+    const dph = (await inDos('/board')).body.columns[0].id
+    assert.ok((await inDos('/board')).body.columns.every((c: any) => c.cards.length === 0))
+    const probes: [string, string, unknown?][] = [
+      ['GET', `/board/cards/${k}`], ['PATCH', `/board/cards/${k}`, { title: 'Robada' }], ['POST', `/board/cards/${k}/move`, { columnId: dph }],
+      ['POST', `/board/cards/${k}/archive`, {}], ['DELETE', `/board/cards/${k}`], ['GET', `/board/cards/${k}/comments`], ['POST', `/board/cards/${k}/comments`, { body: 'x' }],
+      ['PATCH', `/board/columns/${hph}`, { name: 'Robada' }], ['DELETE', `/board/columns/${hph}`], ['POST', '/board/cards', { columnId: hph, title: 'Intrusa' }],
+    ]
+    for (const [method, path, body] of probes) assert.equal((await inDos(path, { method, body })).status, 404, `${method} ${path}`)
+    const own = (await inDos('/board/cards', { body: { columnId: dph, title: 'De Dos' } })).body
+    assert.equal((await move(own.id, hph)).status, 404) // desde HAYAI no existe
+    assert.equal((await inDos(`/board/cards/${own.id}/move`, { body: { columnId: hph } })).status, 404) // ni la columna de HAYAI desde Dos
+    assert.equal((await inDos(`/board/cards/${own.id}`, { method: 'PATCH', body: { clientId: ids.cliente } })).status, 404)
+    assert.ok(!(await as(elis, '/activity?per_page=100')).body.data.some((a: any) => a.tarjeta_id === own.id))
+    assert.equal((await admin.query('SELECT title FROM board_cards WHERE id = $1', [k])).rows[0].title, 'Editada')
+  })
+
+  it('papelera: tarjeta con comentarios, columna con sus tarjetas (archivadas incluidas), cliente borrado y columna borrada', async () => {
+    const trashOf = async (entity: string, label: string) => (await as(elis, '/trash')).body.find((t: any) => t.entity === entity && t.label === label)
+    const restore = async (entity: string, label: string) => as(elis, `/trash/${(await trashOf(entity, label)).id}/restore`, { body: {} })
+    const k = ids.editable // con 1 comentario y el cliente Cliente Tablero
+    assert.equal((await as(elis, `/board/cards/${k}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await as(elis, `/board/cards/${k}`)).status, 404)
+    assert.match((await trashOf('tarjeta', 'Editada')).detail, /Tarjeta de «Por hacer», 1 comentario/)
+    assert.equal((await restore('tarjeta', 'Editada')).status, 200)
+    const back = (await as(elis, `/board/cards/${k}`)).body
+    assert.deepEqual([back.comments, back.client?.id, back.columnId], [1, ids.cliente, (await col('Por hacer')).id])
+
+    // Columna con una tarjeta archivada: se va todo junto y vuelve todo junto.
+    const cid = (await as(elis, '/board/columns', { body: { name: 'Temporal' } })).body.id
+    const t1 = await newCard(cid, 'T1')
+    const t2 = await newCard(cid, 'T2')
+    await as(elis, `/board/cards/${t2.id}/archive`, { body: {} })
+    await as(elis, `/board/cards/${t1.id}/comments`, { body: { body: 'nota' } })
+    assert.equal((await as(elis, `/board/columns/${cid}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await admin.query('SELECT count(*)::int AS n FROM board_cards WHERE column_id = $1', [cid])).rows[0].n, 0)
+    assert.match((await trashOf('columna', 'Temporal')).detail, /2 tarjetas/)
+    assert.equal((await restore('columna', 'Temporal')).status, 200)
+    assert.deepEqual(await titles('Temporal'), ['T1'])
+    assert.notEqual((await as(elis, `/board/cards/${t2.id}`)).body.archivedAt, null)
+    assert.equal((await as(elis, `/board/cards/${t1.id}`)).body.comments, 1)
+
+    // Tarjeta cuya columna ya no está => 409; restaurada la columna, la tarjeta vuelve.
+    assert.equal((await as(elis, `/board/cards/${t1.id}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await as(elis, `/board/columns/${cid}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await restore('tarjeta', 'T1')).status, 409)
+    assert.equal((await restore('columna', 'Temporal')).status, 200)
+    assert.equal((await restore('tarjeta', 'T1')).status, 200)
+    assert.deepEqual(await titles('Temporal'), ['T1'])
+
+    // Cliente a la papelera: la tarjeta pierde el enlace (SET NULL) y lo recupera al restaurar el cliente.
+    assert.equal((await as(elis, `/clients/${ids.cliente}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await as(elis, `/board/cards/${k}`)).body.client, null)
+    assert.equal((await restore('cliente', 'Cliente Tablero')).status, 200)
+    assert.deepEqual((await as(elis, `/board/cards/${k}`)).body.client, { id: ids.cliente, name: 'Cliente Tablero' })
+    // Tarjeta y luego su cliente a la papelera: la tarjeta vuelve sin cliente.
+    assert.equal((await as(elis, `/board/cards/${k}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await as(elis, `/clients/${ids.cliente}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await restore('tarjeta', 'Editada')).status, 200)
+    assert.equal((await as(elis, `/board/cards/${k}`)).body.client, null)
+  })
+
+  it('SSE: el aviso «tablero» llega solo a las pestañas del tenant con el módulo', async () => {
+    const open = async (cookie: string, tenant: string) => {
+      const ac = new AbortController()
+      const res = await fetch(`${BASE}/events?tenant=${tenant}`, { headers: { cookie, 'x-tenant-id': 'null' }, signal: ac.signal })
+      assert.equal(res.status, 200)
+      const s = { buf: '', close: () => ac.abort() }
+      const reader = res.body!.getReader()
+      void (async () => {
+        try {
+          for (;;) {
+            const { value, done } = await reader.read()
+            if (done) return
+            s.buf += new TextDecoder().decode(value)
+          }
+        } catch {
+          /* abortado */
+        }
+      })()
+      return s
+    }
+    const sE = await open(elis, HAYAI)
+    const sI = await open(ines, HAYAI)
+    const sB = await open(bruno, dos)
+    await new Promise((r) => setTimeout(r, 200))
+    const k = await newCard((await col('En curso')).id, 'En vivo')
+    const frame = `event: tablero\ndata: ${JSON.stringify({ op: 'nuevo', seccion: 'tarjetas', id: k.id })}`
+    for (let i = 0; i < 40 && !sE.buf.includes(frame); i++) await new Promise((r) => setTimeout(r, 50))
+    await new Promise((r) => setTimeout(r, 200))
+    for (const s of [sE, sI, sB]) s.close()
+    assert.ok(sE.buf.includes(frame), sE.buf)
+    assert.ok(!sI.buf.includes('event: tablero'), 'sin el módulo tablero no llega')
+    assert.ok(!sB.buf.includes('event: tablero'), 'otro tenant no lo recibe')
   })
 })

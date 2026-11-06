@@ -10,6 +10,7 @@ import { expensesRouter } from './routes/expenses.ts'
 import { keysRouter } from './routes/keys.ts'
 import { projectsRouter } from './routes/projects.ts'
 import { tasksRouter } from './routes/tasks.ts'
+import { boardRouter } from './routes/board.ts'
 import { chatRouter } from './routes/chat.ts'
 import { crmRouter } from './routes/crm.ts'
 import { hubRouter } from './routes/hub.ts'
@@ -85,6 +86,7 @@ export function createApp() {
   api.use('/projects', projectsRouter)
   api.use('/expenses', expensesRouter)
   api.use('/tasks', tasksRouter)
+  api.use('/board', boardRouter)
   api.use('/keys', keysRouter)
   api.use('/trash', trashRouter)
   api.use('/chat', chatRouter)

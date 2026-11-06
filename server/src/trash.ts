@@ -12,7 +12,7 @@ import { HttpError } from './util.ts'
 // trash (nunca con el que diga el jsonb). Solo la limpieza por fecha recorre todos los tenants.
 
 export const RETENTION_DAYS = 30
-export type Entity = 'cliente' | 'proyecto' | 'pago' | 'gasto' | 'tarea' | 'interaccion' | 'hito' | 'checklist_item' | 'mensaje'
+export type Entity = 'cliente' | 'proyecto' | 'pago' | 'gasto' | 'tarea' | 'interaccion' | 'hito' | 'checklist_item' | 'mensaje' | 'tarjeta' | 'columna'
 
 type Row = Record<string, unknown>
 type Snapshot = { root: Row; children: Record<string, Row[]>; label: string; detail: string | null }
@@ -27,10 +27,12 @@ const NOT_FOUND: Record<Entity, string> = {
   hito: 'Hito no encontrado',
   checklist_item: 'Elemento no encontrado',
   mensaje: 'Mensaje no encontrado',
+  tarjeta: 'Tarjeta no encontrada',
+  columna: 'Columna no encontrada',
 }
 
 // Tabla de cada entidad e hijos, en orden de insercion (los padres antes que los hijos). Lista cerrada: nunca viene del cliente.
-const TABLE: Record<Entity, string> = { cliente: 'clients', proyecto: 'projects', pago: 'payments', gasto: 'expenses', tarea: 'tasks', interaccion: 'interactions', hito: 'project_milestones', checklist_item: 'project_checklist', mensaje: 'chat_messages' }
+const TABLE: Record<Entity, string> = { cliente: 'clients', proyecto: 'projects', pago: 'payments', gasto: 'expenses', tarea: 'tasks', interaccion: 'interactions', hito: 'project_milestones', checklist_item: 'project_checklist', mensaje: 'chat_messages', tarjeta: 'board_cards', columna: 'board_columns' }
 const INSERT_ORDER: Record<Entity, string[]> = {
   cliente: ['clients', 'client_items', 'interactions', 'payments', 'payment_receipts', 'systems', 'proposals', 'proposal_items', 'projects', 'project_milestones', 'project_checklist', 'tasks', 'expenses'],
   proyecto: ['projects', 'project_milestones', 'project_checklist', 'tasks', 'expenses'],
@@ -41,6 +43,8 @@ const INSERT_ORDER: Record<Entity, string[]> = {
   hito: ['project_milestones'],
   checklist_item: ['project_checklist'],
   mensaje: ['chat_messages', 'chat_mentions'],
+  tarjeta: ['board_cards', 'board_card_comments'],
+  columna: ['board_columns', 'board_cards', 'board_card_comments'],
 }
 
 /** `sql` filtra con `tenant_id = $T`: $T es el tenant en curso, que se agrega como ultimo parametro. */
@@ -76,6 +80,8 @@ async function snapshot(c: PoolClient, entity: Entity, entityId: string): Promis
       project_checklist: await rows(c, 'SELECT * FROM project_checklist WHERE project_id = ANY($1::uuid[]) AND tenant_id = $T', [projectIds]),
       tasks: await rows(c, 'SELECT * FROM tasks WHERE project_id = ANY($1::uuid[]) AND tenant_id = $T', [projectIds]),
       expenses: await rows(c, 'SELECT * FROM expenses WHERE (client_id = $1 OR project_id = ANY($2::uuid[])) AND tenant_id = $T', [entityId, projectIds]),
+      // Las tarjetas del tablero NO se borran con el cliente (su FK lo suelta: SET NULL): se guarda cuáles eran para volver a enlazarlas.
+      board_card_links: await rows(c, 'SELECT id, client_id FROM board_cards WHERE client_id = $1 AND tenant_id = $T', [entityId]),
     }
     const parts = [
       plural(children.payments.length, 'cobro', 'cobros'),
@@ -117,6 +123,19 @@ async function snapshot(c: PoolClient, entity: Entity, entityId: string): Promis
     const flat = String(root.body).replace(/\s+/g, ' ')
     return { root, children: { chat_mentions: mentions }, label: flat.length > 80 ? `${flat.slice(0, 80)}…` : flat, detail: `Mensaje de ${author ?? 'un astronauta'} en el chat${mentions.length ? ` (${plural(mentions.length, 'mención', 'menciones')})` : ''}` }
   }
+  if (entity === 'tarjeta') {
+    // Los comentarios mueren con la tarjeta (CASCADE): viajan en la foto.
+    const comments = await rows(c, 'SELECT * FROM board_card_comments WHERE card_id = $1 AND tenant_id = $T', [entityId])
+    const col = (await one(c, 'SELECT name FROM board_columns WHERE id = $1 AND tenant_id = $T', [root.column_id]))?.name
+    const parts = [col && `Tarjeta de «${col}»`, comments.length ? plural(comments.length, 'comentario', 'comentarios') : null]
+    return { root, children: { board_card_comments: comments }, label: String(root.title), detail: parts.filter(Boolean).join(', ') || null }
+  }
+  if (entity === 'columna') {
+    // La columna se lleva TODAS sus tarjetas (archivadas incluidas) y sus comentarios.
+    const cards = await rows(c, 'SELECT * FROM board_cards WHERE column_id = $1 AND tenant_id = $T', [entityId])
+    const comments = await rows(c, 'SELECT * FROM board_card_comments WHERE card_id = ANY($1::uuid[]) AND tenant_id = $T', [cards.map((k) => k.id)])
+    return { root, children: { board_cards: cards, board_card_comments: comments }, label: String(root.name), detail: `Columna del tablero, ${plural(cards.length, 'tarjeta', 'tarjetas')}` }
+  }
   const project = (await one(c, 'SELECT name FROM projects WHERE id = $1 AND tenant_id = $T', [root.project_id]))?.name
   if (entity === 'hito') {
     // Borrar el hito suelta sus tareas (SET NULL): se guarda cuales eran para volver a colgarlas al restaurar.
@@ -154,6 +173,9 @@ export async function sendToTrash(entity: Entity, entityId: string, userId: stri
       await one(c, 'DELETE FROM clients WHERE id = $1 AND tenant_id = $T', [entityId]) // client_items por CASCADE
     } else if (entity === 'proyecto') {
       await deleteProjectRows(c, 'id = $1', [entityId])
+    } else if (entity === 'columna') {
+      await one(c, 'DELETE FROM board_cards WHERE column_id = $1 AND tenant_id = $T', [entityId]) // la FK es RESTRICT; comentarios por CASCADE
+      await one(c, 'DELETE FROM board_columns WHERE id = $1 AND tenant_id = $T', [entityId])
     } else {
       await one(c, `DELETE FROM ${TABLE[entity]} WHERE id = $1 AND tenant_id = $T`, [entityId])
     }
@@ -224,6 +246,19 @@ export async function restoreFromTrash(trashId: string) {
       if (entity === 'tarea' && !(await exists(c, 'projects', root.project_id))) throw missing('el proyecto de esta tarea')
       if (entity === 'mensaje' && !(await exists(c, 'users', root.author_id))) throw missing('el autor de este mensaje')
       if (entity === 'interaccion' && !(await exists(c, 'clients', root.client_id))) throw missing('el cliente de esta interacción')
+      if (entity === 'tarjeta' && !(await exists(c, 'board_columns', root.column_id))) throw missing('la columna de esta tarjeta')
+      if (entity === 'columna' && !(await exists(c, 'boards', root.board_id))) throw missing('el tablero de esta columna')
+      if (entity === 'tarjeta' || entity === 'columna') {
+        // El cliente o el responsable de una tarjeta pueden haberse ido (papelera, baja): la tarjeta vuelve sin ese enlace.
+        const cards = entity === 'tarjeta' ? [root] : (children.board_cards ?? [])
+        const ids = (k: string) => [...new Set(cards.map((r) => r[k]).filter(Boolean))]
+        const clients = new Set((await c.query('SELECT id FROM clients WHERE id = ANY($1::uuid[]) AND tenant_id = $2', [ids('client_id'), tid()])).rows.map((r) => r.id))
+        const users = new Set((await c.query('SELECT id FROM users WHERE id = ANY($1::uuid[])', [ids('assignee_id')])).rows.map((r) => r.id))
+        for (const k of cards) {
+          if (k.client_id && !clients.has(k.client_id)) k.client_id = null
+          if (k.assignee_id && !users.has(k.assignee_id)) k.assignee_id = null
+        }
+      }
       if (entity === 'gasto') {
         if (!(await exists(c, 'clients', root.client_id))) throw missing('el cliente de este gasto')
         if (!(await exists(c, 'projects', root.project_id))) throw missing('el proyecto de este gasto')
@@ -242,6 +277,9 @@ export async function restoreFromTrash(trashId: string) {
           `UPDATE tasks t SET milestone_id = $1 WHERE t.id = ANY($2::uuid[]) AND t.milestone_id IS NULL AND t.project_id = $3 AND t.tenant_id = $4`,
           [t.entity_id, children.task_links.map((l) => l.id), root.project_id, t.tenant_id],
         )
+      // Un cliente restaurado vuelve a quedar enlazado a sus tarjetas del tablero (las que sigan existiendo y no tengan otro cliente).
+      if (entity === 'cliente' && children.board_card_links?.length)
+        await c.query('UPDATE board_cards SET client_id = $1 WHERE id = ANY($2::uuid[]) AND client_id IS NULL AND tenant_id = $3', [t.entity_id, children.board_card_links.map((l) => l.id), t.tenant_id])
       if (entity === 'mensaje') await notifyChat(c, 'nuevo', t.entity_id as string) // reaparece en el canal de todos
       await c.query('DELETE FROM trash WHERE id = $1 AND tenant_id = $2', [trashId, t.tenant_id])
       return { entidad: entity, id: t.entity_id as string, nombre: t.label as string, restaurado: true }

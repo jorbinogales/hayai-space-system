@@ -6,7 +6,7 @@ import type { Pool, PoolClient } from 'pg'
 import { ALL_TENANTS } from './db.ts'
 import { tid } from './tenant.ts'
 
-export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'tarea_reasignada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido', 'lead_meta', 'acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado', 'version_nueva', 'feed_nuevo'] as const
+export const KINDS = ['cliente_nuevo', 'posible_nuevo', 'tarea_nueva', 'tarea_completada', 'tarea_reasignada', 'cobro_cobrado', 'cambio_etapa', 'cliente_ganado', 'cliente_perdido', 'lead_meta', 'acuerdo_nuevo', 'sistema_caido', 'sistema_recuperado', 'version_nueva', 'feed_nuevo', 'tarjeta_nueva', 'tarjeta_movida', 'tarjeta_comentada', 'tarjeta_asignada'] as const
 export type ActivityKind = (typeof KINDS)[number]
 
 /** Avisos que trae el sistema (no un socio): le llegan a TODOS, también a quien figura como actor. */
@@ -37,6 +37,8 @@ export type ActivityInput = {
   clientId?: string | null
   projectId?: string | null
   taskId?: string | null
+  /** Tablero: la tarjeta (sin FK, como las demás: el aviso sobrevive a la tarjeta). */
+  cardId?: string | null
   /** 'web' o 'api:<nombre de la llave>' (auditoria; no se muestra en el texto). */
   via?: string
 }
@@ -45,9 +47,9 @@ export async function recordActivity(db: Pool | PoolClient, a: ActivityInput): P
   // Limpieza oportunista, sin tareas programadas (como la papelera).
   await db.query(`DELETE FROM activity WHERE created_at < now() - make_interval(days => $1) ${ALL_TENANTS}`, [RETENTION_DAYS])
   const { rows } = await db.query(
-    `INSERT INTO activity (tenant_id, kind, actor_id, client_id, project_id, task_id, subject, detail, via)
-     VALUES ($9, $1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-    [a.kind, a.actorId, a.clientId ?? null, a.projectId ?? null, a.taskId ?? null, a.subject, a.detail ?? null, a.via ?? 'web', tid()],
+    `INSERT INTO activity (tenant_id, kind, actor_id, client_id, project_id, task_id, card_id, subject, detail, via)
+     VALUES ($9, $1, $2, $3, $4, $5, $10, $6, $7, $8) RETURNING id`,
+    [a.kind, a.actorId, a.clientId ?? null, a.projectId ?? null, a.taskId ?? null, a.subject, a.detail ?? null, a.via ?? 'web', tid(), a.cardId ?? null],
   )
   await db.query('SELECT pg_notify($1, $2)', [CHANNEL, String(rows[0].id)])
   return Number(rows[0].id)
@@ -86,6 +88,14 @@ export function activityText(kind: ActivityKind, actor: string, subject: string,
       return `El sistema «${subject}»${detail ? ` de ${detail}` : ''} dejó de responder`
     case 'sistema_recuperado':
       return `El sistema «${subject}»${detail ? ` de ${detail}` : ''} volvió a responder`
+    case 'tarjeta_nueva':
+      return `${actor} añadió la tarjeta «${subject}»${detail ? ` en ${detail}` : ''}`
+    case 'tarjeta_movida':
+      return `${actor} movió la tarjeta «${subject}»${detail ? ` a ${detail}` : ''}`
+    case 'tarjeta_comentada':
+      return `${actor} comentó la tarjeta «${subject}»`
+    case 'tarjeta_asignada':
+      return `${actor} asignó la tarjeta «${subject}»${detail ? ` a ${detail}` : ''}`
   }
 }
 
@@ -103,9 +113,10 @@ export const activityOut = (r: any, viewerId?: string) => ({
   cliente_id: (r.client_id ?? null) as string | null,
   proyecto_id: (r.project_id ?? null) as string | null,
   tarea_id: (r.task_id ?? null) as string | null,
+  tarjeta_id: (r.card_id ?? null) as string | null,
   fecha: (r.created_at as Date).toISOString(),
 })
 
-export const ACTIVITY_SELECT = `SELECT a.id, a.kind, a.actor_id, a.client_id, a.project_id, a.task_id, a.subject, a.detail, a.created_at,
+export const ACTIVITY_SELECT = `SELECT a.id, a.kind, a.actor_id, a.client_id, a.project_id, a.task_id, a.card_id, a.subject, a.detail, a.created_at,
     u.name AS actor_name, u.avatar AS actor_avatar
   FROM activity a JOIN users u ON u.id = a.actor_id`

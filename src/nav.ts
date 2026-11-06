@@ -1,7 +1,7 @@
 // Enlaces dentro de la app. El hash ya decide la pantalla (#clientes, #tareas...); `#clientes/<id>` abre ademas el cajon de ese cliente.
 import { useSyncExternalStore } from 'react'
 
-export type Target = { screen: 'clientes' | 'proyectos' | 'tareas' | 'finanzas'; clientId?: string | null }
+export type Target = { screen: 'clientes' | 'proyectos' | 'tareas' | 'tablero' | 'finanzas'; clientId?: string | null }
 
 /** Id de cliente del hash actual (`#clientes/<id>`), o null. */
 export const hashClientId = (): string | null => {

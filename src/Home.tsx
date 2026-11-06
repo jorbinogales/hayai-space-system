@@ -4,6 +4,7 @@ import { toScreen } from './scene'
 import { money, summary, useAllClients, useClients } from './store'
 import { projectCounts, useProjects } from './projectData'
 import { useExpenses } from './expenseData'
+import { useBoard } from './boardData'
 import { owedTotal, yearFinance } from './finance'
 import { taskCounts, useTasks } from './taskData'
 import { Icon, ZoomControls } from './ui'
@@ -36,6 +37,9 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
   const funnel = useLoaded(() => (can('marketing') ? loadFunnel(90) : Promise.resolve(null)), []).data
   const hubData = useLoaded(() => (can('hub') ? loadHub() : Promise.resolve(null)), []).data
   const tk = taskCounts(useTasks())
+  const { board } = useBoard()
+  const boardCards = board?.columns.reduce((n, c) => n + c.cards.length, 0) ?? 0
+  const boardLines = board ? [`${boardCards} ${boardCards === 1 ? 'tarjeta' : 'tarjetas'}`, `${board.columns.length} ${board.columns.length === 1 ? 'columna' : 'columnas'}`] : ['Tarjetas y columnas', 'Estilo kanban']
   const allClients = useAllClients()
   const fin = yearFinance(allClients, expenses)
   const porCobrar = owedTotal(allClients)
@@ -183,7 +187,9 @@ export default function Home({ shown, onOpen }: { shown: boolean; onOpen: (s: Sc
                   ? { title: 'Marketing', lines: marketingLines(funnel) }
                   : p.key === 'finanzas'
                     ? { title: 'Finanzas', lines: [`${money(fin.ingresos)} ingresos`, `${money(fin.gastos)} gastos`, `${money(fin.ingresos - fin.gastos)} balance`] }
-                    : { title: 'Tareas', lines: [`${tk.pendientes} por hacer`, `${tk.completadas} completadas`] }
+                    : p.key === 'tablero'
+                      ? { title: 'Tablero', lines: boardLines }
+                      : { title: 'Tareas', lines: [`${tk.pendientes} por hacer`, `${tk.completadas} completadas`] }
           return (
             <div
               key={p.key}

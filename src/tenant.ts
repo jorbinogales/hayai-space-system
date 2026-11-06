@@ -3,7 +3,7 @@
 // proposito: api.ts lo lee y nada de aqui depende de api.ts.
 import { useSyncExternalStore } from 'react'
 
-export const MODULES = ['hub', 'feed', 'clientes', 'crm', 'cobros', 'proyectos', 'tareas', 'finanzas', 'marketing', 'sistemas', 'chat', 'integraciones', 'papelera'] as const
+export const MODULES = ['hub', 'feed', 'clientes', 'crm', 'cobros', 'proyectos', 'tareas', 'tablero', 'finanzas', 'marketing', 'sistemas', 'chat', 'integraciones', 'papelera'] as const
 export type ModuleKey = (typeof MODULES)[number]
 
 export const MODULE_LABEL: Record<ModuleKey, string> = {
@@ -14,6 +14,7 @@ export const MODULE_LABEL: Record<ModuleKey, string> = {
   cobros: 'Cobros',
   proyectos: 'Proyectos',
   tareas: 'Tareas',
+  tablero: 'Tablero',
   finanzas: 'Finanzas',
   marketing: 'Marketing',
   sistemas: 'Sistemas',
@@ -36,6 +37,7 @@ export const SCREEN_MODULE: Record<string, ModuleKey | null> = {
   clientes: 'clientes',
   proyectos: 'proyectos',
   tareas: 'tareas',
+  tablero: 'tablero',
   finanzas: 'finanzas',
   gastos: 'finanzas',
   marketing: 'marketing',

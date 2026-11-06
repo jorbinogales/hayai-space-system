@@ -6,9 +6,10 @@ import { loadUsers, resetUsers } from './users'
 import { resetStages } from './clientLog'
 import { resetFeedState } from './feedData'
 import { closeProposal } from './proposalData'
+import { loadBoard, resetBoard } from './boardData'
 
 /** Carga todos los datos del sistema desde el servidor (tras iniciar sesion). */
-export const loadAll = () => Promise.all([loadUsers(), loadClients(), loadProjects(), loadExpenses(), loadTasks()]).then(() => undefined)
+export const loadAll = () => Promise.all([loadUsers(), loadClients(), loadProjects(), loadExpenses(), loadTasks(), loadBoard().catch(() => {})]) // el tablero que falle no impide entrar: su pantalla ofrece reintentar.then(() => undefined)
 
 /** Vacia las copias en memoria (al cerrar sesion o cambiar de espacio de trabajo): nada del anterior debe quedar a la vista. */
 export function resetAll() {
@@ -17,6 +18,7 @@ export function resetAll() {
   resetProjects()
   resetExpenses()
   resetTasks()
+  resetBoard()
   resetStages()
   resetFeedState()
   closeProposal()

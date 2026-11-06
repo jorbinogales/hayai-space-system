@@ -952,10 +952,10 @@ describe('MCP', () => {
     for (const s of ['hayai_proyecto_actualizar', 'hayai_papelera_listar', 'hayai_papelera_restaurar']) assert.ok(names.includes(s), s)
     for (const s of ['hayai_interacciones_listar', 'hayai_interaccion_registrar', 'hayai_interaccion_actualizar', 'hayai_pipeline_resumen', 'hayai_notificaciones_listar', 'hayai_notificaciones_marcar_leidas', 'hayai_buscar', 'hayai_actividad_listar', 'hayai_actividad_marcar_leida'])
       assert.ok(names.includes(s), s)
-    assert.equal(names.length, 106) // lectura + escritura
+    assert.equal(names.length, 110) // lectura + escritura
     assert.ok(!names.some((x) => /eliminar/.test(x)), 'la llave sin borrado no ve herramientas de borrar')
     const full = (await rpc('tools/list', {}, KEY_D)).body.result.tools
-    assert.equal(full.length, 118)
+    assert.equal(full.length, 122)
     assert.equal(full.filter((t: any) => /eliminar|desactivar/.test(t.name) && t.annotations.destructiveHint === true).length, 10)
     const crear = r.body.result.tools.find((t: any) => t.name === 'hayai_tarea_crear')
     assert.deepEqual([...crear.inputSchema.required].sort(), ['proyecto_id', 'titulo'])
@@ -2081,7 +2081,7 @@ describe('Actividad del equipo', () => {
     assert.equal(ev[0].texto, 'Leandro añadió un cliente nuevo: Actividad Panadería')
     assert.equal(ev[0].actor.nombre, 'Leandro')
     assert.equal(ev[0].cliente_id, clienteId)
-    assert.deepEqual(Object.keys(ev[0]).sort(), ['actor', 'cliente_id', 'detalle', 'fecha', 'id', 'leida', 'propia', 'proyecto_id', 'sujeto', 'tarea_id', 'texto', 'tipo'])
+    assert.deepEqual(Object.keys(ev[0]).sort(), ['actor', 'cliente_id', 'detalle', 'fecha', 'id', 'leida', 'propia', 'proyecto_id', 'sujeto', 'tarea_id', 'tarjeta_id', 'texto', 'tipo'])
     assert.ok(!/growi|muse|api/i.test(ev[0].texto), 'el texto no menciona la herramienta')
     const { rows } = await admin.query('SELECT via FROM activity WHERE id = $1', [ev[0].id])
     assert.equal(rows[0].via, 'api:growi', 'la vía se guarda como dato de auditoría')
@@ -7838,5 +7838,44 @@ describe('multitenant (API v1, MCP y SSE)', () => {
     const viaQuery = await fetch(`${ROOT}/api/events?tenant=${otro}`, { headers: { cookie, 'x-tenant-id': 'null' }, signal: ok.signal }) // Jorbi es ADMIN: entra
     assert.equal(viaQuery.status, 200)
     ok.abort()
+  })
+})
+
+describe('tablero (API v1 y MCP)', () => {
+  let n = 0
+  const tool = async (name: string, args: unknown) => {
+    const r = await http(`${ROOT}/mcp`, { key: KEY, headers: { accept: 'application/json, text/event-stream' }, body: { jsonrpc: '2.0', id: ++n, method: 'tools/call', params: { name, arguments: args } } })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    return r.body.result
+  }
+
+  it('listar, crear, mover y comentar; la posición la decide el servidor', async () => {
+    const t = await api('/tablero')
+    assert.equal(t.status, 200, JSON.stringify(t.body))
+    const [porHacer, enCurso] = t.body.columnas
+    assert.deepEqual(t.body.columnas.map((c: any) => c.nombre), ['Por hacer', 'En curso', 'En revisión', 'Hecho'])
+    const a = await api('/tablero/tarjetas', { body: { columna_id: porHacer.id, titulo: 'Desde v1', prioridad: 'alta', responsable: 'Jorbi', vence: '2026-12-24' } })
+    assert.equal(a.status, 201, JSON.stringify(a.body))
+    assert.deepEqual([a.body.titulo, a.body.prioridad, a.body.responsable.nombre, a.body.creada_por, a.body.vence, a.body.archivada], ['Desde v1', 'alta', 'Jorbi', 'Leandro', '2026-12-24', false])
+    const b = await api('/tablero/tarjetas', { body: { columna_id: porHacer.id, titulo: 'Arriba', despues_de: null } })
+    assert.equal(b.status, 201)
+    assert.deepEqual((await api('/tablero')).body.columnas[0].tarjetas.map((k: any) => k.titulo), ['Arriba', 'Desde v1'])
+    assert.equal((await api('/tablero/tarjetas', { body: { columna_id: porHacer.id, titulo: 'x', responsable: 'Nadie' } })).status, 404)
+    const m = await api(`/tablero/tarjetas/${a.body.id}/mover`, { body: { columna_id: enCurso.id } })
+    assert.equal(m.status, 200, JSON.stringify(m.body))
+    assert.equal(m.body.columna_id, enCurso.id)
+    const c = await api(`/tablero/tarjetas/${a.body.id}/comentarios`, { body: { texto: 'Listo para revisar' } })
+    assert.deepEqual([c.status, c.body.autor, c.body.texto], [201, 'Leandro', 'Listo para revisar'])
+    assert.equal((await api(`/tablero/tarjetas/${NOPE}/comentarios`, { body: { texto: 'x' } })).status, 404)
+    const act = (await api('/actividad?per_page=100')).body.data
+    assert.ok(act.some((x: any) => x.tipo === 'tarjeta_movida' && x.tarjeta_id === a.body.id && x.texto === 'Leandro movió la tarjeta «Desde v1» a En curso'))
+
+    const mcp = JSON.parse((await tool('hayai_tarjeta_crear', { columna_id: enCurso.id, titulo: 'Desde MCP', despues_de: a.body.id })).content[0].text)
+    assert.equal(mcp.creada_por, 'Leandro')
+    const ver = JSON.parse((await tool('hayai_tablero_ver', {})).content[0].text)
+    assert.deepEqual(ver.columnas[1].tarjetas.map((k: any) => k.titulo), ['Desde v1', 'Desde MCP'])
+    const mal = await tool('hayai_tarjeta_mover', { id: mcp.id, columna_id: NOPE })
+    assert.equal(mal.isError, true)
+    assert.match(mal.content[0].text, /Columna no encontrada/)
   })
 })

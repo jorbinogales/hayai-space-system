@@ -22,6 +22,7 @@ import { gastoActualizar, gastoRegistrar, gastosListar, gastoVer } from '../serv
 import { checklistActualizar, checklistAgregar, checklistOrdenar, hitoActualizar, hitoCrear, hitosOrdenar, proyectoActualizar, proyectoCrear, proyectosListar, proyectoVer } from '../services/proyectos.ts'
 import { ofertaActualizar, ofertaCrear, ofertaDesactivar, ofertasListar, propuestaActualizar, propuestaCrear, propuestasListar, propuestaVer } from '../services/propuestas.ts'
 import { tareaActualizar, tareaCrear, tareasListar, tareaVer } from '../services/tareas.ts'
+import { tableroVer, tarjetaComentar, tarjetaCrear, tarjetaMover } from '../services/tablero.ts'
 import { MK_RUTAS } from '../services/marketingRutas.ts'
 import { conflictGuard } from '../concurrency.ts'
 import { moduleGate, V1_MODULES, V1_SUBMODULES } from '../tenant.ts'
@@ -255,6 +256,12 @@ route('get', '/tareas/:id', tareaVer)
 route('post', '/tareas', tareaCrear, 201)
 route('patch', '/tareas/:id', tareaActualizar)
 route('delete', '/tareas/:id', tareaEliminar)
+
+// Tablero (kanban): lo mínimo para un agente. La posición la calcula el servidor: despues_de = id de la tarjeta (null = arriba; sin él = al final).
+route('get', '/tablero', tableroVer)
+route('post', '/tablero/tarjetas', tarjetaCrear, 201)
+route('post', '/tablero/tarjetas/:id/mover', tarjetaMover)
+route('post', '/tablero/tarjetas/:id/comentarios', tarjetaComentar, 201)
 
 // Papelera: lo borrado se puede ver y restaurar. El borrado definitivo no existe en la API.
 route('get', '/papelera', papeleraListar)

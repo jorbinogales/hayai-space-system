@@ -27,7 +27,9 @@ const openActivity = (e: Activity) =>
       ? openFeed({ filters: { estado: 'nuevo', ...(e.detalle ? { tipo: e.detalle as FeedTipo } : {}) } })
       : e.tipo === 'tarea_nueva' || e.tipo === 'tarea_completada'
         ? go({ screen: 'tareas' })
-        : go({ screen: 'clientes', clientId: e.cliente_id })
+        : e.tipo.startsWith('tarjeta_')
+          ? go({ screen: 'tablero' })
+          : go({ screen: 'clientes', clientId: e.cliente_id })
 
 const openAlert = (a: Alert) =>
   a.tipo === 'actualizacion'
@@ -165,7 +167,7 @@ export function Notifications() {
                 {team.length === 0 ? (
                   <p className="notif-empty">
                     <b>Aún no hay movimientos del equipo.</b>
-                    Aquí verás cuando alguien añada un cliente o una tarea, o la complete.
+                    Aquí verás cuando alguien añada un cliente, una tarea o una tarjeta del tablero, o la complete.
                   </p>
                 ) : (
                   <ul>

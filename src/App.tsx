@@ -5,6 +5,7 @@ import Clients from './Clients'
 import Projects from './Projects'
 import Finances from './Finances'
 import Tasks from './Tasks'
+import Board from './Board'
 import Hub from './Hub'
 import Marketing from './Marketing'
 import { Topbar } from './ui'
@@ -24,10 +25,10 @@ import { clearAllDrafts, setDraftOwner, startUpdates, stopUpdates } from './upda
 import { UpdateHost } from './UpdateUI'
 import { setFinanceView } from './nav'
 import Versions from './Versions'
-import ToastHost from './Toast'
+import ToastHost from './ToastHost'
 import { hideSplash } from './splash'
 
-export type Screen = 'home' | 'clientes' | 'proyectos' | 'finanzas' | 'tareas' | 'hub' | 'marketing'
+export type Screen = 'home' | 'clientes' | 'proyectos' | 'finanzas' | 'tareas' | 'tablero' | 'hub' | 'marketing'
 /** A dónde se puede navegar: «gastos» ya no es una pantalla, es la vista Gastos dentro de Finanzas. */
 export type NavTarget = Screen | 'gastos'
 /** Pantallas planas: se montan encima del cosmos sin viaje 3D (el mundo se queda en el Home, tapado por la pantalla). Marketing ya no: es un planeta que viaja y se ancla a la izquierda, como Finanzas. */
@@ -35,7 +36,7 @@ export const isFlat = (s: Screen) => s === 'hub'
 const fromHash = (): Screen => {
   const h = location.hash.slice(1).split('/')[0]
   if (h === 'gastos') return 'finanzas' // enlace viejo: Gastos vive dentro de Finanzas
-  return h === 'clientes' || h === 'proyectos' || h === 'finanzas' || h === 'tareas' || h === 'hub' || h === 'marketing' ? h : 'home'
+  return h === 'clientes' || h === 'proyectos' || h === 'finanzas' || h === 'tareas' || h === 'tablero' || h === 'hub' || h === 'marketing' ? h : 'home'
 }
 
 export default function App() {
@@ -170,7 +171,7 @@ export default function App() {
 
   // las pantallas que el socio no tiene en este espacio: su planeta no se ve ni se puede tocar en el Home, y si estaba en una, vuelve al Home
   useEffect(() => {
-    world.locked = new Set((['clientes', 'proyectos', 'tareas', 'finanzas', 'marketing', 'hub'] as const).filter((k) => !canOpen(k)))
+    world.locked = new Set((['clientes', 'proyectos', 'tareas', 'tablero', 'finanzas', 'marketing', 'hub'] as const).filter((k) => !canOpen(k)))
     if (session && active && !canOpen(route)) navigate('home')
   }, [world, session, scope])
 
@@ -246,6 +247,7 @@ export default function App() {
           {ui === 'proyectos' && canOpen('proyectos') && <Projects onBack={() => navigate('home')} />}
           {ui === 'finanzas' && canOpen('finanzas') && <Finances onBack={() => navigate('home')} />}
           {ui === 'tareas' && canOpen('tareas') && <Tasks onBack={() => navigate('home')} />}
+          {ui === 'tablero' && canOpen('tablero') && <Board onBack={() => navigate('home')} />}
           {ui === 'hub' && canOpen('hub') && <Hub onBack={() => navigate('home')} onOpen={navigate} />}
           {ui === 'marketing' && canOpen('marketing') && <Marketing from={marketingFrom.current} onBack={() => navigate(marketingFrom.current)} />}
         </Fragment>

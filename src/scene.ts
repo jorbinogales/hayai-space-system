@@ -488,7 +488,7 @@ export function coreLeftTarget(w: number, h: number) {
 }
 
 /** 'hub' = el nucleo HAYAI: la pantalla del Hub lo deja centrado de fondo; la vista Feed lo pasa a la izquierda (ver World.coreMode). */
-export type WarpDest = 'clientes' | 'proyectos' | 'finanzas' | 'tareas' | 'marketing' | 'hub'
+export type WarpDest = 'clientes' | 'proyectos' | 'finanzas' | 'tareas' | 'tablero' | 'marketing' | 'hub'
 /** Donde (px) y como (inclinacion) termina el planeta destino del viaje, para que la pantalla siguiente continue sin salto. */
 export function warpTarget(key: WarpDest, w: number, h: number) {
   if (key === 'hub') {

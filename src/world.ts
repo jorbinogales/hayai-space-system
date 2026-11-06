@@ -8,7 +8,7 @@ import { fx, reduced } from './warp'
 
 const TEXTURES = [1, 2, 3, 4].map((n) => `/planets/planeta${n}.webp`)
 /** 'marketing' es una pantalla plana (sin viaje 3D): su planeta se ve en el Home y abre el planeta Marketing. */
-export type PlanetKey = 'clientes' | 'marketing' | 'proyectos' | 'tareas' | 'finanzas'
+export type PlanetKey = 'clientes' | 'marketing' | 'proyectos' | 'tareas' | 'tablero' | 'finanzas'
 /** Lo que se puede resaltar con el cursor en el Home: un planeta o el núcleo HAYAI (que abre el Hub). */
 export type HotKey = PlanetKey | 'hub'
 export const CORE_R = 2.07
@@ -37,6 +37,8 @@ export const PLANETS: {
   { key: 'proyectos', tex: 1, tint: 0xffffff, gain: 1.25, pos: [-5.13, -1.73], r: 1.14, spin: 0.12, tilt: 0.2, side: 'left', icon: 'folder', iconBg: '#2a2018', dy: 0.1, amp: 0.09, w: 0.08, ph: 4 },
   { key: 'finanzas', tex: 2, tint: 0xff9a3c, gain: 1.05, pos: [-0.09, -3.59], r: 1.12, spin: 0.2, tilt: -0.25, side: 'right', icon: 'chart', iconBg: '#a24d16', dy: 0.3, amp: 0.1, w: 0.065, ph: 1 },
   { key: 'tareas', tex: 3, tint: 0xc9d0d4, gain: 1.3, pos: [5.47, -1.82], r: 1.0, spin: 0.14, tilt: 0.3, side: 'right', icon: 'check', iconBg: '#5b4a40', dy: 0.05, amp: 0.09, w: 0.075, ph: 3 },
+  // mismo planeta (textura y tinte) que Tareas, pero propio; abajo a la izquierda, entre Proyectos y Finanzas
+  { key: 'tablero', tex: 3, tint: 0xc9d0d4, gain: 1.3, pos: [-3.0, -4.05], r: 0.9, spin: 0.17, tilt: -0.2, side: 'left', icon: 'board', iconBg: '#5b4a40', dy: 0.05, amp: 0.08, w: 0.07, ph: 5 },
 ]
 
 export interface Item {
@@ -204,7 +206,7 @@ export function buildWorld(ctx: Ctx, tex: THREE.CanvasTexture[], world: World): 
     // extras que solo se ven cuando el planeta es el protagonista de su pantalla
     let rim: THREE.Sprite | null = null
     const extra: Item['extra'] = []
-    if (p.key === 'clientes' || p.key === 'proyectos' || p.key === 'marketing' || p.key === 'finanzas' || p.key === 'tareas') {
+    if (p.key === 'clientes' || p.key === 'proyectos' || p.key === 'marketing' || p.key === 'finanzas' || p.key === 'tareas' || p.key === 'tablero') {
       rim = glow(p.r * 1.3, 1 / 1.3, '239,157,37', 0.32)
       rim.position.z = -0.4
       rim.material.opacity = 0
